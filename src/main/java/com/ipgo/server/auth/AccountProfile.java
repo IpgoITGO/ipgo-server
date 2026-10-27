@@ -1,6 +1,4 @@
 package com.ipgo.server.auth;
 
-import java.time.Instant;
-
-public record AccountProfile(Long id, String email, Instant createdAt) {
+public record AccountProfile(Long userId, String email, String managerName, String companyName) {
 }

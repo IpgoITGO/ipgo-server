@@ -44,11 +44,14 @@ class EmailMigrationTests {
 
             Flyway.configure().dataSource(url, "sa", "").load().migrate();
 
-            try (var row = statement.executeQuery("SELECT id, email, password_hash FROM users")) {
+            try (var row = statement.executeQuery("SELECT id, email, password_hash, company_name, manager_name, business_reg_no FROM users")) {
                 assertThat(row.next()).isTrue();
                 assertThat(row.getLong(1)).isEqualTo(42);
                 assertThat(row.getString(2)).isEqualTo("seller@example.test");
                 assertThat(row.getString(3)).isEqualTo("test-password-hash");
+                assertThat(row.getString(4)).isNull();
+                assertThat(row.getString(5)).isNull();
+                assertThat(row.getString(6)).isNull();
                 assertThat(row.getMetaData().getColumnTypeName(2)).isEqualTo("CHARACTER VARYING");
                 assertThat(row.getMetaData().getPrecision(2)).isEqualTo(254);
             }

@@ -12,7 +12,9 @@ import java.time.Duration;
 import java.util.UUID;
 
 import com.ipgo.server.DatabaseIntegrationTest;
-import com.ipgo.server.auth.AuthService;
+import com.ipgo.server.auth.UserAccountRepository;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.security.crypto.password.PasswordEncoder;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -39,7 +41,9 @@ class UploadIntegrationTests extends DatabaseIntegrationTest {
     @TempDir static Path root;
     @Autowired MockMvc mvc;
     @Autowired JsonMapper mapper;
-    @Autowired AuthService auth;
+    @Autowired UserAccountRepository users;
+    @Autowired JdbcTemplate jdbc;
+    @Autowired PasswordEncoder passwordEncoder;
     @Value("${local.server.port}") int port;
 
     @DynamicPropertySource
@@ -85,7 +89,10 @@ class UploadIntegrationTests extends DatabaseIntegrationTest {
     @Test
     void realHttpSessionUploadsOriginalAndContainerRejectsOversizeFile() throws Exception {
         String email = "upload-" + UUID.randomUUID() + "@example.test";
-        var account = auth.register(email, "test-upload-password-123");
+        // 업로드 테스트는 가입 절차와 독립적인 기존 회원을 사용한다.
+        jdbc.update("INSERT INTO users (email, password_hash) VALUES (?, ?)", email,
+                passwordEncoder.encode("test-upload-password-123"));
+        var account = users.findByEmail(email).orElseThrow();
         try (var client = HttpClient.newBuilder().cookieHandler(new CookieManager()).connectTimeout(Duration.ofSeconds(5)).build()) {
             JsonNode token = mapper.readTree(send(client, HttpRequest.newBuilder(uri("/api/auth/csrf")).GET()).body());
             var login = send(client, HttpRequest.newBuilder(uri("/api/auth/login"))
@@ -98,7 +105,7 @@ class UploadIntegrationTests extends DatabaseIntegrationTest {
             var uploaded = send(client, uploadRequest(original, token));
             assertThat(uploaded.statusCode()).isEqualTo(201);
             String id = mapper.readTree(uploaded.body()).get("uploadId").stringValue();
-            assertThat(Files.readAllBytes(root.resolve(account.id().toString()).resolve(id).resolve("original.xlsx"))).isEqualTo(original);
+            assertThat(Files.readAllBytes(root.resolve(account.getId().toString()).resolve(id).resolve("original.xlsx"))).isEqualTo(original);
             var oversized = send(client, uploadRequest(new byte[10 * 1024 * 1024 + 1], token));
             assertThat(oversized.statusCode()).isEqualTo(413);
             assertThat(mapper.readTree(oversized.body()).get("code").stringValue()).isEqualTo("FILE_TOO_LARGE");

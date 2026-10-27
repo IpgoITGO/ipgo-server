@@ -1,5 +1,7 @@
 package com.ipgo.server.auth;
 
+import java.util.Locale;
+
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.HttpStatus;
 import org.springframework.security.core.userdetails.User;
@@ -15,19 +17,17 @@ import org.springframework.web.server.ResponseStatusException;
 public class AuthService implements UserDetailsService {
     private final UserAccountRepository users;
     private final PasswordEncoder passwordEncoder;
-    private final PersonalDataCrypto crypto;
 
-    public AuthService(UserAccountRepository users, PasswordEncoder passwordEncoder, PersonalDataCrypto crypto) {
+    public AuthService(UserAccountRepository users, PasswordEncoder passwordEncoder) {
         this.users = users;
         this.passwordEncoder = passwordEncoder;
-        this.crypto = crypto;
     }
 
     @Transactional
     public AccountProfile register(String email, String password) {
         try {
-            UserAccount user = users.saveAndFlush(new UserAccount(crypto.encryptEmail(email),
-                    crypto.emailLookup(email), passwordEncoder.encode(password)));
+            UserAccount user = users.saveAndFlush(new UserAccount(normalizeEmail(email),
+                    passwordEncoder.encode(password)));
             return profile(user);
         } catch (DataIntegrityViolationException exception) {
             throw new ResponseStatusException(HttpStatus.CONFLICT, "이미 가입된 이메일입니다.");
@@ -37,7 +37,7 @@ public class AuthService implements UserDetailsService {
     @Override
     @Transactional(readOnly = true)
     public UserDetails loadUserByUsername(String email) {
-        UserAccount user = users.findByEmailLookupHash(crypto.emailLookup(email))
+        UserAccount user = users.findByEmail(normalizeEmail(email))
                 .orElseThrow(() -> new UsernameNotFoundException("이메일 또는 비밀번호를 확인해주세요."));
         return User.withUsername(user.getId().toString()).password(user.getPasswordHash()).roles("USER").build();
     }
@@ -49,7 +49,10 @@ public class AuthService implements UserDetailsService {
     }
 
     private AccountProfile profile(UserAccount user) {
-        return new AccountProfile(user.getId(), crypto.decryptEmail(user.getEncryptedEmail(), user.getEmailLookupHash()),
-                user.getCreatedAt());
+        return new AccountProfile(user.getId(), user.getEmail(), user.getCreatedAt());
+    }
+
+    private static String normalizeEmail(String email) {
+        return email.strip().toLowerCase(Locale.ROOT);
     }
 }

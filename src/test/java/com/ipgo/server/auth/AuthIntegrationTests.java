@@ -34,7 +34,6 @@ class AuthIntegrationTests extends DatabaseIntegrationTest {
     @Autowired UserAccountRepository users;
     @Autowired PasswordEncoder passwordEncoder;
     @Autowired DataSource dataSource;
-    @Autowired PersonalDataCrypto crypto;
 
     @BeforeEach
     void clearTestDatabase() throws Exception {
@@ -53,8 +52,8 @@ class AuthIntegrationTests extends DatabaseIntegrationTest {
                 .andExpect(jsonPath("createdAt").isString())
                 .andExpect(jsonPath("password").doesNotExist())
                 .andExpect(jsonPath("passwordHash").doesNotExist());
-        UserAccount user = users.findByEmailLookupHash(crypto.emailLookup(EMAIL)).orElseThrow();
-        assertThat(user.getEncryptedEmail()).startsWith("v1:").doesNotContain(EMAIL);
+        UserAccount user = users.findByEmail(EMAIL).orElseThrow();
+        assertThat(user.getEmail()).isEqualTo(EMAIL);
         assertThat(user.getPasswordHash()).isNotEqualTo(PASSWORD).startsWith("{pbkdf2-sha256-600k}");
         assertThat(passwordEncoder.matches(PASSWORD, user.getPasswordHash())).isTrue();
     }
@@ -139,7 +138,7 @@ class AuthIntegrationTests extends DatabaseIntegrationTest {
     void meUsesAuthenticatedUserEvenWhenAnotherIdIsSupplied() throws Exception {
         signup(EMAIL, PASSWORD, csrf(null)).andExpect(status().isCreated());
         signup("another@example.test", PASSWORD, csrf(null)).andExpect(status().isCreated());
-        long anotherId = users.findByEmailLookupHash(crypto.emailLookup("another@example.test")).orElseThrow().getId();
+        long anotherId = users.findByEmail("another@example.test").orElseThrow().getId();
         var session = (MockHttpSession) login(EMAIL, PASSWORD, csrf(null))
                 .andExpect(status().isNoContent()).andReturn().getRequest().getSession(false);
         mvc.perform(get("/api/auth/me").session(session).param("userId", Long.toString(anotherId)))

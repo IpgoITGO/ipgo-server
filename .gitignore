@@ -1,0 +1,24 @@
+# Local build output
+.gradle/
+build/
+bin/
+out/
+HELP.md
+
+# IDE and OS files
+.idea/
+*.iml
+.classpath
+.project
+.settings/
+.vscode/
+.DS_Store
+
+# Local environment and credentials
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.jks

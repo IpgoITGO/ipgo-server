@@ -22,11 +22,8 @@ public class UserAccount {
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
-    @Column(name = "email", nullable = false, columnDefinition = "text")
-    private String encryptedEmail;
-
-    @Column(name = "email_lookup_hash", nullable = false, unique = true, length = 64)
-    private String emailLookupHash;
+    @Column(name = "email", nullable = false, unique = true, length = 254)
+    private String email;
 
     @Column(name = "password_hash", nullable = false, length = 255)
     private String passwordHash;
@@ -34,9 +31,8 @@ public class UserAccount {
     @Column(name = "created_at", nullable = false, updatable = false)
     private Instant createdAt;
 
-    UserAccount(String encryptedEmail, String emailLookupHash, String passwordHash) {
-        this.encryptedEmail = encryptedEmail;
-        this.emailLookupHash = emailLookupHash;
+    UserAccount(String email, String passwordHash) {
+        this.email = email;
         this.passwordHash = passwordHash;
         this.createdAt = Instant.now();
     }

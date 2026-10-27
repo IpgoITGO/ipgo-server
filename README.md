@@ -2,7 +2,7 @@
 
 Ipgo 서비스의 API와 서버 동작을 관리하는 저장소입니다.
 
-> 회원가입·로그인·로그아웃과 본인 정보 조회를 제공합니다. 서버 실행에는 PostgreSQL 연결 정보와 개인정보 암호화 키가 필요합니다. 테스트는 H2 메모리 DB와 실행 중 생성한 임시 키를 사용합니다.
+> 회원가입·로그인·로그아웃과 본인 정보 조회를 제공합니다. 서버 실행에는 PostgreSQL 연결 정보가 필요합니다. 테스트는 H2 메모리 DB를 사용합니다.
 
 ## 개발 환경
 
@@ -19,11 +19,11 @@ Ipgo 서비스의 API와 서버 동작을 관리하는 저장소입니다.
 
 ```text
 src/main/java/com/ipgo/server/ProjectApplication.java  # 서버 진입점
-src/main/java/com/ipgo/server/auth/                   # 인증·개인정보 암호화
+src/main/java/com/ipgo/server/auth/                   # 회원 인증
 src/main/java/com/ipgo/server/common/                 # API 오류 응답
 src/main/resources/application.yaml                  # 기본 설정
 src/main/resources/db/migration/                     # PostgreSQL 스키마
-src/test/java/com/ipgo/server/                       # 실행·인증·암호화 테스트
+src/test/java/com/ipgo/server/                       # 실행·인증·migration 테스트
 ```
 
 ## 빌드와 실행
@@ -34,7 +34,7 @@ JDK 21을 설치하고 `JAVA_HOME`을 해당 JDK 경로로 설정합니다. Wind
 # DB 연결 없이 컴파일과 실행 가능한 JAR 생성
 ./gradlew bootJar
 
-# 임시 DB에서 인증·암호화·migration 테스트
+# 임시 DB에서 인증·비밀번호 해시·migration 테스트
 ./gradlew test
 
 # 서버 실행: PostgreSQL과 아래 환경변수 준비 후 실행
@@ -48,13 +48,11 @@ PostgreSQL을 준비한 뒤 실행 환경에 아래 변수를 설정합니다. �
 | `SPRING_DATASOURCE_URL` | PostgreSQL JDBC URL (`jdbc:postgresql://<host>:<port>/<database>`) |
 | `SPRING_DATASOURCE_USERNAME` | DB 사용자 이름 |
 | `SPRING_DATASOURCE_PASSWORD` | DB 비밀번호 |
-| `IPGO_PII_AES_KEY` | AES-256-GCM용 32바이트 난수 키의 Base64 문자열 |
-| `IPGO_PII_LOOKUP_KEY` | 이메일 검색 HMAC용 별도 32바이트 난수 키의 Base64 문자열 |
 | `SERVER_SERVLET_SESSION_COOKIE_SECURE` | HTTPS 배포에서는 `true`로 설정 |
 
 현재 `.env` 파일을 자동으로 읽는 별도 설정은 없습니다. 터미널 또는 IDE의 실행 환경변수로 전달해야 합니다.
 
-두 개인정보 키는 서로 다른 난수로 생성하고 별도로 안전하게 보관해야 합니다. 키가 없거나 형식이 잘못되면 서버가 시작되지 않습니다. 키를 잃거나 재암호화 없이 바꾸면 기존 이메일 복호화 또는 로그인이 불가능합니다. 현재 자동 키 교체 기능은 없습니다.
+이메일 암호화 키는 서버 실행에 필요하지 않습니다. 이전 버전의 암호화된 회원 데이터가 있다면 아래 이관 절차를 완료할 때까지 기존 키를 보존해야 합니다.
 
 ## 인증 API
 
@@ -81,17 +79,23 @@ PostgreSQL을 준비한 뒤 실행 환경에 아래 변수를 설정합니다. �
 ## 비밀번호와 개인정보 저장
 
 - 비밀번호: PBKDF2-HMAC-SHA-256, 회원별 무작위 16바이트 salt, 600,000회 반복, 256비트 해시. `password_hash`에는 알고리즘 식별자와 salt·해시만 저장합니다. 단순 SHA-256 단회 해시는 사용하지 않습니다.
-- 이메일: AES-256-GCM으로 암호화해 `users.email`에 저장합니다. 암호화마다 12바이트 nonce를 새로 생성하고 128비트 인증 태그로 변조를 검출합니다.
-- 검색·중복 검사: 별도 키의 HMAC-SHA-256을 `email_lookup_hash`에 저장하고 unique 제약을 적용합니다. 검색 해시는 GCM의 추가 인증 데이터에도 연결하여 다른 계정의 암호문으로 바꿔치기하면 복호화에 실패합니다.
-- 본인 정보 응답에서만 이메일을 복호화합니다. 세션의 회원 식별자는 이메일 대신 내부 ID를 사용합니다.
+- 이메일: 앞뒤 공백을 제거하고 소문자로 정규화한 문자열을 `users.email`의 `VARCHAR(254)`에 저장합니다. 별도 암호화나 검색 해시를 사용하지 않으며 DB의 unique 제약으로 중복 가입을 방지합니다.
+- DB와 백업에서 이메일을 직접 읽을 수 있으므로 접근 권한을 제한하고, 로그에 이메일과 비밀번호를 기록하지 않습니다.
+- 세션의 회원 식별자는 내부 ID를 사용합니다.
 
 기준: [OWASP 비밀번호 저장 지침](https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html), [Spring Security 세션 인증](https://docs.spring.io/spring-security/reference/servlet/authentication/session-management.html).
 
 ## Database 변경과 복구
 
-Flyway의 `V1__create_users.sql`은 빈 database에 `users` 테이블을 생성합니다. ERD의 논리적 이메일 필드는 암호화 때문에 `TEXT`로 저장하며, 중복 검사에 필요한 `email_lookup_hash`를 추가했습니다. 다른 14개 테이블은 해당 기능 구현 시 추가합니다. Hibernate는 스키마를 자동 수정하지 않고 검증만 수행합니다.
+이미 병합된 `V1__create_users.sql`은 Flyway 이력을 보존하기 위해 수정하지 않습니다. 후속 `V2__store_plain_email.sql`에서 이메일을 `VARCHAR(254)`로 변경하고 unique 제약을 추가한 뒤 `email_lookup_hash`를 제거합니다. 새 DB에서는 V1과 V2를 순서대로 적용합니다. 다른 14개 테이블은 해당 기능 구현 시 추가합니다. Hibernate는 스키마를 자동 수정하지 않고 검증만 수행합니다.
 
-이번 구현에서는 실제 PostgreSQL에 migration을 실행하지 않았습니다. 처음 적용하기 전에 연결 대상과 백업을 확인하고, 기존 `users` 테이블이 있으면 자동 baseline이나 삭제로 우회하지 말고 별도 이관을 검토해야 합니다. 문제가 생기면 서버를 중지하고 이전 애플리케이션으로 복구하되, 생성된 테이블과 키는 보존합니다. 실제 회원 데이터가 있으면 테이블을 삭제하지 않습니다.
+V2는 첫 단계에서 기존 `v1:` 암호문을 검사합니다. 남아 있으면 칼럼 변경·삭제 전에 실패하여 서버 시작을 중단합니다. 자동 복호화나 데이터 삭제는 수행하지 않습니다.
+
+- 적용 전: 연결 대상을 확인하고 DB 전체를 백업합니다. 회원 데이터가 없는 DB는 V2를 적용할 수 있습니다.
+- 기존 암호화 데이터가 있는 경우: 서버 쓰기를 중지하고 DB·기존 AES 키·검색 키를 보존합니다. 이전 버전의 복호화 코드와 키로 이메일을 복호화·정규화하는 별도 이관을 먼저 준비하고, 누락·길이·중복을 확인한 뒤 V2를 적용해야 합니다. 이관 도구는 이번 변경에 포함하지 않습니다. 암호문 검사를 삭제하거나 Flyway repair로 우회하지 않습니다.
+- 복구: V2 적용 후에는 이전 애플리케이션만 다시 실행할 수 없습니다. 서버를 중지하고 적용 전 DB 백업과 이전 애플리케이션·키를 함께 복구해야 합니다. 적용 후 신규 가입이 있었다면 복구 전 별도 보존·이관이 필요합니다.
+
+실제 PostgreSQL에 migration을 실행하지 않았습니다. 테스트는 H2 PostgreSQL 모드에서 새 DB 적용, 암호문이 남은 경우 중단, 이관된 회원 정보 보존과 이메일 unique 제약을 확인합니다. 기존 테이블이 Flyway 관리 대상이 아니라면 자동 baseline이나 삭제로 우회하지 말고 별도 이관을 검토합니다.
 
 ## 작업 흐름
 

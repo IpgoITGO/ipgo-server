@@ -22,3 +22,6 @@ HELP.md
 *.key
 *.p12
 *.jks
+
+# Uploaded originals and local metadata
+/storage/

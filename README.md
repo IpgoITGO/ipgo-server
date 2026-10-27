@@ -2,7 +2,7 @@
 
 Ipgo 서비스의 API와 서버 동작을 관리하는 저장소입니다.
 
-> 회원가입·로그인·로그아웃과 본인 정보 조회를 제공합니다. 서버 실행에는 PostgreSQL 연결 정보가 필요합니다. 테스트는 H2 메모리 DB를 사용합니다.
+> 회원 인증과 수불부 엑셀의 로컬 원본 보관을 제공합니다. 회원 인증에는 PostgreSQL 연결 정보가 필요하며, 업로드 파일과 보관 정보는 로컬 디스크에 저장합니다. 테스트는 H2 메모리 DB와 임시 폴더를 사용합니다.
 
 ## 개발 환경
 
@@ -13,13 +13,14 @@ Ipgo 서비스의 API와 서버 동작을 관리하는 저장소입니다.
 | Gradle | 9.8.2, 저장소의 Wrapper 사용 |
 | 기본 의존성 | Spring MVC, Validation, Actuator, OAuth2 Resource Server, JPA, Flyway, PostgreSQL 드라이버, Lombok |
 
-기본 패키지는 `com.ipgo.server`, Gradle group은 `com.ipgo`입니다. 상품·수불부·계산·AI 연동 기능은 아직 구현하지 않았습니다.
+기본 패키지는 `com.ipgo.server`, Gradle group은 `com.ipgo`입니다. 수불부 정제·검증, 상품·계산·AI 연동 기능은 아직 구현하지 않았습니다.
 
 ## 프로젝트 구조
 
 ```text
 src/main/java/com/ipgo/server/ProjectApplication.java  # 서버 진입점
 src/main/java/com/ipgo/server/auth/                   # 회원 인증
+src/main/java/com/ipgo/server/upload/                 # 엑셀 업로드·로컬 원본 보관
 src/main/java/com/ipgo/server/common/                 # API 오류 응답
 src/main/resources/application.yaml                  # 기본 설정
 src/main/resources/db/migration/                     # PostgreSQL 스키마
@@ -49,6 +50,7 @@ PostgreSQL을 준비한 뒤 실행 환경에 아래 변수를 설정합니다. �
 | `SPRING_DATASOURCE_USERNAME` | DB 사용자 이름 |
 | `SPRING_DATASOURCE_PASSWORD` | DB 비밀번호 |
 | `SERVER_SERVLET_SESSION_COOKIE_SECURE` | HTTPS 배포에서는 `true`로 설정 |
+| `IPGO_UPLOAD_DIR` | 원본·보관 정보 저장 폴더. 기본값은 실행 디렉터리의 `./storage/uploads` |
 
 현재 `.env` 파일을 자동으로 읽는 별도 설정은 없습니다. 터미널 또는 IDE의 실행 환경변수로 전달해야 합니다.
 
@@ -75,6 +77,70 @@ PostgreSQL을 준비한 뒤 실행 환경에 아래 변수를 설정합니다. �
 4. 로그인한 회원은 `/api/auth/me`로 확인합니다. 로그아웃 후에는 기존 인증을 사용할 수 없습니다.
 
 세션은 HttpOnly·SameSite=Lax 쿠키를 사용하며 비활성 30분 후 만료됩니다. 서버 메모리에 보관하므로 재시작하면 로그인이 해제됩니다. 여러 서버를 동시에 운영할 때는 공유 세션 저장소를 추가해야 합니다. 배포 시 HTTPS와 로그인 요청 rate limit도 적용해야 합니다.
+
+## 수불부 엑셀 원본 업로드
+
+현재 단계의 API는 `POST /api/uploads`입니다. 로그인 세션과 CSRF 헤더를 포함하여 `multipart/form-data`의 `file` 필드에 파일 하나를 보냅니다. 사용자 ID는 세션에서 결정하며 요청의 사용자 ID로 저장 위치를 선택할 수 없습니다. 창고 선택은 아직 받지 않습니다. 기존 업로드 API 명세가 제공되지 않아 아래 형식을 이번 단계의 계약으로 정의했습니다.
+
+```javascript
+// 로그인 후 새로 받은 CSRF 토큰을 사용합니다. 같은 origin 또는 개발 프록시 기준입니다.
+const csrfResponse = await fetch('/api/auth/csrf', { credentials: 'include' });
+if (!csrfResponse.ok) throw new Error('CSRF 토큰을 받지 못했습니다.');
+const csrf = await csrfResponse.json();
+const body = new FormData();
+body.append('file', fileInput.files[0]);
+const response = await fetch('/api/uploads', {
+  method: 'POST',
+  credentials: 'include',
+  headers: { [csrf.headerName]: csrf.token },
+  body,
+});
+const result = await response.json();
+if (!response.ok) throw new Error(result.message ?? '업로드에 실패했습니다.');
+// FormData의 Content-Type은 브라우저가 boundary와 함께 설정하도록 둡니다.
+```
+
+성공 시 `201 Created`와 다음 형식의 JSON을 반환합니다. `STORED`는 원본 보관 완료이며 수불부 정제·검증 완료를 뜻하지 않습니다.
+
+```json
+{
+  "uploadId": "9da8b5dc-e59e-4e08-bd23-f11501ab9c09",
+  "originalName": "수불부.xlsx",
+  "size": 5120,
+  "sha256": "<원본 파일의 SHA-256 64자리 hex>",
+  "storedAt": "2026-10-27T05:00:00Z",
+  "status": "STORED"
+}
+```
+
+| 제한·오류 | 동작 |
+|---|---|
+| 파일 형식 | `.xlsx`만 허용. `.xls`, `.xlsm`, CSV, 암호로 잠긴 파일은 지원하지 않음 |
+| 크기 | 파일 10MiB, multipart 전체 요청 11MiB. 초과 시 `413 FILE_TOO_LARGE` |
+| 파일명 | 경로 구분자·제어 문자·콜론 포함, 빈 이름, 255자 초과는 `400 INVALID_INPUT` |
+| 빈 파일·누락·손상 | `400 INVALID_INPUT`. 지원하지 않는 확장자는 `415 INVALID_FILE_TYPE` |
+| 저장 실패 | `500 UPLOAD_STORAGE_ERROR`. 내부 경로와 파일 내용은 응답하지 않음 |
+| 인증·CSRF | 기존 인증 규칙 적용. 미인증 401, CSRF 누락·오류 403 |
+
+확장자나 클라이언트의 Content-Type만 신뢰하지 않고 ZIP의 CRC, 필수 OOXML 구성과 주요 XML을 확인합니다. 압축 해제 총량 100MiB, 항목 수 2,000개, 검사 대상 주요 XML 하나당 1MiB로 제한하며 매크로·DTD·외부 엔티티를 거절합니다. 검사 중 ZIP 내용을 파일로 풀지 않습니다. 이 검사는 기본 컨테이너 검사이며 모든 셀·관계의 유효성 검사나 악성코드 검사를 대신하지 않습니다. 수불부 필수 열·기간·재고 검산은 Python 연동 단계에서 수행합니다.
+
+### 로컬 보관 구조
+
+```text
+storage/uploads/<세션 사용자 ID>/<uploadId>/
+  original.xlsx   # 업로드한 바이트 그대로 보관
+  metadata.json   # userId 및 성공 응답의 보관 정보
+```
+
+같은 이름을 다시 업로드해도 새 ID를 사용하므로 기존 원본을 덮어쓰지 않습니다. 파일 해시는 보관 정보로만 기록하고 중복 파일을 자동 병합하지 않습니다. 원본과 메타데이터를 임시 디렉터리에 모두 쓴 뒤 같은 파일시스템 내 atomic move로 완료 위치에 옮깁니다. 일반적인 실패는 임시 파일을 정리하며, 강제 종료 때 남은 `.pending-*`는 완료 파일로 취급하지 않습니다. 강제 종료 후에는 서버를 중지한 상태에서 해당 디렉터리를 확인하고 정리해야 합니다.
+
+저장 폴더는 애플리케이션 계정만 쓰도록 관리하고 static 리소스·공개 웹 디렉터리 밖에 둡니다. 사용자 하위 디렉터리가 심볼릭 링크이면 저장을 거절합니다. `.gitignore`에 기본 `storage/`를 제외했으며, 사용자 지정 경로도 Git에 포함하지 않아야 합니다. 재시작으로 원본은 삭제되지 않습니다. 컨테이너 사용 시 영속 볼륨과 백업이 필요합니다.
+
+이번 단계는 단일 서버 로컬 보관만 지원합니다. 누적 용량 제한·자동 정리·재시도 중복 방지·다운로드·삭제·목록 조회·DB 업로드 이력은 구현하지 않았습니다. 외부 공개 전에 요청 제한과 디스크 용량 관리를 마련해야 합니다. 롤백 시 파일을 지우지 말고 저장 폴더 전체를 보존합니다. 업로드 기능의 DB migration은 없습니다.
+
+검증은 임시 폴더의 원본·메타데이터 보존, 동일 이름 업로드, 잘못된 파일·압축 폭탄·경로 입력, 저장 실패 정리, 세션 사용자 연결, 실제 HTTP 로그인·CSRF·업로드·용량 제한을 포함합니다. 프론트 화면과 실제 PostgreSQL 통합 검증은 별도입니다.
+
+구현 참고: [Spring multipart 업로드](https://spring.io/guides/gs/uploading-files/), [OWASP 파일 업로드 지침](https://cheatsheetseries.owasp.org/cheatsheets/File_Upload_Cheat_Sheet.html).
 
 ## 비밀번호와 개인정보 저장
 

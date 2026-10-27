@@ -1,5 +1,6 @@
 package com.ipgo.server.common;
 
+import com.ipgo.server.upload.UploadException;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.security.core.userdetails.UsernameNotFoundException;
@@ -7,9 +8,27 @@ import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.server.ResponseStatusException;
+import org.springframework.web.multipart.MaxUploadSizeExceededException;
+import org.springframework.web.multipart.MultipartException;
+import org.springframework.web.multipart.support.MissingServletRequestPartException;
 
 @RestControllerAdvice
 public class ApiExceptionHandler {
+    @ExceptionHandler(UploadException.class)
+    ResponseEntity<ApiError> uploadError(UploadException exception) {
+        return ResponseEntity.status(exception.status()).body(new ApiError(exception.code(), exception.getMessage()));
+    }
+
+    @ExceptionHandler(MaxUploadSizeExceededException.class)
+    ResponseEntity<ApiError> uploadTooLarge(MaxUploadSizeExceededException exception) {
+        return ResponseEntity.status(413).body(new ApiError("FILE_TOO_LARGE", "파일 크기 제한을 초과했습니다."));
+    }
+
+    @ExceptionHandler({MissingServletRequestPartException.class, MultipartException.class})
+    ResponseEntity<ApiError> invalidUpload(Exception exception) {
+        return ResponseEntity.badRequest().body(new ApiError("INVALID_INPUT", "multipart의 file 필드에 파일을 첨부해주세요."));
+    }
+
     @ExceptionHandler({MethodArgumentNotValidException.class, HttpMessageNotReadableException.class})
     ResponseEntity<ApiError> invalidRequest(Exception exception) {
         return ResponseEntity.badRequest().body(new ApiError("INVALID_INPUT", "입력값의 형식과 길이를 확인해주세요."));

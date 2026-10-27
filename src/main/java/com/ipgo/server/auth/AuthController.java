@@ -3,9 +3,6 @@ package com.ipgo.server.auth;
 import java.security.Principal;
 
 import jakarta.validation.Valid;
-import jakarta.validation.constraints.Email;
-import jakarta.validation.constraints.NotBlank;
-import jakarta.validation.constraints.Size;
 import org.springframework.http.HttpStatus;
 import org.springframework.security.web.csrf.CsrfToken;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -32,7 +29,7 @@ public class AuthController {
     @PostMapping("/signup")
     @ResponseStatus(HttpStatus.CREATED)
     public AccountProfile signup(@Valid @RequestBody SignupRequest request) {
-        return authService.register(request.email(), request.password());
+        return authService.register(request);
     }
 
     @GetMapping("/me")
@@ -40,8 +37,4 @@ public class AuthController {
         return authService.currentUser(Long.parseLong(principal.getName()));
     }
 
-    public record SignupRequest(
-            @NotBlank @Email @Size(max = 254) String email,
-            @NotBlank @Size(min = 12, max = 128) String password) {
-    }
 }

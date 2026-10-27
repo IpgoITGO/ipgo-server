@@ -1,6 +1,11 @@
 spring:
   application:
     name: ipgo-server
+  mail:
+    properties:
+      "[mail.smtp.connectiontimeout]": 5000
+      "[mail.smtp.timeout]": 5000
+      "[mail.smtp.writetimeout]": 5000
   jpa:
     open-in-view: false
     hibernate:
@@ -14,3 +19,7 @@ server:
       cookie:
         http-only: true
         same-site: lax
+
+ipgo:
+  mail:
+    from: ${IPGO_MAIL_FROM:}

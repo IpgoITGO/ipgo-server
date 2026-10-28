@@ -1,6 +1,10 @@
 spring:
   application:
     name: ipgo-server
+  servlet:
+    multipart:
+      max-file-size: 10MB
+      max-request-size: 11MB
   mail:
     properties:
       "[mail.smtp.connectiontimeout]": 5000
@@ -21,5 +25,7 @@ server:
         same-site: lax
 
 ipgo:
+  upload:
+    directory: ${IPGO_UPLOAD_DIR:./storage/uploads}
   mail:
     from: ${IPGO_MAIL_FROM:}

@@ -267,6 +267,13 @@ R2·R3은 CSRF가 필요하고, 다른 회원의 상품·발주는 `403`, 없는
 - DB와 백업에서 이메일을 직접 읽을 수 있으므로 접근 권한을 제한하고, 로그에 이메일과 비밀번호를 기록하지 않습니다.
 - 세션의 회원 식별자는 내부 ID를 사용합니다.
 
+### 사용자별 접근 제한 (BE-02)
+
+- 로그인 없이 쓸 수 있는 API는 CSRF 토큰 받기, 이메일 중복 확인, 인증 메일 발송 · 확인, 가입, 로그인뿐입니다. 나머지는 모두 `401 UNAUTHENTICATED`입니다.
+- 회원 ID는 요청 값이 아니라 로그인 세션에서만 가져옵니다. 목록 API(상품 · 기존 발주 · 이미 올린 기간 · 입고 조건 기본값)는 자기 데이터만 돌려줍니다.
+- ID로 대상을 고르는 API(상품 수정 · 상품별 입고 조건 · 기존 발주 등록 · 수정 · 취소)는 주인이 아니면 `403 FORBIDDEN`, 없으면 `404 NOT_FOUND`입니다.
+- `AccessControlTests`가 등록된 모든 `/api/**` API를 돌며 로그인 없이 열리는 API가 없는지 확인합니다. 공개 API를 새로 만들 때는 `SecurityConfig`와 이 테스트의 공개 목록을 함께 바꿔야 합니다.
+
 기준: [OWASP 비밀번호 저장 지침](https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html), [Spring Security 세션 인증](https://docs.spring.io/spring-security/reference/servlet/authentication/session-management.html).
 
 ## Database 변경과 복구

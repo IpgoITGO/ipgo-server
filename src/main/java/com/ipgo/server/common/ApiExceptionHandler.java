@@ -19,7 +19,8 @@ import org.springframework.web.multipart.support.MissingServletRequestPartExcept
 public class ApiExceptionHandler {
     @ExceptionHandler(UploadException.class)
     ResponseEntity<ApiError> uploadError(UploadException exception) {
-        return ResponseEntity.status(exception.status()).body(new ApiError(exception.code(), exception.getMessage()));
+        return ResponseEntity.status(exception.status())
+                .body(new ApiError(exception.code(), exception.getMessage(), exception.details()));
     }
 
     @ExceptionHandler(MaxUploadSizeExceededException.class)

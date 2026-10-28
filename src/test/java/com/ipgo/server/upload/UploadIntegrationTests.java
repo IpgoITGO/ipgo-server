@@ -15,6 +15,7 @@ import com.ipgo.server.DatabaseIntegrationTest;
 import com.ipgo.server.auth.UserAccountRepository;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.crypto.password.PasswordEncoder;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -51,6 +52,11 @@ class UploadIntegrationTests extends DatabaseIntegrationTest {
         registry.add("ipgo.upload.directory", () -> root.toString());
     }
 
+    @AfterEach
+    void cleanUp() {
+        UploadTestDatabase.clear(jdbc);
+    }
+
     @Test
     void requiresAuthenticationAndCsrf() throws Exception {
         var file = new MockMultipartFile("file", "stock.xlsx", "application/octet-stream", UploadTestFiles.workbook());
@@ -61,15 +67,16 @@ class UploadIntegrationTests extends DatabaseIntegrationTest {
 
     @Test
     void bindsOwnerToSessionAndReturnsOnlyPublicReceipt() throws Exception {
+        String owner = Long.toString(UploadTestDatabase.newUser(jdbc, "owner-" + UUID.randomUUID() + "@example.test"));
         var result = mvc.perform(multipart("/api/uploads")
-                        .file(new MockMultipartFile("file", "stock.xlsx", "application/octet-stream", UploadTestFiles.workbook()))
-                        .param("userId", "999").with(user("888")).with(csrf()))
+                        .file(new MockMultipartFile("file", "2026-09.xlsx", "application/octet-stream", UploadTestFiles.workbook()))
+                        .param("userId", "999").with(user(owner)).with(csrf()))
                 .andExpect(status().isCreated()).andExpect(jsonPath("status").value("STORED"))
                 .andExpect(jsonPath("uploadId").isString()).andExpect(jsonPath("sha256").isString())
                 .andExpect(jsonPath("storedAt").isString()).andExpect(jsonPath("size").isNumber())
                 .andExpect(jsonPath("storageKey").doesNotExist()).andReturn();
         var receipt = mapper.readTree(result.getResponse().getContentAsString());
-        assertThat(Files.exists(root.resolve("888").resolve(receipt.get("uploadId").stringValue()).resolve("original.xlsx"))).isTrue();
+        assertThat(Files.exists(root.resolve(owner).resolve(receipt.get("uploadId").stringValue()).resolve("original.xlsx"))).isTrue();
         assertThat(Files.exists(root.resolve("999"))).isFalse();
         assertThat(result.getResponse().getContentAsString()).doesNotContain(root.toString());
     }
@@ -80,7 +87,8 @@ class UploadIntegrationTests extends DatabaseIntegrationTest {
                 .andExpect(status().isBadRequest()).andExpect(jsonPath("code").value("INVALID_INPUT"));
         mvc.perform(multipart("/api/uploads").file(new MockMultipartFile("file", "file.csv", "text/csv", new byte[] {1}))
                         .with(user("123")).with(csrf()))
-                .andExpect(status().isUnsupportedMediaType()).andExpect(jsonPath("code").value("INVALID_FILE_TYPE"));
+                .andExpect(status().isBadRequest()).andExpect(jsonPath("code").value("UPLOAD_INVALID_FORMAT"))
+                .andExpect(jsonPath("details.fileName").value("file.csv"));
         mvc.perform(multipart("/api/uploads").file(new MockMultipartFile("file", "file.xlsx", "application/octet-stream",
                                 new byte[10 * 1024 * 1024 + 1])).with(user("123")).with(csrf()))
                 .andExpect(status().isPayloadTooLarge()).andExpect(jsonPath("code").value("FILE_TOO_LARGE"));
@@ -114,7 +122,7 @@ class UploadIntegrationTests extends DatabaseIntegrationTest {
 
     private HttpRequest.Builder uploadRequest(byte[] bytes, JsonNode token) {
         String boundary = "ipgo-test-boundary";
-        byte[] before = ("--" + boundary + "\r\nContent-Disposition: form-data; name=\"file\"; filename=\"stock.xlsx\"\r\n"
+        byte[] before = ("--" + boundary + "\r\nContent-Disposition: form-data; name=\"file\"; filename=\"2026-09.xlsx\"\r\n"
                 + "Content-Type: application/vnd.openxmlformats-officedocument.spreadsheetml.sheet\r\n\r\n").getBytes(StandardCharsets.UTF_8);
         byte[] after = ("\r\n--" + boundary + "--\r\n").getBytes(StandardCharsets.UTF_8);
         return HttpRequest.newBuilder(uri("/api/uploads"))

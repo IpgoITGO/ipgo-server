@@ -13,6 +13,10 @@ public interface UploadFileRepository extends JpaRepository<UploadFile, Long> {
     Optional<UploadFile> findFirstByWarehouseIdAndPeriodStartAndStatusNotOrderByRevisionNoDesc(
             Long warehouseId, LocalDate periodStart, String status);
 
+    // 실패하지 않은 업로드 중 내용 해시가 같은 가장 최근 것. 있으면 "이미 올린 파일"이다.
+    Optional<UploadFile> findFirstByWarehouseIdAndFileHashAndStatusNotOrderByIdDesc(
+            Long warehouseId, String fileHash, String status);
+
     @Query("SELECT COALESCE(MAX(u.revisionNo), 0) FROM UploadFile u "
             + "WHERE u.warehouseId = :warehouseId AND u.periodStart = :periodStart")
     int lastRevision(@Param("warehouseId") Long warehouseId, @Param("periodStart") LocalDate periodStart);

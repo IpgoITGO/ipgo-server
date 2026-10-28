@@ -1,11 +1,13 @@
 package com.ipgo.server.upload;
 
 import java.io.IOException;
+import java.io.OutputStream;
 import java.nio.file.Files;
 import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
+import java.security.DigestInputStream;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.time.Instant;
@@ -43,6 +45,19 @@ public class LocalUploadStorage {
         validateName(file.getOriginalFilename());
         if (file.isEmpty()) throw invalid("빈 파일은 업로드할 수 없습니다.");
         if (file.getSize() > maxBytes) throw tooLarge();
+    }
+
+    // 저장하기 전에 같은 파일을 이미 올렸는지 보려고 내용 해시(SHA-256)를 먼저 구한다.
+    String contentHash(MultipartFile file) {
+        MessageDigest digest = sha256();
+        try (var input = new DigestInputStream(file.getInputStream(), digest)) {
+            input.transferTo(OutputStream.nullOutputStream());
+        } catch (IOException exception) {
+            log.error("업로드 파일을 읽지 못했습니다. 오류 유형: {}", exception.getClass().getSimpleName());
+            throw new UploadException(HttpStatus.INTERNAL_SERVER_ERROR, "UPLOAD_STORAGE_ERROR",
+                    "파일을 보관하지 못했습니다. 잠시 후 다시 시도해주세요.");
+        }
+        return HexFormat.of().formatHex(digest.digest());
     }
 
     public StoredUpload store(long userId, MultipartFile file) {

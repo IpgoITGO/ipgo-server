@@ -34,6 +34,7 @@ class ReplenishmentIntegrationTests extends DatabaseIntegrationTest {
 
     @AfterEach
     void cleanUp() {
+        jdbc.update("DELETE FROM planned_receipts");
         jdbc.update("DELETE FROM replenishment_settings");
         jdbc.update("DELETE FROM inventory_units");
         jdbc.update("DELETE FROM products");

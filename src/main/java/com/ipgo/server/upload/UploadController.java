@@ -22,10 +22,11 @@ public class UploadController {
         this.uploads = uploads;
     }
 
-    // U1 수불부 업로드. 같은 기간이면 409, 덮어쓰려면 overwrite=true로 다시 보낸다.
+    // U1 수불부 업로드. 파일 하나씩 보낸다. 같은 기간이면 409, 덮어쓰려면 overwrite=true로 다시 보낸다.
+    // 정제는 따로 진행되므로 202로 받았다는 것만 알린다.
     @PostMapping(consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
-    @ResponseStatus(HttpStatus.CREATED)
-    public StoredUpload upload(@RequestPart("file") MultipartFile file,
+    @ResponseStatus(HttpStatus.ACCEPTED)
+    public UploadAccepted upload(@RequestPart("file") MultipartFile file,
             @RequestParam(defaultValue = "false") boolean overwrite, Principal principal) {
         return uploads.upload(Long.parseLong(principal.getName()), file, overwrite);
     }

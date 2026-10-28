@@ -24,7 +24,7 @@ public class UploadRecordService {
     }
 
     @Transactional
-    public StoredUpload upload(long userId, MultipartFile file, boolean overwrite) {
+    public UploadAccepted upload(long userId, MultipartFile file, boolean overwrite) {
         storage.precheck(file);
         UploadPeriod period = UploadPeriod.fromFileName(file.getOriginalFilename());
 
@@ -38,9 +38,9 @@ public class UploadRecordService {
         int revision = uploads.lastRevision(warehouse.getId(), period.start()) + 1;
 
         StoredUpload stored = storage.store(userId, file);
-        uploads.save(new UploadFile(warehouse.getId(), stored.originalName(), userId + "/" + stored.uploadId(),
-                stored.sha256(), revision, period));
-        return stored;
+        UploadFile saved = uploads.save(new UploadFile(warehouse.getId(), stored.originalName(),
+                userId + "/" + stored.uploadId(), stored.sha256(), revision, period));
+        return UploadAccepted.from(saved);
     }
 
     @Transactional(readOnly = true)

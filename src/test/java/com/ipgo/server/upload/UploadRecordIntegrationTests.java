@@ -43,7 +43,15 @@ class UploadRecordIntegrationTests extends DatabaseIntegrationTest {
     @Test
     void recordsUploadWithPeriodFromFileName() throws Exception {
         long userId = newUser();
-        upload(userId, "2026-09.xlsx", false).andExpect(status().isCreated());
+        upload(userId, "2026-09.xlsx", false)
+                .andExpect(status().isAccepted())
+                .andExpect(jsonPath("uploadId").isNumber())
+                .andExpect(jsonPath("status").value("PROCESSING"))
+                .andExpect(jsonPath("originalName").value("2026-09.xlsx"))
+                .andExpect(jsonPath("periodStart").value("2026-09-01"))
+                .andExpect(jsonPath("periodEnd").value("2026-09-30"))
+                .andExpect(jsonPath("sha256").doesNotExist())
+                .andExpect(jsonPath("storageKey").doesNotExist());
 
         var row = jdbc.queryForMap("SELECT u.* FROM upload_files u JOIN warehouses w ON w.id = u.warehouse_id "
                 + "WHERE w.user_id = ?", userId);
@@ -60,7 +68,7 @@ class UploadRecordIntegrationTests extends DatabaseIntegrationTest {
     @Test
     void samePeriodIsRejectedUntilOverwriteIsConfirmed() throws Exception {
         long userId = newUser();
-        upload(userId, "2026-09.xlsx", false).andExpect(status().isCreated());
+        upload(userId, "2026-09.xlsx", false).andExpect(status().isAccepted());
 
         upload(userId, "수불부_202609.xlsx", false)
                 .andExpect(status().isConflict())
@@ -73,7 +81,7 @@ class UploadRecordIntegrationTests extends DatabaseIntegrationTest {
         assertThat(uploadCount(userId)).isEqualTo(1);
         assertThat(root.resolve(Long.toString(userId)).toFile().list()).hasSize(1);
 
-        upload(userId, "수불부_202609.xlsx", true).andExpect(status().isCreated());
+        upload(userId, "수불부_202609.xlsx", true).andExpect(status().isAccepted());
         assertThat(jdbc.queryForList("SELECT u.revision_no FROM upload_files u JOIN warehouses w "
                 + "ON w.id = u.warehouse_id WHERE w.user_id = ? ORDER BY u.revision_no", Integer.class, userId))
                 .containsExactly(1, 2);
@@ -95,10 +103,10 @@ class UploadRecordIntegrationTests extends DatabaseIntegrationTest {
     void listsLatestUploadPerPeriodOnlyForOwner() throws Exception {
         long owner = newUser();
         long other = newUser();
-        upload(owner, "2026-10.xlsx", false).andExpect(status().isCreated());
-        upload(owner, "2026-09.xlsx", false).andExpect(status().isCreated());
-        upload(owner, "2026-09 수정.xlsx", true).andExpect(status().isCreated());
-        upload(other, "2026-08.xlsx", false).andExpect(status().isCreated());
+        upload(owner, "2026-10.xlsx", false).andExpect(status().isAccepted());
+        upload(owner, "2026-09.xlsx", false).andExpect(status().isAccepted());
+        upload(owner, "2026-09 수정.xlsx", true).andExpect(status().isAccepted());
+        upload(other, "2026-08.xlsx", false).andExpect(status().isAccepted());
 
         long latest = jdbc.queryForObject("SELECT MAX(u.id) FROM upload_files u JOIN warehouses w "
                 + "ON w.id = u.warehouse_id WHERE w.user_id = ?", Long.class, owner);

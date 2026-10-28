@@ -71,12 +71,11 @@ class UploadIntegrationTests extends DatabaseIntegrationTest {
         var result = mvc.perform(multipart("/api/uploads")
                         .file(new MockMultipartFile("file", "2026-09.xlsx", "application/octet-stream", UploadTestFiles.workbook()))
                         .param("userId", "999").with(user(owner)).with(csrf()))
-                .andExpect(status().isCreated()).andExpect(jsonPath("status").value("STORED"))
-                .andExpect(jsonPath("uploadId").isString()).andExpect(jsonPath("sha256").isString())
-                .andExpect(jsonPath("storedAt").isString()).andExpect(jsonPath("size").isNumber())
+                .andExpect(status().isAccepted()).andExpect(jsonPath("status").value("PROCESSING"))
+                .andExpect(jsonPath("uploadId").isNumber())
                 .andExpect(jsonPath("storageKey").doesNotExist()).andReturn();
         var receipt = mapper.readTree(result.getResponse().getContentAsString());
-        assertThat(Files.exists(root.resolve(owner).resolve(receipt.get("uploadId").stringValue()).resolve("original.xlsx"))).isTrue();
+        assertThat(Files.exists(root.resolve(storageKey(receipt.get("uploadId").longValue())).resolve("original.xlsx"))).isTrue();
         assertThat(Files.exists(root.resolve("999"))).isFalse();
         assertThat(result.getResponse().getContentAsString()).doesNotContain(root.toString());
     }
@@ -111,9 +110,10 @@ class UploadIntegrationTests extends DatabaseIntegrationTest {
             token = mapper.readTree(send(client, HttpRequest.newBuilder(uri("/api/auth/csrf")).GET()).body());
             byte[] original = UploadTestFiles.workbook();
             var uploaded = send(client, uploadRequest(original, token));
-            assertThat(uploaded.statusCode()).isEqualTo(201);
-            String id = mapper.readTree(uploaded.body()).get("uploadId").stringValue();
-            assertThat(Files.readAllBytes(root.resolve(account.getId().toString()).resolve(id).resolve("original.xlsx"))).isEqualTo(original);
+            assertThat(uploaded.statusCode()).isEqualTo(202);
+            String key = storageKey(mapper.readTree(uploaded.body()).get("uploadId").longValue());
+            assertThat(key).startsWith(account.getId() + "/");
+            assertThat(Files.readAllBytes(root.resolve(key).resolve("original.xlsx"))).isEqualTo(original);
             var oversized = send(client, uploadRequest(new byte[10 * 1024 * 1024 + 1], token));
             assertThat(oversized.statusCode()).isEqualTo(413);
             assertThat(mapper.readTree(oversized.body()).get("code").stringValue()).isEqualTo("FILE_TOO_LARGE");
@@ -134,6 +134,11 @@ class UploadIntegrationTests extends DatabaseIntegrationTest {
 
     private HttpResponse<String> send(HttpClient client, HttpRequest.Builder request) throws Exception {
         return client.send(request.timeout(Duration.ofSeconds(15)).build(), HttpResponse.BodyHandlers.ofString());
+    }
+
+    // 응답에는 저장 위치가 없으므로 업로드 기록에서 찾는다.
+    private String storageKey(long uploadId) {
+        return jdbc.queryForObject("SELECT storage_key FROM upload_files WHERE id = ?", String.class, uploadId);
     }
 
     private URI uri(String path) { return URI.create("http://localhost:" + port + path); }

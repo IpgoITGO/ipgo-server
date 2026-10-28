@@ -2,12 +2,14 @@ package com.ipgo.server.common;
 
 import com.ipgo.server.upload.UploadException;
 import com.ipgo.server.auth.EmailVerificationException;
+import com.ipgo.server.product.ProductException;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.security.core.userdetails.UsernameNotFoundException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 import org.springframework.web.server.ResponseStatusException;
 import org.springframework.web.multipart.MaxUploadSizeExceededException;
 import org.springframework.web.multipart.MultipartException;
@@ -35,6 +37,11 @@ public class ApiExceptionHandler {
         return ResponseEntity.status(exception.status()).body(new ApiError(exception.code(), exception.getMessage()));
     }
 
+    @ExceptionHandler(ProductException.class)
+    ResponseEntity<ApiError> product(ProductException exception) {
+        return ResponseEntity.status(exception.status()).body(new ApiError(exception.code(), exception.getMessage()));
+    }
+
     @ExceptionHandler(MethodArgumentNotValidException.class)
     ResponseEntity<ApiError> invalidField(MethodArgumentNotValidException exception) {
         var field = exception.getBindingResult().getFieldErrors().stream()
@@ -43,7 +50,7 @@ public class ApiExceptionHandler {
                 field == null ? null : new ApiError.FieldDetails(field)));
     }
 
-    @ExceptionHandler(HttpMessageNotReadableException.class)
+    @ExceptionHandler({HttpMessageNotReadableException.class, MethodArgumentTypeMismatchException.class})
     ResponseEntity<ApiError> invalidRequest(Exception exception) {
         return ResponseEntity.badRequest().body(new ApiError("INVALID_INPUT", "입력값의 형식과 길이를 확인해주세요."));
     }

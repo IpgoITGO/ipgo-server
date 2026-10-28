@@ -24,6 +24,8 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
+@org.springframework.context.annotation.Import(TestMailConfiguration.class)
+@org.springframework.test.context.TestPropertySource(properties = {"ipgo.mail.from=noreply@example.test", "management.health.mail.enabled=false"})
 @AutoConfigureMockMvc
 class AuthIntegrationTests extends DatabaseIntegrationTest {
     private static final String EMAIL = "seller@example.test";
@@ -34,6 +36,10 @@ class AuthIntegrationTests extends DatabaseIntegrationTest {
     @Autowired UserAccountRepository users;
     @Autowired PasswordEncoder passwordEncoder;
     @Autowired DataSource dataSource;
+    @Autowired EmailVerificationRepository verifications;
+    @Autowired EmailVerificationService verificationService;
+    @Autowired TestMailConfiguration.RecordingMailSender mail;
+    private final Map<String, String> verificationTokens = new java.util.HashMap<>();
 
     @BeforeEach
     void clearTestDatabase() throws Exception {
@@ -41,6 +47,9 @@ class AuthIntegrationTests extends DatabaseIntegrationTest {
             assertThat(connection.getMetaData().getURL()).startsWith("jdbc:h2:mem:");
         }
         users.deleteAll();
+        verifications.deleteAll();
+        verificationTokens.clear();
+        mail.reset();
     }
 
     @Test
@@ -48,8 +57,11 @@ class AuthIntegrationTests extends DatabaseIntegrationTest {
         signup("Seller@Example.test", PASSWORD, csrf(null))
                 .andExpect(status().isCreated())
                 .andExpect(jsonPath("email").value(EMAIL))
-                .andExpect(jsonPath("id").isNumber())
-                .andExpect(jsonPath("createdAt").isString())
+                .andExpect(jsonPath("userId").isNumber())
+                .andExpect(jsonPath("id").doesNotExist())
+                .andExpect(jsonPath("createdAt").doesNotExist())
+                .andExpect(jsonPath("managerName").value("테스트 담당자"))
+                .andExpect(jsonPath("companyName").value("테스트 회사"))
                 .andExpect(jsonPath("password").doesNotExist())
                 .andExpect(jsonPath("passwordHash").doesNotExist());
         UserAccount user = users.findByEmail(EMAIL).orElseThrow();
@@ -101,7 +113,10 @@ class AuthIntegrationTests extends DatabaseIntegrationTest {
         MockHttpSession session = (MockHttpSession) result.getRequest().getSession(false);
         assertThat(session.getId()).isNotEqualTo(previousId);
         mvc.perform(get("/api/auth/me").session(session))
-                .andExpect(status().isOk()).andExpect(jsonPath("email").value(EMAIL));
+                .andExpect(status().isOk()).andExpect(jsonPath("email").value(EMAIL))
+                .andExpect(jsonPath("userId").isNumber())
+                .andExpect(jsonPath("managerName").value("테스트 담당자"))
+                .andExpect(jsonPath("companyName").value("테스트 회사"));
         mvc.perform(post("/api/auth/logout").session(session).header(before.header(), before.token()))
                 .andExpect(status().isForbidden());
         CsrfSession after = csrf(session);
@@ -142,7 +157,10 @@ class AuthIntegrationTests extends DatabaseIntegrationTest {
         var session = (MockHttpSession) login(EMAIL, PASSWORD, csrf(null))
                 .andExpect(status().isNoContent()).andReturn().getRequest().getSession(false);
         mvc.perform(get("/api/auth/me").session(session).param("userId", Long.toString(anotherId)))
-                .andExpect(status().isOk()).andExpect(jsonPath("email").value(EMAIL));
+                .andExpect(status().isOk()).andExpect(jsonPath("email").value(EMAIL))
+                .andExpect(jsonPath("userId").isNumber())
+                .andExpect(jsonPath("managerName").value("테스트 담당자"))
+                .andExpect(jsonPath("companyName").value("테스트 회사"));
         mvc.perform(get("/api/auth/me")).andExpect(status().isUnauthorized());
     }
 
@@ -176,9 +194,18 @@ class AuthIntegrationTests extends DatabaseIntegrationTest {
     }
 
     private ResultActions signup(String email, String password, CsrfSession token) throws Exception {
+        String normalized = AuthService.normalizeEmail(email);
+        String verificationToken = "x".repeat(43);
+        if (normalized.endsWith("@example.test") && !normalized.startsWith("@") && !users.existsByEmail(normalized)) {
+            verificationToken = verificationTokens.computeIfAbsent(normalized, key -> {
+                verificationService.requestCode(key);
+                return verificationService.confirm(key, mail.codes.get(key));
+            });
+        }
         return mvc.perform(post("/api/auth/signup").session(token.session())
                 .header(token.header(), token.token()).contentType(MediaType.APPLICATION_JSON)
-                .content(mapper.writeValueAsString(Map.of("email", email, "password", password))));
+                .content(mapper.writeValueAsString(Map.of("email", email, "password", password,
+                        "companyName", "테스트 회사", "managerName", "테스트 담당자", "verificationToken", verificationToken))));
     }
 
     private ResultActions login(String email, String password, CsrfSession token) throws Exception {

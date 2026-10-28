@@ -25,15 +25,27 @@ public class UserAccount {
     @Column(name = "email", nullable = false, unique = true, length = 254)
     private String email;
 
+    @Column(name = "company_name", length = 50)
+    private String companyName;
+
+    @Column(name = "manager_name", length = 50)
+    private String managerName;
+
+    @Column(name = "business_reg_no", length = 10)
+    private String businessRegNo;
+
     @Column(name = "password_hash", nullable = false, length = 255)
     private String passwordHash;
 
     @Column(name = "created_at", nullable = false, updatable = false)
     private Instant createdAt;
 
-    UserAccount(String email, String passwordHash) {
+    UserAccount(String email, String passwordHash, String companyName, String managerName, String businessRegNo) {
         this.email = email;
         this.passwordHash = passwordHash;
+        this.companyName = companyName;
+        this.managerName = managerName;
+        this.businessRegNo = businessRegNo;
         this.createdAt = Instant.now();
     }
 }

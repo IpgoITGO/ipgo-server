@@ -2,7 +2,7 @@
 
 Ipgo 서비스의 API와 서버 동작을 관리하는 저장소입니다.
 
-> 회원 인증과 수불부 엑셀의 로컬 원본 보관을 제공합니다. 회원 인증에는 PostgreSQL 연결 정보가 필요하며, 업로드 파일과 보관 정보는 로컬 디스크에 저장합니다. 테스트는 H2 메모리 DB와 임시 폴더를 사용합니다.
+> 이메일 인증을 거친 회원가입·로그인·로그아웃·본인 정보 조회와 수불부 엑셀의 로컬 원본 보관을 제공합니다. 회원 인증에는 PostgreSQL, 인증 메일 발송에는 SMTP 설정이 필요합니다. 업로드 파일과 보관 정보는 로컬 디스크에 저장하며, 테스트는 H2 메모리 DB·로컬 테스트 SMTP·임시 폴더를 사용합니다.
 
 ## 개발 환경
 
@@ -11,7 +11,7 @@ Ipgo 서비스의 API와 서버 동작을 관리하는 저장소입니다.
 | Java | 21 |
 | Spring Boot | 4.1.2 |
 | Gradle | 9.8.2, 저장소의 Wrapper 사용 |
-| 기본 의존성 | Spring MVC, Validation, Actuator, OAuth2 Resource Server, JPA, Flyway, PostgreSQL 드라이버, Lombok |
+| 기본 의존성 | Spring MVC, Validation, Actuator, OAuth2 Resource Server, JPA, Flyway, PostgreSQL 드라이버, JavaMail, Lombok |
 
 기본 패키지는 `com.ipgo.server`, Gradle group은 `com.ipgo`입니다. 수불부 정제·검증, 상품·계산·AI 연동 기능은 아직 구현하지 않았습니다.
 
@@ -61,22 +61,87 @@ PostgreSQL을 준비한 뒤 실행 환경에 아래 변수를 설정합니다. �
 | Method | 경로 | 요청·응답 |
 |---|---|---|
 | GET | `/api/auth/csrf` | 로그인 전에도 호출 가능. `headerName`, `parameterName`, `token` 반환 |
-| POST | `/api/auth/signup` | JSON의 `email`, `password`로 가입. 성공 시 201과 `id`, `email`, `createdAt` 반환 |
+| GET | `/api/auth/email-availability?email=...` | 200 `{"available":true}`. 이미 가입한 이메일은 `false` |
+| POST | `/api/auth/email-verifications` | JSON `{"email":"seller@example.test"}` → 202 `{"expiresIn":600}` |
+| POST | `/api/auth/email-verifications/confirm` | JSON의 `email`, `code` → 200 `{"verificationToken":"..."}` |
+| POST | `/api/auth/signup` | 아래 JSON으로 가입. 성공 시 201과 `userId`, `email`, `managerName`, `companyName` 반환 |
 | POST | `/api/auth/login` | `application/x-www-form-urlencoded`의 `email`, `password`. 성공 시 204와 세션 쿠키 |
-| GET | `/api/auth/me` | 현재 세션의 회원 정보 반환. 회원 ID를 요청으로 지정하지 않음 |
+| GET | `/api/auth/me` | 200과 `userId`, `email`, `managerName`, `companyName`. 회원 ID를 요청으로 지정하지 않음 |
 | POST | `/api/auth/logout` | 현재 세션 무효화와 쿠키 삭제. 성공 시 204 |
 | GET | `/actuator/health` | 상세 정보 없는 상태 확인 |
 
-회원가입은 자동 로그인을 수행하지 않습니다. 이메일은 소문자로 정규화하며 최대 254자, 비밀번호는 12~128자입니다. 로그인 실패는 계정 존재 여부와 관계없이 같은 401 응답을 반환합니다. 중복 이메일은 409, 입력 오류는 400, CSRF 누락·오류는 403입니다. 오류 본문은 `code`, `message`를 포함하며 비밀번호나 암호화 키를 담지 않습니다.
+가입 요청 예시입니다. `verificationToken`에는 A7에서 받은 실제 토큰을 전달합니다.
+
+```json
+{
+  "email": "seller@example.test",
+  "password": "test-only-password-123!",
+  "companyName": "테스트 회사",
+  "managerName": "담당자",
+  "businessRegNo": "0123456789",
+  "verificationToken": "<A7에서 받은 토큰>"
+}
+```
+
+- `companyName`, `managerName`: 앞뒤 공백을 제거한 뒤 1~50자, 필수.
+- `businessRegNo`: 선택. 생략·null·빈 문자열은 미입력으로 처리하며, 입력하면 숫자 10자리여야 합니다. 실제 사업자 등록 여부는 조회하지 않습니다.
+- 응답 ID 이름은 명세대로 `userId`입니다. 이전 `id`, `createdAt` 응답은 제거했습니다.
+- 비밀번호 정책은 팀 결정 전까지 기존 12~128자를 유지합니다. 영문·숫자 조합 검사는 아직 적용하지 않았습니다.
+- 로그인 요청은 기존 form-urlencoded, 성공 응답은 204입니다. JSON 로그인·200 응답으로 바꾸는 작업은 이번 변경에 포함하지 않습니다. 화면 표시 정보는 로그인 후 `/api/auth/me`에서 받습니다.
+
+회원가입은 자동 로그인을 수행하지 않습니다. 이메일은 소문자로 정규화하며 최대 254자, 비밀번호는 12~128자입니다. 로그인 실패는 계정 존재 여부와 관계없이 같은 401 응답을 반환합니다. 중복 이메일은 409, 입력 오류는 400, CSRF 누락·오류는 403입니다. 오류 본문은 `code`, `message`를 포함하며 민감한 입력값을 담지 않습니다. 입력 필드 검증 실패는 `details.field`에 필드 이름 하나를 추가합니다. JSON 자체가 깨진 경우에는 필드를 특정하지 않습니다.
 
 프론트엔드는 같은 origin 또는 개발 프록시에서 다음 순서로 호출합니다. 별도 origin의 credential CORS는 연동 주소가 확정된 뒤 설정해야 합니다.
 
 1. `GET /api/auth/csrf`로 토큰과 세션 쿠키를 받습니다.
 2. 모든 POST 요청에 응답의 `headerName`을 헤더 이름으로, `token`을 값으로 넣고 쿠키도 전송합니다.
-3. 로그인 성공 후 `/api/auth/csrf`를 다시 호출합니다. 로그인 시 세션 ID와 CSRF 토큰이 갱신됩니다.
-4. 로그인한 회원은 `/api/auth/me`로 확인합니다. 로그아웃 후에는 기존 인증을 사용할 수 없습니다.
+3. 회원가입 전에는 이메일 확인 → 인증 메일 발송 → 6자리 코드 확인 → 반환된 토큰으로 가입 순서로 진행합니다.
+4. 로그인 성공 후 `/api/auth/csrf`를 다시 호출합니다. 로그인 시 세션 ID와 CSRF 토큰이 갱신됩니다.
+5. 로그인한 회원은 `/api/auth/me`로 확인합니다. 로그아웃 후에는 기존 인증을 사용할 수 없습니다.
 
 세션은 HttpOnly·SameSite=Lax 쿠키를 사용하며 비활성 30분 후 만료됩니다. 서버 메모리에 보관하므로 재시작하면 로그인이 해제됩니다. 여러 서버를 동시에 운영할 때는 공유 세션 저장소를 추가해야 합니다. 배포 시 HTTPS와 로그인 요청 rate limit도 적용해야 합니다.
+
+## 이메일 인증과 SMTP 설정
+
+인증 코드는 6자리이며 발송 요청 시점부터 10분간 유효합니다. 같은 이메일은 60초에 한 번 재발송할 수 있고, 새 발송에 성공하면 이전 코드와 가입 토큰은 무효가 됩니다. 코드를 5회 틀리면 해당 코드가 무효가 되며 재발송이 필요합니다. 형식 자체가 잘못된 요청은 입력 오류로 처리합니다.
+
+코드 확인 성공 시 30분간 유효한 무작위 가입 토큰을 반환합니다. 같은 이메일의 가입에만 한 번 사용할 수 있습니다. 가입 저장에 실패하면 토큰 사용도 취소되어 재시도할 수 있습니다. 코드와 토큰은 원문 대신 해시를 DB에 저장하고 API·로그로 코드를 노출하지 않습니다. 이메일은 가입 API와 동일하게 소문자로 정규화합니다.
+
+SMTP 서비스와 발신 주소를 준비한 후 아래 환경변수를 실행 환경에 주입합니다. 비밀번호나 API 키를 채팅·문서·Git에 적지 않습니다.
+
+| 환경변수 | 용도 |
+|---|---|
+| `SPRING_MAIL_HOST` | SMTP 서버 주소. 이 설정이 있어야 메일 발송기가 생성됨 |
+| `SPRING_MAIL_PORT` | 제공업체의 SMTP 포트 |
+| `SPRING_MAIL_USERNAME` | SMTP 인증 계정 |
+| `SPRING_MAIL_PASSWORD` | SMTP 비밀번호 또는 업체가 발급한 SMTP 자격 증명 |
+| `IPGO_MAIL_FROM` | 업체에서 허용한 발신 이메일 주소 |
+| `SPRING_MAIL_PROPERTIES_MAIL_SMTP_AUTH` | 인증 사용 시 `true` |
+| `SPRING_MAIL_PROPERTIES_MAIL_SMTP_STARTTLS_ENABLE` | STARTTLS 사용 시 `true` |
+| `SPRING_MAIL_PROPERTIES_MAIL_SMTP_STARTTLS_REQUIRED` | STARTTLS 필수인 서비스는 `true` |
+| `SPRING_MAIL_PROPERTIES_MAIL_SMTP_SSL_ENABLE` | implicit TLS 서비스에서 사용. 포트와 TLS 방식은 업체 안내에 맞춤 |
+
+SMTP 연결·읽기·쓰기 제한은 각각 5초입니다. SMTP 설정이 없더라도 서버는 시작할 수 있지만, 인증 메일 요청은 503을 반환하며 인증이 필요한 신규 가입은 완료할 수 없습니다. 발송에 실패하면 코드·토큰·재발송 제한 상태를 이전 상태로 되돌립니다. 202는 SMTP가 메일을 수락했다는 뜻이며 실제 수신함 도착을 보장하지 않습니다. 스팸 분류와 반송은 메일 서비스에서 확인해야 합니다.
+
+| HTTP | code | 의미 |
+|---|---|---|
+| 400 | `INVALID_INPUT` | 입력 오류. 가능한 경우 `details.field` 포함 |
+| 400 | `INVALID_EMAIL_CODE` | 잘못된 코드, 5회 실패 또는 이미 사용한 코드 |
+| 400 | `EMAIL_CODE_EXPIRED` | 10분이 지난 코드 |
+| 400 | `INVALID_VERIFICATION_TOKEN` | 잘못된·만료된·사용된 토큰 또는 다른 이메일 |
+| 401 | `INVALID_CREDENTIALS` | 로그인 정보 불일치 |
+| 401 | `UNAUTHENTICATED` | 로그인 필요 |
+| 409 | `DUPLICATE_EMAIL` | 이미 가입한 이메일 |
+| 429 | `EMAIL_VERIFICATION_RATE_LIMITED` | 60초 내 재발송 요청 |
+| 503 | `EMAIL_DELIVERY_UNAVAILABLE` | SMTP 미설정 또는 발송 실패 |
+
+```json
+{"code":"INVALID_INPUT","message":"입력값의 형식과 길이를 확인해주세요.","details":{"field":"companyName"}}
+```
+
+동일 이메일의 동시 발송·코드 확인·가입은 DB 행 잠금으로 처리합니다. SMTP 발송도 해당 트랜잭션에서 수행하므로 같은 이메일의 요청은 발송 완료까지 대기합니다. SMTP 수락 직후 DB commit이 실패하면 메일의 코드가 유효하지 않을 수 있으므로 재발송이 필요합니다. 별도 발송 큐는 추가하지 않았습니다.
+
+공개 운영 전에는 이메일별 제한 외에 IP·전체 발송량 제한과 메일 서비스 한도를 설정해야 합니다. 만료 상태는 요청 시 검사하며, 만료된 행은 현재 자동 삭제하지 않습니다. `email_verifications`의 보관 기간과 정리 작업도 운영 전에 정해야 합니다. 이메일 중복 조회는 요청한 명세에 따라 가입 여부를 알려줍니다.
 
 ## 수불부 엑셀 원본 업로드
 
@@ -153,13 +218,17 @@ storage/uploads/<세션 사용자 ID>/<uploadId>/
 
 ## Database 변경과 복구
 
-이미 병합된 `V1__create_users.sql`은 Flyway 이력을 보존하기 위해 수정하지 않습니다. 후속 `V2__store_plain_email.sql`에서 이메일을 `VARCHAR(254)`로 변경하고 unique 제약을 추가한 뒤 `email_lookup_hash`를 제거합니다. 새 DB에서는 V1과 V2를 순서대로 적용합니다. 다른 14개 테이블은 해당 기능 구현 시 추가합니다. Hibernate는 스키마를 자동 수정하지 않고 검증만 수행합니다.
+이미 병합된 `V1__create_users.sql`은 Flyway 이력을 보존하기 위해 수정하지 않습니다. 후속 `V2__store_plain_email.sql`에서 이메일을 `VARCHAR(254)`로 변경하고 unique 제약을 추가한 뒤 `email_lookup_hash`를 제거합니다. 새 DB에서는 V1~V3를 순서대로 적용합니다. 다른 14개 테이블은 해당 기능 구현 시 추가합니다. Hibernate는 스키마를 자동 수정하지 않고 검증만 수행합니다.
 
 V2는 첫 단계에서 기존 `v1:` 암호문을 검사합니다. 남아 있으면 칼럼 변경·삭제 전에 실패하여 서버 시작을 중단합니다. 자동 복호화나 데이터 삭제는 수행하지 않습니다.
 
 - 적용 전: 연결 대상을 확인하고 DB 전체를 백업합니다. 회원 데이터가 없는 DB는 V2를 적용할 수 있습니다.
 - 기존 암호화 데이터가 있는 경우: 서버 쓰기를 중지하고 DB·기존 AES 키·검색 키를 보존합니다. 이전 버전의 복호화 코드와 키로 이메일을 복호화·정규화하는 별도 이관을 먼저 준비하고, 누락·길이·중복을 확인한 뒤 V2를 적용해야 합니다. 이관 도구는 이번 변경에 포함하지 않습니다. 암호문 검사를 삭제하거나 Flyway repair로 우회하지 않습니다.
 - 복구: V2 적용 후에는 이전 애플리케이션만 다시 실행할 수 없습니다. 서버를 중지하고 적용 전 DB 백업과 이전 애플리케이션·키를 함께 복구해야 합니다. 적용 후 신규 가입이 있었다면 복구 전 별도 보존·이관이 필요합니다.
+
+V3는 `users`에 `company_name`, `manager_name`, `business_reg_no`와 별도 `email_verifications` 테이블을 추가합니다. 기존 회원의 이메일·ID·비밀번호를 변경하지 않습니다. 기존 회원에게 없던 회사·담당자 정보를 임의 생성하지 않기 위해 DB 칼럼은 nullable이며, 신규 가입의 필수 조건은 API에서 검사합니다. 기존 회원의 `/me`에는 회사·담당자 값이 null일 수 있어 프론트에서 기본 표시를 준비하고 추후 데이터를 보완해야 합니다.
+
+V3 적용 전 DB 백업을 보관합니다. 이전 V2 애플리케이션으로 일시 복귀해도 추가 칼럼 자체는 유지할 수 있지만, 이전 버전의 가입은 이메일 인증을 요구하지 않으므로 복귀 시 신규 가입을 중단해야 합니다. V3 적용 후 발생한 데이터를 지우거나 Flyway 이력을 임의 변경하지 않습니다. 스키마까지 되돌려야 하면 서버 쓰기를 중지하고 신규 데이터를 보존한 뒤 적용 전 백업으로 복구합니다.
 
 실제 PostgreSQL에 migration을 실행하지 않았습니다. 테스트는 H2 PostgreSQL 모드에서 새 DB 적용, 암호문이 남은 경우 중단, 이관된 회원 정보 보존과 이메일 unique 제약을 확인합니다. 기존 테이블이 Flyway 관리 대상이 아니라면 자동 baseline이나 삭제로 우회하지 말고 별도 이관을 검토합니다.
 

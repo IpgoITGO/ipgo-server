@@ -1,6 +1,7 @@
 package com.ipgo.server.auth;
 
 import java.io.IOException;
+import java.time.Clock;
 import java.util.Map;
 
 import com.ipgo.server.common.ApiError;
@@ -20,6 +21,9 @@ import tools.jackson.databind.json.JsonMapper;
 @Configuration
 public class SecurityConfig {
     @Bean
+    Clock clock() { return Clock.systemUTC(); }
+
+    @Bean
     PasswordEncoder passwordEncoder() {
         String id = "pbkdf2-sha256-600k";
         var encoder = new Pbkdf2PasswordEncoder("", 16, 600_000,
@@ -31,8 +35,9 @@ public class SecurityConfig {
     SecurityFilterChain securityFilterChain(HttpSecurity http, JsonMapper jsonMapper) throws Exception {
         http.authorizeHttpRequests(requests -> requests
                         .dispatcherTypeMatchers(DispatcherType.ERROR).permitAll()
-                        .requestMatchers(HttpMethod.GET, "/api/auth/csrf", "/actuator/health").permitAll()
-                        .requestMatchers(HttpMethod.POST, "/api/auth/signup", "/api/auth/login").permitAll()
+                        .requestMatchers(HttpMethod.GET, "/api/auth/csrf", "/actuator/health", "/api/auth/email-availability").permitAll()
+                        .requestMatchers(HttpMethod.POST, "/api/auth/signup", "/api/auth/login",
+                                "/api/auth/email-verifications", "/api/auth/email-verifications/confirm").permitAll()
                         .anyRequest().authenticated())
                 .requestCache(cache -> cache.disable())
                 .formLogin(login -> login

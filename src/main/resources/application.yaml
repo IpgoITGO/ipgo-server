@@ -10,6 +10,10 @@ spring:
       "[mail.smtp.connectiontimeout]": 5000
       "[mail.smtp.timeout]": 5000
       "[mail.smtp.writetimeout]": 5000
+  jackson:
+    deserialization:
+      # 정수 칸(리드타임·입고 단위 등)에 1.5 같은 소수를 보내면 잘라내지 않고 400으로 거절한다.
+      accept-float-as-int: false
   jpa:
     open-in-view: false
     hibernate:

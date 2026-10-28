@@ -232,10 +232,20 @@ storage/uploads/<세션 사용자 ID>/<보관 UUID>/
 
 | API | 동작 |
 |---|---|
-| `GET /api/products?query=&page=0&size=20` (P1) | 내 상품 목록. `query`는 상품명(대소문자 무시)·바코드 일부로 검색. `size`는 1~100. 응답 `{items, total, page, size}`, 항목은 `productId`, `skuBarcode`, `skuName`, `unitCost`(원 단위 정수), `isActive` |
+| `GET /api/products?query=&page=0&size=20` (P1) | 내 상품 목록. `query`는 상품명(대소문자 무시)·바코드 일부로 검색. `size`는 1~100. 응답 `{items, total, page, size}`, 항목은 `productId`, `skuBarcode`, `skuName`, `unitCost`(원 단위 정수), `isActive`, `settings`(실제 적용되는 입고 조건), `overridden`(기본값 대신 상품별 값을 쓰는 칸 이름) |
 | `PATCH /api/products/{productId}` (P2) | `skuName`(1~200자)·`unitCost`(0 이상)·`isActive` 중 보낸 칸만 수정. CSRF 필요. 다른 회원 상품 `403 FORBIDDEN`, 없는 상품 `404 NOT_FOUND` |
 
-P1의 상품별 입고 조건(`settings`, `overridden`)은 입고 조건 표(`replenishment_settings`)를 만들 때 추가합니다.
+### 입고 조건 (S1~S3)
+
+리드타임·입고 주기·입고 단위를 창고 기본값(`warehouses.default_*`)과 상품별 값(`replenishment_settings`)으로 저장합니다(BE-06). 상품별 값이 비어 있으면 기본값을 씁니다. 모든 값은 1 이상 정수이며, 0 이하·소수·누락은 `400 INVALID_INPUT`과 `details.field`로 응답합니다. 정수 칸에 소수를 보내면 잘라내지 않고 거절합니다.
+
+| API | 동작 |
+|---|---|
+| `GET /api/replenishment-settings` (S1) | 기본값 조회. 셀러가 저장하기 전에는 `confirmed: false`와 제안값(리드타임 5일, 입고 단위 1개, `reviewCycleSource: "ESTIMATED"`)을 돌려줍니다. 저장 뒤에는 `confirmed: true`, `"DEFAULT"` |
+| `PUT /api/replenishment-settings` (S2) | `{leadTimeDays, reviewCycleDays, orderUnitQty, recalculate}`. 세 칸 모두 필수. 응답 `{"saved": true, "runId": null}` |
+| `PUT /api/products/{productId}/replenishment-settings` (S3) | `{leadTimeDays, reviewCycleDays, orderUnitQty, unitCost}`. 입고 조건 세 칸은 보낸 값으로 모두 바꾸며, 비우면 기본값을 따릅니다. `unitCost`(0 이상)는 보낸 경우에만 바꿉니다. 다른 회원 상품 `403`, 없는 상품 `404` |
+
+S2·S3 모두 CSRF가 필요합니다. 수불부로 입고 주기를 추정하는 기능은 정제 연동 전이라 아직 없어서, 제안 단계의 `reviewCycleDays`는 `null`입니다. 저장 뒤 계산을 시작하는 기능(`runId`, `recalculate`)은 계산 엔진 연동 때 붙이며, 그 전까지 `runId`는 `null`입니다.
 
 ## 비밀번호와 개인정보 저장
 
@@ -248,7 +258,7 @@ P1의 상품별 입고 조건(`settings`, `overridden`)은 입고 조건 표(`re
 
 ## Database 변경과 복구
 
-이미 병합된 `V1__create_users.sql`은 Flyway 이력을 보존하기 위해 수정하지 않습니다. 후속 `V2__store_plain_email.sql`에서 이메일을 `VARCHAR(254)`로 변경하고 unique 제약을 추가한 뒤 `email_lookup_hash`를 제거합니다. 새 DB에서는 V1~V5를 순서대로 적용합니다. V4는 `warehouses`·`products`·`inventory_units`, V5는 `upload_files`를 새로 만들며 기존 표는 바꾸지 않습니다. 나머지 테이블은 해당 기능 구현 시 추가합니다. Hibernate는 스키마를 자동 수정하지 않고 검증만 수행합니다.
+이미 병합된 `V1__create_users.sql`은 Flyway 이력을 보존하기 위해 수정하지 않습니다. 후속 `V2__store_plain_email.sql`에서 이메일을 `VARCHAR(254)`로 변경하고 unique 제약을 추가한 뒤 `email_lookup_hash`를 제거합니다. 새 DB에서는 V1~V6을 순서대로 적용합니다. V4는 `warehouses`·`products`·`inventory_units`, V5는 `upload_files`, V6은 `replenishment_settings`를 새로 만들며 기존 표는 바꾸지 않습니다. 나머지 테이블은 해당 기능 구현 시 추가합니다. Hibernate는 스키마를 자동 수정하지 않고 검증만 수행합니다.
 
 V2는 첫 단계에서 기존 `v1:` 암호문을 검사합니다. 남아 있으면 칼럼 변경·삭제 전에 실패하여 서버 시작을 중단합니다. 자동 복호화나 데이터 삭제는 수행하지 않습니다.
 

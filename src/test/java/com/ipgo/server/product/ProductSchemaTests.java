@@ -71,6 +71,23 @@ class ProductSchemaTests {
     }
 
     @Test
+    void replenishmentSettingIsOnePerProductAndPositive() throws Exception {
+        statement.executeUpdate("INSERT INTO replenishment_settings (product_id, lead_time_days, updated_at) "
+                + "VALUES (100, 7, CURRENT_TIMESTAMP)");
+
+        assertThatThrownBy(() -> statement.executeUpdate("INSERT INTO replenishment_settings (product_id, updated_at) "
+                + "VALUES (100, CURRENT_TIMESTAMP)"))
+                .isInstanceOf(SQLException.class).extracting("SQLState").isEqualTo("23505");
+        for (String column : new String[] {"lead_time_days", "review_cycle_days", "order_unit_qty"}) {
+            assertThatThrownBy(() -> statement.executeUpdate("UPDATE replenishment_settings SET " + column + " = 0"))
+                    .isInstanceOf(SQLException.class);
+        }
+        assertThatThrownBy(() -> statement.executeUpdate("INSERT INTO replenishment_settings (product_id, updated_at) "
+                + "VALUES (999, CURRENT_TIMESTAMP)"))
+                .isInstanceOf(SQLException.class);
+    }
+
+    @Test
     void rejectsNegativeCostAndUnknownOwner() {
         assertThatThrownBy(() -> statement.executeUpdate("UPDATE products SET unit_cost = -1 WHERE id = 100"))
                 .isInstanceOf(SQLException.class);

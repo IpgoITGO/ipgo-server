@@ -48,4 +48,15 @@ public class Warehouse {
         this.name = name;
         this.createdAt = Instant.now();
     }
+
+    // 셀러가 S2로 기본값 세 칸을 저장했는지
+    boolean hasConfirmedDefaults() {
+        return defaultLeadTimeDays != null && defaultReviewCycleDays != null && defaultOrderUnitQty != null;
+    }
+
+    void confirmDefaults(int leadTimeDays, int reviewCycleDays, long orderUnitQty) {
+        this.defaultLeadTimeDays = leadTimeDays;
+        this.defaultReviewCycleDays = reviewCycleDays;
+        this.defaultOrderUnitQty = orderUnitQty;
+    }
 }

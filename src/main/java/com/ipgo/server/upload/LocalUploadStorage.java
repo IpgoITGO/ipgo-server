@@ -11,6 +11,7 @@ import java.security.NoSuchAlgorithmException;
 import java.time.Instant;
 import java.util.HexFormat;
 import java.util.Locale;
+import java.util.Map;
 import java.util.UUID;
 
 import org.slf4j.Logger;
@@ -37,12 +38,17 @@ public class LocalUploadStorage {
         if (directory.isBlank() || maxBytes <= 0) throw new IllegalArgumentException("업로드 저장 설정이 올바르지 않습니다.");
     }
 
+    // 디스크나 DB를 건드리기 전에 할 수 있는 검사: 파일명·확장자·빈 파일·크기.
+    void precheck(MultipartFile file) {
+        validateName(file.getOriginalFilename());
+        if (file.isEmpty()) throw invalid("빈 파일은 업로드할 수 없습니다.");
+        if (file.getSize() > maxBytes) throw tooLarge();
+    }
+
     public StoredUpload store(long userId, MultipartFile file) {
         if (userId <= 0) throw new IllegalArgumentException("회원 ID가 올바르지 않습니다.");
         String name = file.getOriginalFilename();
-        validateName(name);
-        if (file.isEmpty()) throw invalid("빈 파일은 업로드할 수 없습니다.");
-        if (file.getSize() > maxBytes) throw tooLarge();
+        precheck(file);
 
         Path pending = null;
         try {
@@ -96,8 +102,10 @@ public class LocalUploadStorage {
             throw invalid("파일명이 올바르지 않습니다.");
         }
         if (!name.toLowerCase(Locale.ROOT).endsWith(".xlsx")) {
-            throw new UploadException(HttpStatus.UNSUPPORTED_MEDIA_TYPE, "INVALID_FILE_TYPE",
-                    ".xlsx 파일만 업로드할 수 있습니다.");
+            // 명세서 6장: XLSX가 아니면 파일명 연·월 오류와 같은 400 UPLOAD_INVALID_FORMAT
+            String reason = ".xlsx 파일만 업로드할 수 있습니다.";
+            throw new UploadException(HttpStatus.BAD_REQUEST, "UPLOAD_INVALID_FORMAT", reason,
+                    Map.of("fileName", name, "reason", reason));
         }
     }
 

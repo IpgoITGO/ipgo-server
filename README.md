@@ -183,9 +183,26 @@ if (!response.ok) throw new Error(result.message ?? '업로드에 실패했습�
 | 파일 형식 | `.xlsx`만 허용. `.xls`, `.xlsm`, CSV, 암호로 잠긴 파일은 지원하지 않음 |
 | 크기 | 파일 10MiB, multipart 전체 요청 11MiB. 초과 시 `413 FILE_TOO_LARGE` |
 | 파일명 | 경로 구분자·제어 문자·콜론 포함, 빈 이름, 255자 초과는 `400 INVALID_INPUT` |
-| 빈 파일·누락·손상 | `400 INVALID_INPUT`. 지원하지 않는 확장자는 `415 INVALID_FILE_TYPE` |
+| 빈 파일·누락·손상 | `400 INVALID_INPUT`. `.xlsx`가 아닌 확장자는 `400 UPLOAD_INVALID_FORMAT`(`details`에 `fileName`·`reason`) |
 | 저장 실패 | `500 UPLOAD_STORAGE_ERROR`. 내부 경로와 파일 내용은 응답하지 않음 |
 | 인증·CSRF | 기존 인증 규칙 적용. 미인증 401, CSRF 누락·오류 403 |
+| 자료 기간 | 파일명의 연·월로 정함 (`2026-09.xlsx`, `수불부_202609.xlsx`, `2026년 9월.xlsx` → 9/1~9/30). 못 읽거나 연·월이 여러 개면 `400 UPLOAD_INVALID_FORMAT`, `details`에 `fileName`·`reason` |
+| 같은 기간 | 이미 올린 기간이면 `409 UPLOAD_DUPLICATE`, `details.existing`에 기존 업로드(ID·이름·기간·업로드 일시). `overwrite=true`로 다시 보내면 새 revision으로 저장 |
+
+### 업로드 기록과 이미 올린 기간
+
+원본을 보관한 뒤 `upload_files`에 파일 1개당 1행(창고·원본 이름·보관 키·해시·기간·revision·상태)을 저장합니다. 같은 기간을 덮어쓰면 `revision_no`를 1 올린 새 행을 만들고 이전 행은 이력으로 남깁니다. 기간 확인부터 기록까지 회원의 창고 행을 잠가서 같은 기간 동시 업로드를 하나씩 처리합니다. 창고 선택은 아직 없으며, 첫 업로드 때 회원의 기본 창고를 자동으로 만듭니다. 새 기록의 상태는 `PROCESSING`이며 Python 정제 연동 전까지 바뀌지 않습니다. `FAILED` 기록은 같은 기간 판정에서 제외합니다.
+
+`GET /api/uploads/periods`(U3)는 기간마다 가장 마지막 revision 1개와 가장 최근 업로드 ID를 돌려줍니다.
+
+```json
+{"items": [{"period": "2026-09", "uploadId": 12, "fileName": "2026-09.xlsx", "periodStart": "2026-09-01",
+  "periodEnd": "2026-09-30", "uploadedAt": "2026-10-28T10:00:00+09:00", "status": "PROCESSING"}], "latestUploadId": 12}
+```
+
+업로드 일시(`uploadedAt`)는 한국 시간(+09:00)으로 돌려줍니다. DB에는 시간대 포함 시각으로 저장합니다.
+
+명세서 U1의 여러 파일(`files`)·`202 PROCESSING`·숫자 `uploadId` 응답은 여러 파일을 한 업로드로 묶는 방식이 정해진 뒤 바꿉니다. 지금 U1 응답은 위의 `201 STORED` 보관 영수증 그대로입니다. DB 기록 저장이 실패하면 이미 보관한 원본 폴더는 남을 수 있습니다.
 
 확장자나 클라이언트의 Content-Type만 신뢰하지 않고 ZIP의 CRC, 필수 OOXML 구성과 주요 XML을 확인합니다. 압축 해제 총량 100MiB, 항목 수 2,000개, 검사 대상 주요 XML 하나당 1MiB로 제한하며 매크로·DTD·외부 엔티티를 거절합니다. 검사 중 ZIP 내용을 파일로 풀지 않습니다. 이 검사는 기본 컨테이너 검사이며 모든 셀·관계의 유효성 검사나 악성코드 검사를 대신하지 않습니다. 수불부 필수 열·기간·재고 검산은 Python 연동 단계에서 수행합니다.
 
@@ -201,7 +218,7 @@ storage/uploads/<세션 사용자 ID>/<uploadId>/
 
 저장 폴더는 애플리케이션 계정만 쓰도록 관리하고 static 리소스·공개 웹 디렉터리 밖에 둡니다. 사용자 하위 디렉터리가 심볼릭 링크이면 저장을 거절합니다. `.gitignore`에 기본 `storage/`를 제외했으며, 사용자 지정 경로도 Git에 포함하지 않아야 합니다. 재시작으로 원본은 삭제되지 않습니다. 컨테이너 사용 시 영속 볼륨과 백업이 필요합니다.
 
-이번 단계는 단일 서버 로컬 보관만 지원합니다. 누적 용량 제한·자동 정리·재시도 중복 방지·다운로드·삭제·목록 조회·DB 업로드 이력은 구현하지 않았습니다. 외부 공개 전에 요청 제한과 디스크 용량 관리를 마련해야 합니다. 롤백 시 파일을 지우지 말고 저장 폴더 전체를 보존합니다. 업로드 기능의 DB migration은 없습니다.
+이번 단계는 단일 서버 로컬 보관만 지원합니다. 누적 용량 제한·자동 정리·재시도 중복 방지·다운로드·삭제는 구현하지 않았습니다. 외부 공개 전에 요청 제한과 디스크 용량 관리를 마련해야 합니다. 롤백 시 파일을 지우지 말고 저장 폴더 전체를 보존합니다. 업로드 기록 표는 `V5__create_upload_files.sql`에서 만듭니다.
 
 검증은 임시 폴더의 원본·메타데이터 보존, 동일 이름 업로드, 잘못된 파일·압축 폭탄·경로 입력, 저장 실패 정리, 세션 사용자 연결, 실제 HTTP 로그인·CSRF·업로드·용량 제한을 포함합니다. 프론트 화면과 실제 PostgreSQL 통합 검증은 별도입니다.
 
@@ -232,7 +249,7 @@ P1의 상품별 입고 조건(`settings`, `overridden`)은 입고 조건 표(`re
 
 ## Database 변경과 복구
 
-이미 병합된 `V1__create_users.sql`은 Flyway 이력을 보존하기 위해 수정하지 않습니다. 후속 `V2__store_plain_email.sql`에서 이메일을 `VARCHAR(254)`로 변경하고 unique 제약을 추가한 뒤 `email_lookup_hash`를 제거합니다. 새 DB에서는 V1~V4를 순서대로 적용합니다. V4는 `warehouses`·`products`·`inventory_units`를 새로 만들며 기존 표는 바꾸지 않습니다. 나머지 테이블은 해당 기능 구현 시 추가합니다. Hibernate는 스키마를 자동 수정하지 않고 검증만 수행합니다.
+이미 병합된 `V1__create_users.sql`은 Flyway 이력을 보존하기 위해 수정하지 않습니다. 후속 `V2__store_plain_email.sql`에서 이메일을 `VARCHAR(254)`로 변경하고 unique 제약을 추가한 뒤 `email_lookup_hash`를 제거합니다. 새 DB에서는 V1~V5를 순서대로 적용합니다. V4는 `warehouses`·`products`·`inventory_units`, V5는 `upload_files`를 새로 만들며 기존 표는 바꾸지 않습니다. 나머지 테이블은 해당 기능 구현 시 추가합니다. Hibernate는 스키마를 자동 수정하지 않고 검증만 수행합니다.
 
 V2는 첫 단계에서 기존 `v1:` 암호문을 검사합니다. 남아 있으면 칼럼 변경·삭제 전에 실패하여 서버 시작을 중단합니다. 자동 복호화나 데이터 삭제는 수행하지 않습니다.
 

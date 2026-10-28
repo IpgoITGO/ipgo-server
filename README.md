@@ -165,16 +165,15 @@ if (!response.ok) throw new Error(result.message ?? '업로드에 실패했습�
 // FormData의 Content-Type은 브라우저가 boundary와 함께 설정하도록 둡니다.
 ```
 
-성공 시 `201 Created`와 다음 형식의 JSON을 반환합니다. `STORED`는 원본 보관 완료이며 수불부 정제·검증 완료를 뜻하지 않습니다.
+한 요청에 파일 1개(`file`)만 보냅니다. 여러 파일은 화면에서 하나씩 따로 보냅니다. 성공 시 `202 Accepted`와 다음 형식의 JSON을 반환합니다. `PROCESSING`은 원본 보관과 업로드 기록이 끝났고 정제·검증은 아직이라는 뜻입니다. `uploadId`는 업로드 기록(`upload_files`)의 숫자 ID이며 U2 결과 조회에 씁니다.
 
 ```json
 {
-  "uploadId": "9da8b5dc-e59e-4e08-bd23-f11501ab9c09",
-  "originalName": "수불부.xlsx",
-  "size": 5120,
-  "sha256": "<원본 파일의 SHA-256 64자리 hex>",
-  "storedAt": "2026-10-27T05:00:00Z",
-  "status": "STORED"
+  "uploadId": 12,
+  "status": "PROCESSING",
+  "originalName": "2026-09.xlsx",
+  "periodStart": "2026-09-01",
+  "periodEnd": "2026-09-30"
 }
 ```
 
@@ -202,16 +201,16 @@ if (!response.ok) throw new Error(result.message ?? '업로드에 실패했습�
 
 업로드 일시(`uploadedAt`)는 한국 시간(+09:00)으로 돌려줍니다. DB에는 시간대 포함 시각으로 저장합니다.
 
-명세서 U1의 여러 파일(`files`)·`202 PROCESSING`·숫자 `uploadId` 응답은 여러 파일을 한 업로드로 묶는 방식이 정해진 뒤 바꿉니다. 지금 U1 응답은 위의 `201 STORED` 보관 영수증 그대로입니다. DB 기록 저장이 실패하면 이미 보관한 원본 폴더는 남을 수 있습니다.
+DB 기록 저장이 실패하면 이미 보관한 원본 폴더는 남을 수 있습니다.
 
 확장자나 클라이언트의 Content-Type만 신뢰하지 않고 ZIP의 CRC, 필수 OOXML 구성과 주요 XML을 확인합니다. 압축 해제 총량 100MiB, 항목 수 2,000개, 검사 대상 주요 XML 하나당 1MiB로 제한하며 매크로·DTD·외부 엔티티를 거절합니다. 검사 중 ZIP 내용을 파일로 풀지 않습니다. 이 검사는 기본 컨테이너 검사이며 모든 셀·관계의 유효성 검사나 악성코드 검사를 대신하지 않습니다. 수불부 필수 열·기간·재고 검산은 Python 연동 단계에서 수행합니다.
 
 ### 로컬 보관 구조
 
 ```text
-storage/uploads/<세션 사용자 ID>/<uploadId>/
+storage/uploads/<세션 사용자 ID>/<보관 UUID>/
   original.xlsx   # 업로드한 바이트 그대로 보관
-  metadata.json   # userId 및 성공 응답의 보관 정보
+  metadata.json   # userId 및 보관 정보(크기·SHA-256·보관 시각)
 ```
 
 같은 이름을 다시 업로드해도 새 ID를 사용하므로 기존 원본을 덮어쓰지 않습니다. 파일 해시는 보관 정보로만 기록하고 중복 파일을 자동 병합하지 않습니다. 원본과 메타데이터를 임시 디렉터리에 모두 쓴 뒤 같은 파일시스템 내 atomic move로 완료 위치에 옮깁니다. 일반적인 실패는 임시 파일을 정리하며, 강제 종료 때 남은 `.pending-*`는 완료 파일로 취급하지 않습니다. 강제 종료 후에는 서버를 중지한 상태에서 해당 디렉터리를 확인하고 정리해야 합니다.

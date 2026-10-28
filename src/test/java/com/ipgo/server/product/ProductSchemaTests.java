@@ -10,6 +10,7 @@ import org.flywaydb.core.Flyway;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.springframework.jdbc.datasource.SingleConnectionDataSource;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -23,7 +24,8 @@ class ProductSchemaTests {
         String url = "jdbc:h2:mem:" + UUID.randomUUID() + ";MODE=PostgreSQL";
         connection = DriverManager.getConnection(url, "sa", "");
         statement = connection.createStatement();
-        Flyway.configure().dataSource(url, "sa", "").load().migrate();
+        // H2는 migration을 실행한 연결이 닫히면 IN 목록 CHECK 제약을 검사하지 못하므로 같은 연결로 migration한다.
+        Flyway.configure().dataSource(new SingleConnectionDataSource(connection, true)).load().migrate();
         statement.executeUpdate("INSERT INTO users (id, email, password_hash) VALUES (1, 'a@example.test', 'hash')");
         statement.executeUpdate("INSERT INTO users (id, email, password_hash) VALUES (2, 'b@example.test', 'hash')");
         statement.executeUpdate("INSERT INTO warehouses (id, user_id, name) VALUES (10, 1, '기본 창고')");
@@ -84,6 +86,20 @@ class ProductSchemaTests {
         }
         assertThatThrownBy(() -> statement.executeUpdate("INSERT INTO replenishment_settings (product_id, updated_at) "
                 + "VALUES (999, CURRENT_TIMESTAMP)"))
+                .isInstanceOf(SQLException.class);
+    }
+
+    @Test
+    void plannedReceiptNeedsPositiveQuantityAndKnownStatus() throws Exception {
+        statement.executeUpdate("INSERT INTO planned_receipts (product_id, warehouse_id, quantity, status, created_at, "
+                + "updated_at) VALUES (100, 10, 60, 'NO_DATE', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)");
+
+        assertThatThrownBy(() -> statement.executeUpdate("UPDATE planned_receipts SET quantity = 0"))
+                .isInstanceOf(SQLException.class);
+        assertThatThrownBy(() -> statement.executeUpdate("UPDATE planned_receipts SET status = 'LOST'"))
+                .isInstanceOf(SQLException.class);
+        assertThatThrownBy(() -> statement.executeUpdate("INSERT INTO planned_receipts (product_id, warehouse_id, "
+                + "quantity, status, created_at, updated_at) VALUES (999, 10, 1, 'PENDING', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"))
                 .isInstanceOf(SQLException.class);
     }
 

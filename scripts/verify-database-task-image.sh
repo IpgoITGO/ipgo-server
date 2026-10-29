@@ -29,7 +29,8 @@ docker run -d --name "${database_container}" --network "${network_name}" \
   postgres:16-alpine >/dev/null
 
 for attempt in $(seq 1 30); do
-  if docker exec "${database_container}" pg_isready -U postgres -d ipgo >/dev/null 2>&1; then
+  if docker exec "${database_container}" \
+      psql -v ON_ERROR_STOP=1 -U postgres -d ipgo -c "SELECT 1" >/dev/null 2>&1; then
     break
   fi
   if [[ "${attempt}" -eq 30 ]]; then

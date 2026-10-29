@@ -18,14 +18,34 @@ Ipgo 서비스의 API와 서버 동작을 관리하는 저장소입니다.
 ## 프로젝트 구조
 
 ```text
-src/main/java/com/ipgo/server/ProjectApplication.java  # 서버 진입점
-src/main/java/com/ipgo/server/auth/                   # 회원 인증
-src/main/java/com/ipgo/server/upload/                 # 엑셀 업로드·로컬 원본 보관
-src/main/java/com/ipgo/server/common/                 # API 오류 응답
-src/main/resources/application.yaml                  # 기본 설정
-src/main/resources/db/migration/                     # PostgreSQL 스키마
-src/test/java/com/ipgo/server/                       # 실행·인증·migration 테스트
+src/main/java/com/ipgo/server/
+├── ProjectApplication.java  # 서버 진입점·컴포넌트 탐색 기준
+├── controller/             # HTTP 요청·응답
+├── service/                # 업무 처리·트랜잭션
+├── repository/             # JPA·DB 조회
+├── entity/                 # JPA Entity·업로드 기간 값 객체
+├── dto/                    # 내부 데이터 전달
+│   ├── request/            # API 요청·입력 검증
+│   └── response/           # API 응답·공통 오류 본문
+├── config/                 # Spring Security 등 설정
+├── security/               # JWT 발급·검증
+├── exception/              # 기능별 예외·공통 예외 처리
+├── infrastructure/
+│   ├── mail/               # 인증 메일 발송
+│   └── storage/            # 로컬 파일 보관·XLSX 검증
+└── util/                   # 공통 이메일 정규화
+
+src/main/resources/application.yaml  # 기본 설정
+src/main/resources/db/migration/     # PostgreSQL 스키마
+src/test/java/com/ipgo/server/
+├── integration/            # 인증·권한·상품·업로드·migration 통합 테스트
+├── config/                 # 비밀번호 인코더·쿠키 설정 테스트
+├── entity/                 # 업로드 기간 값 객체 테스트
+├── infrastructure/         # 메일·파일 보관 테스트
+└── support/                # 공통 테스트 데이터·메일 설정
 ```
+
+최상위 패키지는 기능이 아닌 역할을 기준으로 나눕니다. 회원·상품·업로드 Controller는 모두 `controller`에, Service는 `service`에 둡니다. 요청은 Controller → Service → Repository 순서로 처리하며, 외부 메일·파일 접근은 `infrastructure`에서 담당합니다. API DTO는 Controller 내부에 선언하지 않고 `dto/request`·`dto/response`에 둡니다. 패키지 재배치로 API 경로·JSON 형식·인증 정책·database 스키마는 변경하지 않습니다.
 
 ## 빌드와 실행
 

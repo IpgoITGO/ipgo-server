@@ -16,8 +16,7 @@ import org.springframework.test.web.servlet.ResultActions;
 import tools.jackson.databind.json.JsonMapper;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.csrf;
-import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.user;
+import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.jwt;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
@@ -61,7 +60,7 @@ class PlannedReceiptIntegrationTests extends DatabaseIntegrationTest {
         create(userId, "{\"productId\": " + gum + ", \"quantity\": 30, \"expectedOn\": \"2026-11-05\"}")
                 .andExpect(status().isCreated());
 
-        mvc.perform(get(RECEIPTS).with(user(Long.toString(userId))))
+        mvc.perform(get(RECEIPTS).with(jwt().jwt(claims -> claims.subject(Long.toString(userId)))))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("total").value(3))
                 .andExpect(jsonPath("items[0].expectedOn").value("2026-11-05"))
@@ -78,7 +77,7 @@ class PlannedReceiptIntegrationTests extends DatabaseIntegrationTest {
     @Test
     void listIsEmptyBeforeFirstReceiptAndRequiresLogin() throws Exception {
         long userId = newUser();
-        mvc.perform(get(RECEIPTS).with(user(Long.toString(userId))))
+        mvc.perform(get(RECEIPTS).with(jwt().jwt(claims -> claims.subject(Long.toString(userId)))))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("total").value(0))
                 .andExpect(jsonPath("items.length()").value(0));
@@ -108,14 +107,14 @@ class PlannedReceiptIntegrationTests extends DatabaseIntegrationTest {
         long product = registerProduct(userId, "8800272420016", "케어트릿 120g");
         long receiptId = idOf(create(userId, "{\"productId\": " + product + ", \"quantity\": 60, \"expectedOn\": \"2026-11-20\"}"));
 
-        mvc.perform(delete(RECEIPTS + "/" + receiptId).with(user(Long.toString(userId))).with(csrf()))
+        mvc.perform(delete(RECEIPTS + "/" + receiptId).with(jwt().jwt(claims -> claims.subject(Long.toString(userId)))))
                 .andExpect(status().isNoContent());
 
-        mvc.perform(get(RECEIPTS).with(user(Long.toString(userId)))).andExpect(jsonPath("total").value(0));
+        mvc.perform(get(RECEIPTS).with(jwt().jwt(claims -> claims.subject(Long.toString(userId))))).andExpect(jsonPath("total").value(0));
         assertThat(jdbc.queryForObject("SELECT status FROM planned_receipts WHERE id = ?", String.class, receiptId))
                 .isEqualTo("CANCELLED");
         update(userId, receiptId, "{\"quantity\": 1}").andExpect(status().isNotFound());
-        mvc.perform(delete(RECEIPTS + "/" + receiptId).with(user(Long.toString(userId))).with(csrf()))
+        mvc.perform(delete(RECEIPTS + "/" + receiptId).with(jwt().jwt(claims -> claims.subject(Long.toString(userId)))))
                 .andExpect(status().isNotFound());
     }
 
@@ -132,9 +131,9 @@ class PlannedReceiptIntegrationTests extends DatabaseIntegrationTest {
                 .andExpect(status().isBadRequest()).andExpect(jsonPath("code").value("INVALID_INPUT"));
         create(userId, "{\"productId\": " + product + ", \"quantity\": 10, \"expectedOn\": \"2026-13-01\"}")
                 .andExpect(status().isBadRequest()).andExpect(jsonPath("code").value("INVALID_INPUT"));
-        mvc.perform(post(RECEIPTS).with(user(Long.toString(userId))).contentType(MediaType.APPLICATION_JSON)
+        mvc.perform(post(RECEIPTS).contentType(MediaType.APPLICATION_JSON)
                         .content("{\"productId\": " + product + ", \"quantity\": 10}"))
-                .andExpect(status().isForbidden());
+                .andExpect(status().isUnauthorized());
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM planned_receipts", Integer.class)).isZero();
     }
 
@@ -150,9 +149,9 @@ class PlannedReceiptIntegrationTests extends DatabaseIntegrationTest {
         create(owner, "{\"productId\": " + Long.MAX_VALUE + ", \"quantity\": 10}")
                 .andExpect(status().isNotFound());
         update(other, receiptId, "{\"quantity\": 1}").andExpect(status().isForbidden());
-        mvc.perform(delete(RECEIPTS + "/" + receiptId).with(user(Long.toString(other))).with(csrf()))
+        mvc.perform(delete(RECEIPTS + "/" + receiptId).with(jwt().jwt(claims -> claims.subject(Long.toString(other)))))
                 .andExpect(status().isForbidden());
-        mvc.perform(get(RECEIPTS).with(user(Long.toString(other)))).andExpect(jsonPath("total").value(0));
+        mvc.perform(get(RECEIPTS).with(jwt().jwt(claims -> claims.subject(Long.toString(other))))).andExpect(jsonPath("total").value(0));
         update(owner, Long.MAX_VALUE, "{\"quantity\": 1}").andExpect(status().isNotFound());
 
         assertThat(jdbc.queryForObject("SELECT quantity FROM planned_receipts WHERE id = ?", Long.class, receiptId))
@@ -160,12 +159,12 @@ class PlannedReceiptIntegrationTests extends DatabaseIntegrationTest {
     }
 
     private ResultActions create(long userId, String body) throws Exception {
-        return mvc.perform(post(RECEIPTS).with(user(Long.toString(userId))).with(csrf())
+        return mvc.perform(post(RECEIPTS).with(jwt().jwt(claims -> claims.subject(Long.toString(userId))))
                 .contentType(MediaType.APPLICATION_JSON).content(body));
     }
 
     private ResultActions update(long userId, long receiptId, String body) throws Exception {
-        return mvc.perform(patch(RECEIPTS + "/" + receiptId).with(user(Long.toString(userId))).with(csrf())
+        return mvc.perform(patch(RECEIPTS + "/" + receiptId).with(jwt().jwt(claims -> claims.subject(Long.toString(userId))))
                 .contentType(MediaType.APPLICATION_JSON).content(body));
     }
 

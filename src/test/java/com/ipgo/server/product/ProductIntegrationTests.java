@@ -16,8 +16,7 @@ import org.springframework.test.web.servlet.ResultActions;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.csrf;
-import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.user;
+import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.jwt;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -117,7 +116,7 @@ class ProductIntegrationTests extends DatabaseIntegrationTest {
         registration.register(other, warehouses.lockDefault(other).getId(),
                 List.of(row("8800000000009", "다른 회원 상품", "MIX-9", SEP_1)));
 
-        mvc.perform(get("/api/products").with(user(Long.toString(userId))))
+        mvc.perform(get("/api/products").with(jwt().jwt(claims -> claims.subject(Long.toString(userId)))))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("total").value(3))
                 .andExpect(jsonPath("page").value(0))
@@ -126,12 +125,12 @@ class ProductIntegrationTests extends DatabaseIntegrationTest {
                 .andExpect(jsonPath("items[0].productId").isNumber())
                 .andExpect(jsonPath("items[0].isActive").value(true))
                 .andExpect(jsonPath("items[0].unitCost").doesNotExist());
-        mvc.perform(get("/api/products").param("query", "care").with(user(Long.toString(userId))))
+        mvc.perform(get("/api/products").param("query", "care").with(jwt().jwt(claims -> claims.subject(Long.toString(userId)))))
                 .andExpect(jsonPath("total").value(1))
                 .andExpect(jsonPath("items[0].skuName").value("Care 트릿 120g"));
-        mvc.perform(get("/api/products").param("query", "0000003").with(user(Long.toString(userId))))
+        mvc.perform(get("/api/products").param("query", "0000003").with(jwt().jwt(claims -> claims.subject(Long.toString(userId)))))
                 .andExpect(jsonPath("items[0].skuName").value("케어 샴푸"));
-        mvc.perform(get("/api/products").param("page", "1").param("size", "2").with(user(Long.toString(userId))))
+        mvc.perform(get("/api/products").param("page", "1").param("size", "2").with(jwt().jwt(claims -> claims.subject(Long.toString(userId)))))
                 .andExpect(jsonPath("total").value(3))
                 .andExpect(jsonPath("items.length()").value(1));
     }
@@ -141,7 +140,7 @@ class ProductIntegrationTests extends DatabaseIntegrationTest {
         long userId = newUser();
         for (String[] paging : new String[][] {{"-1", "20"}, {"0", "0"}, {"0", "101"}, {"abc", "20"}}) {
             mvc.perform(get("/api/products").param("page", paging[0]).param("size", paging[1])
-                            .with(user(Long.toString(userId))))
+                            .with(jwt().jwt(claims -> claims.subject(Long.toString(userId)))))
                     .andExpect(status().isBadRequest()).andExpect(jsonPath("code").value("INVALID_INPUT"));
         }
         mvc.perform(get("/api/products")).andExpect(status().isUnauthorized());
@@ -183,14 +182,14 @@ class ProductIntegrationTests extends DatabaseIntegrationTest {
                 .andExpect(status().isForbidden()).andExpect(jsonPath("code").value("FORBIDDEN"));
         updateProduct(owner, Long.MAX_VALUE, "{\"skuName\": \"없음\"}")
                 .andExpect(status().isNotFound()).andExpect(jsonPath("code").value("NOT_FOUND"));
-        mvc.perform(patch("/api/products/" + productId).with(user(Long.toString(owner)))
-                        .contentType(MediaType.APPLICATION_JSON).content("{\"skuName\": \"CSRF 없음\"}"))
-                .andExpect(status().isForbidden());
+        mvc.perform(patch("/api/products/" + productId)
+                        .contentType(MediaType.APPLICATION_JSON).content("{\"skuName\": \"인증 없음\"}"))
+                .andExpect(status().isUnauthorized());
         assertThat(product(owner, "8800000000001").getSkuName()).isEqualTo("케어트릿 120g");
     }
 
     private ResultActions updateProduct(long userId, long productId, String body) throws Exception {
-        return mvc.perform(patch("/api/products/" + productId).with(user(Long.toString(userId))).with(csrf())
+        return mvc.perform(patch("/api/products/" + productId).with(jwt().jwt(claims -> claims.subject(Long.toString(userId))))
                 .contentType(MediaType.APPLICATION_JSON).content(body));
     }
 

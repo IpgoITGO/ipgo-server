@@ -94,7 +94,7 @@ class AuthIntegrationTests extends DatabaseIntegrationTest {
     }
 
     @ParameterizedTest
-    @ValueSource(strings = {"Aa1!aaaa", "Aa1!aaaaa", "Aa1!aaaaaa", "Aa1\"\\[]!"})
+    @ValueSource(strings = {"Aa1!aaaa", "Aa1!aaaaa", "Aa1!aaaaaa", "Aa1!aaaaaaa", "Aa1!aaaaaaaaaaaa", "Aa1\"\\[]!"})
     void acceptsPasswordsWithinPolicyAndAllowsLogin(String password) throws Exception {
         signup(EMAIL, password, csrf()).andExpect(status().isCreated());
         login(EMAIL, password, csrf()).andExpect(status().isOk());
@@ -102,7 +102,7 @@ class AuthIntegrationTests extends DatabaseIntegrationTest {
 
     @ParameterizedTest
     @NullAndEmptySource
-    @ValueSource(strings = {"Aa1!aaa", "Aa1!aaaaaaa", "aa1!aaaa", "AA1!AAAA", "Aa!!aaaa", "Aa12aaaa",
+    @ValueSource(strings = {"Aa1!aaa", "Aa1!aaaaaaaaaaaaa", "aa1!aaaa", "AA1!AAAA", "Aa!!aaaa", "Aa12aaaa",
             " Aa1!aaa", "Aa1!aaa ", "Aa1! aaa", "Aa1!aaa\n", "Aa1!aa\ta", "Aa1!가aaa", "Aa1!😀aa",
             "Aa!aaaa１"})
     void rejectsInvalidPasswordsWithoutLeakingThemOrConsumingVerificationToken(String password) throws Exception {
@@ -111,7 +111,7 @@ class AuthIntegrationTests extends DatabaseIntegrationTest {
                 .andExpect(jsonPath("code").value("INVALID_INPUT"))
                 .andExpect(jsonPath("details.field").value("password"))
                 .andExpect(jsonPath("message").value(
-                        "비밀번호는 8~10자로 영문 대문자, 소문자, 숫자, 특수기호를 각각 1개 이상 포함해야 하며, 공백 없이 ASCII 문자만 사용할 수 있습니다."))
+                        "비밀번호는 8~16자로 영문 대문자, 소문자, 숫자, 특수기호를 각각 1개 이상 포함해야 하며, 공백 없이 ASCII 문자만 사용할 수 있습니다."))
                 .andReturn();
         if (password != null && !password.isEmpty()) {
             assertThat(result.getResponse().getContentAsString()).doesNotContain(password);

@@ -65,6 +65,9 @@ JDK 21을 설치하고 `JAVA_HOME`을 해당 JDK 경로로 설정합니다. Wind
 
 # 서버 실행: PostgreSQL과 아래 환경변수 준비 후 실행
 ./gradlew bootRun
+
+# AWS one-off DB 작업 이미지 검증(Docker 필요, 임시 DB와 이미지는 자동 정리)
+./scripts/verify-database-task-image.sh
 ```
 
 PostgreSQL을 준비한 뒤 실행 환경에 아래 변수를 설정합니다. 실제 연결 정보와 비밀값은 저장소에 기록하지 않습니다.
@@ -80,6 +83,18 @@ PostgreSQL을 준비한 뒤 실행 환경에 아래 변수를 설정합니다. �
 | `IPGO_UPLOAD_DIR` | 원본·보관 정보 저장 폴더. 기본값은 실행 디렉터리의 `./storage/uploads` |
 
 현재 `.env` 파일을 자동으로 읽는 별도 설정은 없습니다. 터미널 또는 IDE의 실행 환경변수로 전달해야 합니다.
+
+### AWS DB one-off 작업 이미지
+
+`Dockerfile.database`는 애플리케이션 이미지와 분리된 DB 관리 전용 이미지입니다. `bootstrap`은
+최초 PostgreSQL 역할 생성과 비밀번호 설정, `migrate`는 Flyway V1~V13 적용과 이력 확인,
+`verify`는 Spring DML·AI 조회 권한과 금지 권한을 점검합니다. AWS에서는 각 명령을 별도 ECS
+one-off task로 실행하며 상시 서비스에서는 이 이미지를 사용하지 않습니다.
+
+비밀번호는 Secrets Manager에서 환경변수로만 주입하고 Docker image, Git, task command와 로그에
+기록하지 않습니다. RDS bootstrap administrator는 `bootstrap` task에만 전달합니다. `migrate`와
+`verify` task에는 각각 필요한 최소 역할만 전달합니다. 실제 RDS 실행은 migration 직전 snapshot이
+`available`인 것을 확인하고 Server·AI service가 0인 상태에서만 진행합니다.
 
 JWT 키는 환경변수 또는 비밀 관리 도구에서 주입하며 Git·로그에 기록하지 않습니다. 키가 없거나 형식·길이가 잘못되면 서버 시작을 중단합니다. 키를 변경하면 기존 액세스 토큰은 검증에 실패합니다. 테스트에서는 임시 키를 자동 생성하므로 PostgreSQL·서명 키 설정 없이 `./gradlew test`를 실행할 수 있습니다. H2는 테스트에서만 사용합니다.
 

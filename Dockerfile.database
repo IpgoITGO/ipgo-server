@@ -1,0 +1,18 @@
+FROM flyway/flyway:11-alpine@sha256:df06535dfd6559ae5f0628c4761013dfa4ea6a30cf6e34294931d8091f55a18f
+
+USER root
+RUN apk add --no-cache postgresql-client \
+    && addgroup -S -g 10001 ipgo \
+    && adduser -S -D -H -u 10001 -G ipgo ipgo
+
+WORKDIR /opt/ipgo
+COPY database/bootstrap /opt/ipgo/database/bootstrap
+COPY src/main/resources/db/migration /flyway/sql
+COPY scripts/database-task.sh /opt/ipgo/bin/database-task
+
+RUN chmod 0555 /opt/ipgo/bin/database-task \
+    && chmod -R a-w /opt/ipgo/database /flyway/sql
+
+USER 10001:10001
+ENTRYPOINT ["/opt/ipgo/bin/database-task"]
+CMD ["migrate"]

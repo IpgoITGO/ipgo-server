@@ -5,6 +5,10 @@ on:
     branches: [dev]
     paths:
       - "database/**"
+      - "Dockerfile.database"
+      - ".dockerignore"
+      - "scripts/database-task.sh"
+      - "scripts/verify-database-task-image.sh"
       - "scripts/verify-postgres-migrations.sh"
       - "src/main/resources/db/migration/**"
       - "src/test/**"
@@ -32,3 +36,5 @@ jobs:
         run: ./gradlew test
       - name: Verify PostgreSQL roles and view
         run: ./scripts/verify-postgres-migrations.sh
+      - name: Verify database task image
+        run: ./scripts/verify-database-task-image.sh

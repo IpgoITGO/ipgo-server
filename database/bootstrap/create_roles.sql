@@ -1,0 +1,25 @@
+\set ON_ERROR_STOP on
+
+-- 초기 database에 한 번만 administrator로 실행한다.
+-- 비밀번호는 이 파일에서 설정하지 않는다. 역할 생성 뒤 승인된 secret 주입 절차로 설정한다.
+SELECT 'CREATE ROLE ipgo_migrator LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION'
+WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'ipgo_migrator')
+\gexec
+
+SELECT 'CREATE ROLE ipgo_server LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION'
+WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'ipgo_server')
+\gexec
+
+SELECT 'CREATE ROLE ipgo_ai_reader LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION'
+WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'ipgo_ai_reader')
+\gexec
+
+ALTER ROLE ipgo_migrator LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION;
+ALTER ROLE ipgo_server LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION;
+ALTER ROLE ipgo_ai_reader LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION;
+ALTER ROLE ipgo_ai_reader SET default_transaction_read_only = on;
+
+SELECT format('ALTER DATABASE %I OWNER TO ipgo_migrator', current_database())
+\gexec
+ALTER SCHEMA public OWNER TO ipgo_migrator;
+REVOKE CREATE ON SCHEMA public FROM PUBLIC;

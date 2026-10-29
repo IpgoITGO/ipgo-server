@@ -37,6 +37,8 @@ src/main/java/com/ipgo/server/
 
 src/main/resources/application.yaml  # 기본 설정
 src/main/resources/db/migration/     # PostgreSQL 스키마
+database/bootstrap/                  # 초기 PostgreSQL 역할 구성(비밀번호 미포함)
+scripts/verify-postgres-migrations.sh # 실제 PostgreSQL schema·권한 검증
 src/test/java/com/ipgo/server/
 ├── integration/            # 인증·권한·상품·업로드·migration 통합 테스트
 ├── config/                 # 비밀번호 인코더·쿠키 설정 테스트
@@ -58,6 +60,9 @@ JDK 21을 설치하고 `JAVA_HOME`을 해당 JDK 경로로 설정합니다. Wind
 # 임시 DB에서 인증·비밀번호 해시·migration 테스트
 ./gradlew test
 
+# 임시 PostgreSQL 16에서 전체 migration·role·view 검증(Docker 필요)
+./scripts/verify-postgres-migrations.sh
+
 # 서버 실행: PostgreSQL과 아래 환경변수 준비 후 실행
 ./gradlew bootRun
 ```
@@ -69,6 +74,7 @@ PostgreSQL을 준비한 뒤 실행 환경에 아래 변수를 설정합니다. �
 | `SPRING_DATASOURCE_URL` | PostgreSQL JDBC URL (`jdbc:postgresql://<host>:<port>/<database>`) |
 | `SPRING_DATASOURCE_USERNAME` | DB 사용자 이름 |
 | `SPRING_DATASOURCE_PASSWORD` | DB 비밀번호 |
+| `SPRING_FLYWAY_ENABLED` | runtime과 migration 자격 증명을 분리할 때 runtime은 `false` |
 | `IPGO_JWT_SECRET` | 32바이트 이상의 무작위 키를 Base64로 인코딩한 JWT 서명 키. 모든 서버에서 동일한 키 사용 |
 | `IPGO_AUTH_COOKIE_SECURE` | 기본 `true`. 로컬 HTTP 개발에서만 `false`, 배포에서는 HTTPS와 `true` 사용 |
 | `IPGO_UPLOAD_DIR` | 원본·보관 정보 저장 폴더. 기본값은 실행 디렉터리의 `./storage/uploads` |
@@ -360,7 +366,9 @@ R2·R3은 Bearer JWT가 필요하고, 다른 회원의 상품·발주는 `403`, 
 
 ## Database 변경과 복구
 
-이미 병합된 `V1__create_users.sql`은 Flyway 이력을 보존하기 위해 수정하지 않습니다. 후속 `V2__store_plain_email.sql`에서 이메일을 `VARCHAR(254)`로 변경하고 unique 제약을 추가한 뒤 `email_lookup_hash`를 제거합니다. 새 DB에서는 V1~V9를 순서대로 적용합니다. V4는 `warehouses`·`products`·`inventory_units`, V5는 `upload_files`, V6은 `replenishment_settings`, V7은 `planned_receipts`, V8은 `auth_sessions`·`refresh_tokens`, V9는 `calculation_runs`·`calculation_results`를 새로 만들며 기존 표는 바꾸지 않습니다. 나머지 테이블은 해당 기능 구현 시 추가합니다. Hibernate는 스키마를 자동 수정하지 않고 검증만 수행합니다.
+이미 병합된 migration은 Flyway 이력을 보존하기 위해 수정하지 않습니다. 새 DB에서는 V1~V13을 순서대로 적용합니다. V4는 `warehouses`·`products`·`inventory_units`, V5는 `upload_files`, V6은 `replenishment_settings`, V7은 `planned_receipts`, V8은 `auth_sessions`·`refresh_tokens`, V9는 `calculation_runs`·`calculation_results`, V10은 일별 수불 2개 표, V11은 계산 출처·시나리오·백테스트·AI 인사이트 4개 표를 추가합니다. V12는 PostgreSQL tenant 무결성 trigger, V13은 FastAPI view와 역할별 권한을 적용합니다. 전체 관계와 변경 규칙은 [Database ERD v1](docs/database/erd-v1.md)에 있습니다. Hibernate는 스키마를 자동 수정하지 않고 검증만 수행합니다.
+
+초기 PostgreSQL은 administrator가 `database/bootstrap/create_roles.sql`을 먼저 실행한 뒤 `ipgo_migrator`로 Flyway를 적용합니다. bootstrap SQL은 `ipgo_migrator`·`ipgo_server`·`ipgo_ai_reader` 역할만 만들고 비밀번호는 설정하지 않습니다. 비밀번호는 repository·shell history·Terraform state에 남기지 않고 승인된 Secrets Manager 절차로 설정합니다. Spring runtime은 `ipgo_server`, FastAPI는 `ipgo_ai_reader`를 사용하며 runtime에서는 `SPRING_FLYWAY_ENABLED=false`로 migration 자격 증명을 분리합니다.
 
 V2는 첫 단계에서 기존 `v1:` 암호문을 검사합니다. 남아 있으면 칼럼 변경·삭제 전에 실패하여 서버 시작을 중단합니다. 자동 복호화나 데이터 삭제는 수행하지 않습니다.
 
@@ -376,7 +384,9 @@ V8은 로그인 상태와 리프레시 토큰 해시 이력을 추가하며 기�
 
 V8 애플리케이션 롤백 시 서버 쓰기를 중지하고 이전 서버·프론트의 세션 방식으로 함께 복귀합니다. 추가 테이블은 보존하고 다시 JWT 버전으로 전환하기 전에 기존 로그인 행을 폐기하는 절차를 준비합니다. 그렇지 않으면 롤백 전 토큰이 다시 유효해질 수 있습니다. 스키마까지 복구해야 하면 적용 전 백업을 사용하며, 이후 생성된 데이터는 별도 보존해야 합니다. Flyway 이력을 임의 삭제·수정하지 않습니다.
 
-실제 PostgreSQL에 migration을 실행하지 않았습니다. 테스트는 H2 PostgreSQL 모드에서 새 DB 적용, 암호문이 남은 경우 중단, 이관된 회원 정보 보존과 이메일 unique 제약을 확인합니다. 기존 테이블이 Flyway 관리 대상이 아니라면 자동 baseline이나 삭제로 우회하지 말고 별도 이관을 검토합니다.
+H2 PostgreSQL 모드 테스트는 공통 SQL인 V1~V11과 애플리케이션 동작을 확인합니다. `scripts/verify-postgres-migrations.sh`는 임시 PostgreSQL 16에 V1~V9와 기존 행을 준비한 뒤 V10~V13으로 upgrade하고, 18개 업무 테이블, tenant 무결성, Spring DML, FastAPI view SELECT와 원본 table DML·DDL 거부를 확인합니다. 기존 테이블이 Flyway 관리 대상이 아니라면 자동 baseline이나 삭제로 우회하지 말고 별도 이관을 검토합니다.
+
+V10~V13은 기존 업무 행을 삭제하지 않습니다. 다만 V12는 이미 서로 다른 회원 데이터가 연결돼 있거나 발주 상태와 날짜가 맞지 않으면 적용을 중단하고, V13은 세 역할이 준비되지 않으면 적용을 중단합니다. 적용 전에는 RDS snapshot을 만들고 connection 대상과 row count를 확인합니다. 애플리케이션만 롤백할 때는 새 표와 view를 보존합니다. 스키마까지 되돌려야 하면 쓰기를 중지하고 적용 전 snapshot을 복구하며, 적용 후 들어온 데이터는 먼저 별도 보존합니다.
 
 ## 작업 흐름
 

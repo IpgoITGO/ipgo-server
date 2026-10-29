@@ -42,8 +42,14 @@ class DashboardIntegrationTests extends DatabaseIntegrationTest {
 
     @AfterEach
     void cleanUp() {
+        jdbc.update("DELETE FROM ai_explanations");
+        jdbc.update("DELETE FROM backtest_metrics");
+        jdbc.update("DELETE FROM scenario_results");
+        jdbc.update("DELETE FROM run_source_files");
         jdbc.update("DELETE FROM calculation_results");
         jdbc.update("DELETE FROM calculation_runs");
+        jdbc.update("DELETE FROM product_daily_stocks");
+        jdbc.update("DELETE FROM daily_stock_records");
         jdbc.update("DELETE FROM replenishment_settings");
         jdbc.update("DELETE FROM inventory_units");
         jdbc.update("DELETE FROM products");

@@ -25,7 +25,7 @@ class ProductSchemaTests {
         connection = DriverManager.getConnection(url, "sa", "");
         statement = connection.createStatement();
         // H2는 migration을 실행한 연결이 닫히면 IN 목록 CHECK 제약을 검사하지 못하므로 같은 연결로 migration한다.
-        Flyway.configure().dataSource(new SingleConnectionDataSource(connection, true)).load().migrate();
+        Flyway.configure().dataSource(new SingleConnectionDataSource(connection, true)).target("11").load().migrate();
         statement.executeUpdate("INSERT INTO users (id, email, password_hash) VALUES (1, 'a@example.test', 'hash')");
         statement.executeUpdate("INSERT INTO users (id, email, password_hash) VALUES (2, 'b@example.test', 'hash')");
         statement.executeUpdate("INSERT INTO warehouses (id, user_id, name) VALUES (10, 1, '기본 창고')");

@@ -7,5 +7,6 @@
 | Issue부터 병합까지의 순서 | [작업 흐름](rules/workflow.md) |
 | Issue·PR·commit 작성 방식 | [작성 규칙](rules/conventions.md) |
 | 비밀값과 위험한 변경 기준 | [안전 규칙](rules/safety.md) |
+| ERD·database 역할·migration 변경 방식 | [Database ERD v1](database/erd-v1.md) |
 
 서버 실행 방법과 주요 구조는 루트 [README](../README.md)에 유지합니다.

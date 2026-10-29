@@ -275,11 +275,11 @@ class EmailVerificationIntegrationTests extends DatabaseIntegrationTest {
     }
 
     private SignupRequest signupRequest(String token) {
-        return new SignupRequest(EMAIL, "test-only-password-123!", "테스트 회사", "담당자", null, token);
+        return new SignupRequest(EMAIL, "Test123!", "테스트 회사", "담당자", null, token);
     }
 
     private Map<String, Object> signupBody(String token) {
-        return new HashMap<>(Map.of("email", EMAIL, "password", "test-only-password-123!",
+        return new HashMap<>(Map.of("email", EMAIL, "password", "Test123!",
                 "companyName", " 테스트 회사 ", "managerName", " 담당자 ", "businessRegNo", "0123456789",
                 "verificationToken", token));
     }

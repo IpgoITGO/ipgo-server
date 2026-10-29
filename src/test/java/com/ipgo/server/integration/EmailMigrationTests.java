@@ -21,7 +21,7 @@ class EmailMigrationTests {
             statement.executeUpdate("INSERT INTO users (email, email_lookup_hash, password_hash) "
                     + "VALUES ('v1:test-ciphertext', 'test-lookup', 'test-password-hash')");
 
-            assertThatThrownBy(() -> Flyway.configure().dataSource(url, "sa", "").load().migrate())
+            assertThatThrownBy(() -> Flyway.configure().dataSource(url, "sa", "").target("11").load().migrate())
                     .isInstanceOf(FlywayException.class);
 
             try (var row = statement.executeQuery("SELECT email, email_lookup_hash, password_hash FROM users")) {
@@ -42,7 +42,7 @@ class EmailMigrationTests {
             statement.executeUpdate("INSERT INTO users (id, email, email_lookup_hash, password_hash) "
                     + "VALUES (42, 'seller@example.test', 'test-lookup', 'test-password-hash')");
 
-            Flyway.configure().dataSource(url, "sa", "").load().migrate();
+            Flyway.configure().dataSource(url, "sa", "").target("11").load().migrate();
 
             try (var row = statement.executeQuery("SELECT id, email, password_hash, company_name, manager_name, business_reg_no FROM users")) {
                 assertThat(row.next()).isTrue();

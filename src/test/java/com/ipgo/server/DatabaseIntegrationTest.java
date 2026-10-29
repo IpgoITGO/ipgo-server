@@ -28,6 +28,8 @@ public abstract class DatabaseIntegrationTest {
             registry.add("spring.datasource.username", () -> System.getenv("IPGO_TEST_DB_USERNAME"));
             registry.add("spring.datasource.password", () -> System.getenv("IPGO_TEST_DB_PASSWORD"));
         }
+        // V12~V13은 PostgreSQL trigger와 role을 검증하는 전용 script에서 실행한다.
+        registry.add("spring.flyway.target", () -> "11");
         registry.add("ipgo.auth.jwt-secret", () -> JWT_SECRET);
         registry.add("ipgo.auth.cookie-secure", () -> "false");
     }

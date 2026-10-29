@@ -6,6 +6,7 @@ import javax.sql.DataSource;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.NullAndEmptySource;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
@@ -29,7 +30,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @AutoConfigureMockMvc
 class AuthIntegrationTests extends DatabaseIntegrationTest {
     private static final String EMAIL = "seller@example.test";
-    private static final String PASSWORD = "test-only-password-123!";
+    private static final String PASSWORD = "Test123!";
 
     @Autowired MockMvc mvc;
     @Autowired JsonMapper mapper;
@@ -85,14 +86,39 @@ class AuthIntegrationTests extends DatabaseIntegrationTest {
         assertThat(users.count()).isZero();
     }
 
-    @Test
-    void rejectsShortAndOversizePasswordsWithoutLeakingThem() throws Exception {
-        for (String password : new String[] {"short", "x".repeat(129)}) {
-            var result = signup(EMAIL, password, csrf(null))
-                    .andExpect(status().isBadRequest()).andReturn();
+    @ParameterizedTest
+    @ValueSource(strings = {"Aa1!aaaa", "Aa1!aaaaa", "Aa1!aaaaaa", "Aa1\"\\[]!"})
+    void acceptsPasswordsWithinPolicyAndAllowsLogin(String password) throws Exception {
+        signup(EMAIL, password, csrf(null)).andExpect(status().isCreated());
+        login(EMAIL, password, csrf(null)).andExpect(status().isNoContent());
+    }
+
+    @ParameterizedTest
+    @NullAndEmptySource
+    @ValueSource(strings = {"Aa1!aaa", "Aa1!aaaaaaa", "aa1!aaaa", "AA1!AAAA", "Aa!!aaaa", "Aa12aaaa",
+            " Aa1!aaa", "Aa1!aaa ", "Aa1! aaa", "Aa1!aaa\n", "Aa1!aa\ta", "Aa1!가aaa", "Aa1!😀aa",
+            "Aa!aaaa１"})
+    void rejectsInvalidPasswordsWithoutLeakingThemOrConsumingVerificationToken(String password) throws Exception {
+        var result = signup(EMAIL, password, csrf(null))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("code").value("INVALID_INPUT"))
+                .andExpect(jsonPath("details.field").value("password"))
+                .andExpect(jsonPath("message").value(
+                        "비밀번호는 8~10자로 영문 대문자, 소문자, 숫자, 특수기호를 각각 1개 이상 포함해야 하며, 공백 없이 ASCII 문자만 사용할 수 있습니다."))
+                .andReturn();
+        if (password != null && !password.isEmpty()) {
             assertThat(result.getResponse().getContentAsString()).doesNotContain(password);
         }
         assertThat(users.count()).isZero();
+        signup(EMAIL, PASSWORD, csrf(null)).andExpect(status().isCreated());
+    }
+
+    @Test
+    void existingAccountCanStillLoginWithPasswordOutsideNewSignupPolicy() throws Exception {
+        String legacyPassword = "test-only-password-123!";
+        users.saveAndFlush(new UserAccount(EMAIL, passwordEncoder.encode(legacyPassword),
+                "테스트 회사", "테스트 담당자", null));
+        login(EMAIL, legacyPassword, csrf(null)).andExpect(status().isNoContent());
     }
 
     @Test
@@ -202,10 +228,12 @@ class AuthIntegrationTests extends DatabaseIntegrationTest {
                 return verificationService.confirm(key, mail.codes.get(key));
             });
         }
+        var body = new java.util.HashMap<String, Object>(Map.of("email", email,
+                "companyName", "테스트 회사", "managerName", "테스트 담당자", "verificationToken", verificationToken));
+        body.put("password", password);
         return mvc.perform(post("/api/auth/signup").session(token.session())
                 .header(token.header(), token.token()).contentType(MediaType.APPLICATION_JSON)
-                .content(mapper.writeValueAsString(Map.of("email", email, "password", password,
-                        "companyName", "테스트 회사", "managerName", "테스트 담당자", "verificationToken", verificationToken))));
+                .content(mapper.writeValueAsString(body)));
     }
 
     private ResultActions login(String email, String password, CsrfSession token) throws Exception {

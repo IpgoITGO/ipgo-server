@@ -47,7 +47,10 @@ public class ApiExceptionHandler {
     ResponseEntity<ApiError> invalidField(MethodArgumentNotValidException exception) {
         var field = exception.getBindingResult().getFieldErrors().stream()
                 .map(error -> error.getField()).sorted().findFirst().orElse(null);
-        return ResponseEntity.badRequest().body(new ApiError("INVALID_INPUT", "입력값의 형식과 길이를 확인해주세요.",
+        String message = "password".equals(field)
+                ? "비밀번호는 8~10자로 영문 대문자, 소문자, 숫자, 특수기호를 각각 1개 이상 포함해야 하며, 공백 없이 ASCII 문자만 사용할 수 있습니다."
+                : "입력값의 형식과 길이를 확인해주세요.";
+        return ResponseEntity.badRequest().body(new ApiError("INVALID_INPUT", message,
                 field == null ? null : new ApiError.FieldDetails(field)));
     }
 

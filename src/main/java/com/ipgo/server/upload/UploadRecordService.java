@@ -16,11 +16,11 @@ public class UploadRecordService {
     static final String SAME_PERIOD = "SAME_PERIOD";
     static final String SAME_FILE = "SAME_FILE";
 
-    private final LocalUploadStorage storage;
+    private final UploadStorage storage;
     private final WarehouseService warehouses;
     private final UploadFileRepository uploads;
 
-    public UploadRecordService(LocalUploadStorage storage, WarehouseService warehouses, UploadFileRepository uploads) {
+    public UploadRecordService(UploadStorage storage, WarehouseService warehouses, UploadFileRepository uploads) {
         this.storage = storage;
         this.warehouses = warehouses;
         this.uploads = uploads;

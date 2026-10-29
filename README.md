@@ -54,6 +54,16 @@ PostgreSQL을 준비한 뒤 실행 환경에 아래 변수를 설정합니다. �
 
 현재 `.env` 파일을 자동으로 읽는 별도 설정은 없습니다. 터미널 또는 IDE의 실행 환경변수로 전달해야 합니다.
 
+### AWS dev 실행
+
+AWS에서는 `IPGO_UPLOAD_STORAGE=s3`와 `IPGO_UPLOAD_BUCKET`을 설정해 원본을 private S3에
+저장합니다. ECS task role의 임시 자격 증명을 사용하므로 애플리케이션에 AWS Access Key를 넣지
+않습니다. DB 연결 값은 Secrets Manager JSON의 `url`, `username`, `password`에서 주입합니다.
+
+`dev` 브랜치의 `Deploy server to AWS dev` workflow는 GitHub OIDC로 image를 ECR에 push하고
+ECS task revision을 갱신합니다. GitHub `dev` Environment 승인과 `AWS_DEPLOY_ROLE_ARN`,
+`AWS_ACCOUNT_ID` 변수가 필요하며, 실제 Secret 값은 GitHub에 저장하지 않습니다.
+
 이메일 암호화 키는 서버 실행에 필요하지 않습니다. 이전 버전의 암호화된 회원 데이터가 있다면 아래 이관 절차를 완료할 때까지 기존 키를 보존해야 합니다.
 
 ## 인증 API

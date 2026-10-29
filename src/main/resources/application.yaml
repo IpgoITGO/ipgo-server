@@ -30,6 +30,8 @@ server:
 
 ipgo:
   upload:
+    storage: ${IPGO_UPLOAD_STORAGE:local}
     directory: ${IPGO_UPLOAD_DIR:./storage/uploads}
+    bucket: ${IPGO_UPLOAD_BUCKET:}
   mail:
     from: ${IPGO_MAIL_FROM:}

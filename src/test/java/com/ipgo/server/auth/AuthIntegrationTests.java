@@ -11,7 +11,7 @@ import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.http.MediaType;
-import org.springframework.mock.web.MockHttpSession;
+import jakarta.servlet.http.Cookie;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
@@ -55,7 +55,7 @@ class AuthIntegrationTests extends DatabaseIntegrationTest {
 
     @Test
     void signupNormalizesEmailAndStoresOnlyPasswordHash() throws Exception {
-        signup("Seller@Example.test", PASSWORD, csrf(null))
+        signup("Seller@Example.test", PASSWORD, csrf())
                 .andExpect(status().isCreated())
                 .andExpect(jsonPath("email").value(EMAIL))
                 .andExpect(jsonPath("userId").isNumber())
@@ -73,8 +73,8 @@ class AuthIntegrationTests extends DatabaseIntegrationTest {
 
     @Test
     void rejectsDuplicateEmailRegardlessOfCase() throws Exception {
-        signup(EMAIL, PASSWORD, csrf(null)).andExpect(status().isCreated());
-        signup("SELLER@example.test", PASSWORD, csrf(null))
+        signup(EMAIL, PASSWORD, csrf()).andExpect(status().isCreated());
+        signup("SELLER@example.test", PASSWORD, csrf())
                 .andExpect(status().isConflict()).andExpect(jsonPath("code").value("DUPLICATE_EMAIL"));
         assertThat(users.count()).isEqualTo(1);
     }
@@ -82,15 +82,15 @@ class AuthIntegrationTests extends DatabaseIntegrationTest {
     @ParameterizedTest
     @ValueSource(strings = {"", "invalid", "seller@", "@example.test"})
     void rejectsInvalidEmail(String email) throws Exception {
-        signup(email, PASSWORD, csrf(null)).andExpect(status().isBadRequest());
+        signup(email, PASSWORD, csrf()).andExpect(status().isBadRequest());
         assertThat(users.count()).isZero();
     }
 
     @ParameterizedTest
     @ValueSource(strings = {"Aa1!aaaa", "Aa1!aaaaa", "Aa1!aaaaaa", "Aa1\"\\[]!"})
     void acceptsPasswordsWithinPolicyAndAllowsLogin(String password) throws Exception {
-        signup(EMAIL, password, csrf(null)).andExpect(status().isCreated());
-        login(EMAIL, password, csrf(null)).andExpect(status().isNoContent());
+        signup(EMAIL, password, csrf()).andExpect(status().isCreated());
+        login(EMAIL, password, csrf()).andExpect(status().isOk());
     }
 
     @ParameterizedTest
@@ -99,7 +99,7 @@ class AuthIntegrationTests extends DatabaseIntegrationTest {
             " Aa1!aaa", "Aa1!aaa ", "Aa1! aaa", "Aa1!aaa\n", "Aa1!aa\ta", "Aa1!가aaa", "Aa1!😀aa",
             "Aa!aaaa１"})
     void rejectsInvalidPasswordsWithoutLeakingThemOrConsumingVerificationToken(String password) throws Exception {
-        var result = signup(EMAIL, password, csrf(null))
+        var result = signup(EMAIL, password, csrf())
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("code").value("INVALID_INPUT"))
                 .andExpect(jsonPath("details.field").value("password"))
@@ -110,7 +110,7 @@ class AuthIntegrationTests extends DatabaseIntegrationTest {
             assertThat(result.getResponse().getContentAsString()).doesNotContain(password);
         }
         assertThat(users.count()).isZero();
-        signup(EMAIL, PASSWORD, csrf(null)).andExpect(status().isCreated());
+        signup(EMAIL, PASSWORD, csrf()).andExpect(status().isCreated());
     }
 
     @Test
@@ -118,48 +118,52 @@ class AuthIntegrationTests extends DatabaseIntegrationTest {
         String legacyPassword = "test-only-password-123!";
         users.saveAndFlush(new UserAccount(EMAIL, passwordEncoder.encode(legacyPassword),
                 "테스트 회사", "테스트 담당자", null));
-        login(EMAIL, legacyPassword, csrf(null)).andExpect(status().isNoContent());
+        login(EMAIL, legacyPassword, csrf()).andExpect(status().isOk());
     }
 
     @Test
     void rejectsMalformedSignupJson() throws Exception {
-        CsrfSession token = csrf(null);
-        mvc.perform(post("/api/auth/signup").session(token.session())
+        CsrfSession token = csrf();
+        mvc.perform(post("/api/auth/signup").cookie(token.cookie())
                         .header(token.header(), token.token()).contentType(MediaType.APPLICATION_JSON).content("{"))
                 .andExpect(status().isBadRequest()).andExpect(jsonPath("code").value("INVALID_INPUT"));
     }
 
     @Test
-    void loginRotatesSessionAndLogoutRevokesAuthentication() throws Exception {
-        CsrfSession before = csrf(null);
+    void loginReturnsBearerAndLogoutRevokesItWithoutCreatingHttpSession() throws Exception {
+        CsrfSession before = csrf();
         signup(EMAIL, PASSWORD, before).andExpect(status().isCreated());
-        String previousId = before.session().getId();
         MvcResult result = login(" SELLER@example.test ", PASSWORD, before)
-                .andExpect(status().isNoContent()).andReturn();
-        MockHttpSession session = (MockHttpSession) result.getRequest().getSession(false);
-        assertThat(session.getId()).isNotEqualTo(previousId);
-        mvc.perform(get("/api/auth/me").session(session))
+                .andExpect(status().isOk()).andExpect(jsonPath("tokenType").value("Bearer"))
+                .andExpect(jsonPath("expiresIn").value(900)).andReturn();
+        assertThat(result.getRequest().getSession(false)).isNull();
+        String access = mapper.readTree(result.getResponse().getContentAsString()).get("accessToken").stringValue();
+        Cookie refresh = result.getResponse().getCookie("ipgo_refresh");
+        assertThat(refresh).isNotNull();
+        assertThat(refresh.isHttpOnly()).isTrue();
+        mvc.perform(get("/api/auth/me").header("Authorization", "Bearer " + access))
                 .andExpect(status().isOk()).andExpect(jsonPath("email").value(EMAIL))
-                .andExpect(jsonPath("userId").isNumber())
                 .andExpect(jsonPath("managerName").value("테스트 담당자"))
                 .andExpect(jsonPath("companyName").value("테스트 회사"));
-        mvc.perform(post("/api/auth/logout").session(session).header(before.header(), before.token()))
+        // 쿠키만으로는 일반 API를 인증할 수 없다.
+        mvc.perform(get("/api/auth/me").cookie(refresh)).andExpect(status().isUnauthorized());
+        CsrfSession after = csrf();
+        mvc.perform(post("/api/auth/logout").cookie(refresh, after.cookie())
+                        .header(before.header(), before.token()))
                 .andExpect(status().isForbidden());
-        CsrfSession after = csrf(session);
-        String authenticatedId = session.getId();
-        mvc.perform(post("/api/auth/logout").session(session).header(after.header(), after.token()))
+        mvc.perform(post("/api/auth/logout").cookie(refresh, after.cookie())
+                        .header(after.header(), after.token()))
                 .andExpect(status().isNoContent());
-        assertThat(session.isInvalid()).isTrue();
-        mvc.perform(get("/api/auth/me").cookie(new jakarta.servlet.http.Cookie("JSESSIONID", authenticatedId)))
-                .andExpect(status().isUnauthorized());
+        mvc.perform(get("/api/auth/me").header("Authorization", "Bearer " + access))
+                .andExpect(status().isUnauthorized()).andExpect(jsonPath("code").value("SESSION_REVOKED"));
     }
 
     @Test
     void rejectsWrongPasswordAndUnknownAccountWithSameResponse() throws Exception {
-        signup(EMAIL, PASSWORD, csrf(null)).andExpect(status().isCreated());
-        String wrongPassword = login(EMAIL, "wrong-password", csrf(null))
+        signup(EMAIL, PASSWORD, csrf()).andExpect(status().isCreated());
+        String wrongPassword = login(EMAIL, "wrong-password", csrf())
                 .andExpect(status().isUnauthorized()).andReturn().getResponse().getContentAsString();
-        String unknownAccount = login("unknown@example.test", PASSWORD, csrf(null))
+        String unknownAccount = login("unknown@example.test", PASSWORD, csrf())
                 .andExpect(status().isUnauthorized()).andReturn().getResponse().getContentAsString();
         assertThat(wrongPassword).isEqualTo(unknownAccount).doesNotContain(PASSWORD);
     }
@@ -177,12 +181,12 @@ class AuthIntegrationTests extends DatabaseIntegrationTest {
 
     @Test
     void meUsesAuthenticatedUserEvenWhenAnotherIdIsSupplied() throws Exception {
-        signup(EMAIL, PASSWORD, csrf(null)).andExpect(status().isCreated());
-        signup("another@example.test", PASSWORD, csrf(null)).andExpect(status().isCreated());
+        signup(EMAIL, PASSWORD, csrf()).andExpect(status().isCreated());
+        signup("another@example.test", PASSWORD, csrf()).andExpect(status().isCreated());
         long anotherId = users.findByEmail("another@example.test").orElseThrow().getId();
-        var session = (MockHttpSession) login(EMAIL, PASSWORD, csrf(null))
-                .andExpect(status().isNoContent()).andReturn().getRequest().getSession(false);
-        mvc.perform(get("/api/auth/me").session(session).param("userId", Long.toString(anotherId)))
+        var login = login(EMAIL, PASSWORD, csrf()).andExpect(status().isOk()).andReturn();
+        String access = mapper.readTree(login.getResponse().getContentAsString()).get("accessToken").stringValue();
+        mvc.perform(get("/api/auth/me").header("Authorization", "Bearer " + access).param("userId", Long.toString(anotherId)))
                 .andExpect(status().isOk()).andExpect(jsonPath("email").value(EMAIL))
                 .andExpect(jsonPath("userId").isNumber())
                 .andExpect(jsonPath("managerName").value("테스트 담당자"))
@@ -210,12 +214,11 @@ class AuthIntegrationTests extends DatabaseIntegrationTest {
         mvc.perform(get("/error")).andExpect(status().isUnauthorized());
     }
 
-    private CsrfSession csrf(MockHttpSession session) throws Exception {
-        var request = get("/api/auth/csrf");
-        if (session != null) request.session(session);
-        MvcResult result = mvc.perform(request).andExpect(status().isOk()).andReturn();
+    private CsrfSession csrf() throws Exception {
+        MvcResult result = mvc.perform(get("/api/auth/csrf")).andExpect(status().isOk()).andReturn();
         JsonNode json = mapper.readTree(result.getResponse().getContentAsString());
-        return new CsrfSession((MockHttpSession) result.getRequest().getSession(false),
+        assertThat(result.getRequest().getSession(false)).isNull();
+        return new CsrfSession(result.getResponse().getCookie("IPGO-XSRF-TOKEN"),
                 json.get("headerName").stringValue(), json.get("token").stringValue());
     }
 
@@ -231,22 +234,17 @@ class AuthIntegrationTests extends DatabaseIntegrationTest {
         var body = new java.util.HashMap<String, Object>(Map.of("email", email,
                 "companyName", "테스트 회사", "managerName", "테스트 담당자", "verificationToken", verificationToken));
         body.put("password", password);
-        return mvc.perform(post("/api/auth/signup").session(token.session())
+        return mvc.perform(post("/api/auth/signup").cookie(token.cookie())
                 .header(token.header(), token.token()).contentType(MediaType.APPLICATION_JSON)
                 .content(mapper.writeValueAsString(body)));
     }
 
     private ResultActions login(String email, String password, CsrfSession token) throws Exception {
-        return mvc.perform(post("/api/auth/login").session(token.session())
+        return mvc.perform(post("/api/auth/login").cookie(token.cookie())
                 .header(token.header(), token.token()).contentType(MediaType.APPLICATION_FORM_URLENCODED)
-                .with(request -> {
-                    request.setRequestedSessionId(token.session().getId());
-                    request.setRequestedSessionIdValid(true);
-                    return request;
-                })
                 .param("email", email).param("password", password));
     }
 
-    private record CsrfSession(MockHttpSession session, String header, String token) {
+    private record CsrfSession(Cookie cookie, String header, String token) {
     }
 }

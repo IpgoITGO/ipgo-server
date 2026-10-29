@@ -30,8 +30,7 @@ import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.csrf;
-import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.user;
+import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.jwt;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.multipart;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -58,19 +57,19 @@ class UploadIntegrationTests extends DatabaseIntegrationTest {
     }
 
     @Test
-    void requiresAuthenticationAndCsrf() throws Exception {
+    void requiresBearerAuthentication() throws Exception {
         var file = new MockMultipartFile("file", "stock.xlsx", "application/octet-stream", UploadTestFiles.workbook());
-        mvc.perform(multipart("/api/uploads").file(file).with(csrf())).andExpect(status().isUnauthorized());
-        mvc.perform(multipart("/api/uploads").file(file).with(user("777"))).andExpect(status().isForbidden());
+        mvc.perform(multipart("/api/uploads").file(file)).andExpect(status().isUnauthorized());
+        mvc.perform(multipart("/api/uploads").file(file).header("Authorization", "Bearer invalid")).andExpect(status().isUnauthorized());
         assertThat(Files.exists(root.resolve("777"))).isFalse();
     }
 
     @Test
-    void bindsOwnerToSessionAndReturnsOnlyPublicReceipt() throws Exception {
+    void bindsOwnerToJwtAndReturnsOnlyPublicReceipt() throws Exception {
         String owner = Long.toString(UploadTestDatabase.newUser(jdbc, "owner-" + UUID.randomUUID() + "@example.test"));
         var result = mvc.perform(multipart("/api/uploads")
                         .file(new MockMultipartFile("file", "2026-09.xlsx", "application/octet-stream", UploadTestFiles.workbook()))
-                        .param("userId", "999").with(user(owner)).with(csrf()))
+                        .param("userId", "999").with(jwt().jwt(claims -> claims.subject(owner))))
                 .andExpect(status().isAccepted()).andExpect(jsonPath("status").value("PROCESSING"))
                 .andExpect(jsonPath("uploadId").isNumber())
                 .andExpect(jsonPath("storageKey").doesNotExist()).andReturn();
@@ -82,19 +81,19 @@ class UploadIntegrationTests extends DatabaseIntegrationTest {
 
     @Test
     void returnsJsonForMissingInvalidAndOversizeFiles() throws Exception {
-        mvc.perform(multipart("/api/uploads").with(user("123")).with(csrf()))
+        mvc.perform(multipart("/api/uploads").with(jwt().jwt(claims -> claims.subject("123"))))
                 .andExpect(status().isBadRequest()).andExpect(jsonPath("code").value("INVALID_INPUT"));
         mvc.perform(multipart("/api/uploads").file(new MockMultipartFile("file", "file.csv", "text/csv", new byte[] {1}))
-                        .with(user("123")).with(csrf()))
+                        .with(jwt().jwt(claims -> claims.subject("123"))))
                 .andExpect(status().isBadRequest()).andExpect(jsonPath("code").value("UPLOAD_INVALID_FORMAT"))
                 .andExpect(jsonPath("details.fileName").value("file.csv"));
         mvc.perform(multipart("/api/uploads").file(new MockMultipartFile("file", "file.xlsx", "application/octet-stream",
-                                new byte[10 * 1024 * 1024 + 1])).with(user("123")).with(csrf()))
+                                new byte[10 * 1024 * 1024 + 1])).with(jwt().jwt(claims -> claims.subject("123"))))
                 .andExpect(status().isPayloadTooLarge()).andExpect(jsonPath("code").value("FILE_TOO_LARGE"));
     }
 
     @Test
-    void realHttpSessionUploadsOriginalAndContainerRejectsOversizeFile() throws Exception {
+    void realHttpBearerUploadsRefreshesAndLogsOut() throws Exception {
         String email = "upload-" + UUID.randomUUID() + "@example.test";
         // 업로드 테스트는 가입 절차와 독립적인 기존 회원을 사용한다.
         jdbc.update("INSERT INTO users (email, password_hash) VALUES (?, ?)", email,
@@ -106,27 +105,42 @@ class UploadIntegrationTests extends DatabaseIntegrationTest {
                     .header(token.get("headerName").stringValue(), token.get("token").stringValue())
                     .header("Content-Type", "application/x-www-form-urlencoded")
                     .POST(HttpRequest.BodyPublishers.ofString("email=" + email + "&password=test-upload-password-123")));
-            assertThat(login.statusCode()).isEqualTo(204);
+            assertThat(login.statusCode()).isEqualTo(200);
+            String access = mapper.readTree(login.body()).get("accessToken").stringValue();
             token = mapper.readTree(send(client, HttpRequest.newBuilder(uri("/api/auth/csrf")).GET()).body());
             byte[] original = UploadTestFiles.workbook();
-            var uploaded = send(client, uploadRequest(original, token));
+            var uploaded = send(client, uploadRequest(original, access));
             assertThat(uploaded.statusCode()).isEqualTo(202);
             String key = storageKey(mapper.readTree(uploaded.body()).get("uploadId").longValue());
             assertThat(key).startsWith(account.getId() + "/");
             assertThat(Files.readAllBytes(root.resolve(key).resolve("original.xlsx"))).isEqualTo(original);
-            var oversized = send(client, uploadRequest(new byte[10 * 1024 * 1024 + 1], token));
+            var oversized = send(client, uploadRequest(new byte[10 * 1024 * 1024 + 1], access));
             assertThat(oversized.statusCode()).isEqualTo(413);
             assertThat(mapper.readTree(oversized.body()).get("code").stringValue()).isEqualTo("FILE_TOO_LARGE");
+            var refreshed = send(client, HttpRequest.newBuilder(uri("/api/auth/refresh"))
+                    .header(token.get("headerName").stringValue(), token.get("token").stringValue())
+                    .POST(HttpRequest.BodyPublishers.noBody()));
+            assertThat(refreshed.statusCode()).isEqualTo(200);
+            String next = mapper.readTree(refreshed.body()).get("accessToken").stringValue();
+            assertThat(send(client, HttpRequest.newBuilder(uri("/api/auth/me"))
+                    .header("Authorization", "Bearer " + next).GET()).statusCode()).isEqualTo(200);
+            assertThat(send(client, HttpRequest.newBuilder(uri("/api/auth/logout"))
+                    .header(token.get("headerName").stringValue(), token.get("token").stringValue())
+                    .POST(HttpRequest.BodyPublishers.noBody())).statusCode()).isEqualTo(204);
+            assertThat(send(client, HttpRequest.newBuilder(uri("/api/auth/me"))
+                    .header("Authorization", "Bearer " + access).GET()).statusCode()).isEqualTo(401);
+            assertThat(send(client, HttpRequest.newBuilder(uri("/api/auth/me"))
+                    .header("Authorization", "Bearer " + next).GET()).statusCode()).isEqualTo(401);
         }
     }
 
-    private HttpRequest.Builder uploadRequest(byte[] bytes, JsonNode token) {
+    private HttpRequest.Builder uploadRequest(byte[] bytes, String access) {
         String boundary = "ipgo-test-boundary";
         byte[] before = ("--" + boundary + "\r\nContent-Disposition: form-data; name=\"file\"; filename=\"2026-09.xlsx\"\r\n"
                 + "Content-Type: application/vnd.openxmlformats-officedocument.spreadsheetml.sheet\r\n\r\n").getBytes(StandardCharsets.UTF_8);
         byte[] after = ("\r\n--" + boundary + "--\r\n").getBytes(StandardCharsets.UTF_8);
         return HttpRequest.newBuilder(uri("/api/uploads"))
-                .header(token.get("headerName").stringValue(), token.get("token").stringValue())
+                .header("Authorization", "Bearer " + access)
                 .header("Content-Type", "multipart/form-data; boundary=" + boundary)
                 .POST(HttpRequest.BodyPublishers.concat(HttpRequest.BodyPublishers.ofByteArray(before),
                         HttpRequest.BodyPublishers.ofByteArray(bytes), HttpRequest.BodyPublishers.ofByteArray(after)));

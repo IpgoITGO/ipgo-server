@@ -2,6 +2,7 @@ package com.ipgo.server.common;
 
 import com.ipgo.server.upload.UploadException;
 import com.ipgo.server.auth.EmailVerificationException;
+import com.ipgo.server.auth.AuthTokenException;
 import com.ipgo.server.product.ProductException;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
@@ -17,6 +18,12 @@ import org.springframework.web.multipart.support.MissingServletRequestPartExcept
 
 @RestControllerAdvice
 public class ApiExceptionHandler {
+    @ExceptionHandler(AuthTokenException.class)
+    ResponseEntity<ApiError> authToken(AuthTokenException exception) {
+        return ResponseEntity.status(401).header("Cache-Control", "no-store")
+                .body(new ApiError(exception.code(), exception.getMessage()));
+    }
+
     @ExceptionHandler(UploadException.class)
     ResponseEntity<ApiError> uploadError(UploadException exception) {
         return ResponseEntity.status(exception.status())

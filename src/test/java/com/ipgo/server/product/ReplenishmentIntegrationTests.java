@@ -15,8 +15,7 @@ import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.ResultActions;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.csrf;
-import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.user;
+import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.jwt;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -44,7 +43,7 @@ class ReplenishmentIntegrationTests extends DatabaseIntegrationTest {
     @Test
     void suggestsValuesUntilSellerConfirmsDefaults() throws Exception {
         long userId = newUser();
-        mvc.perform(get(DEFAULTS).with(user(Long.toString(userId))))
+        mvc.perform(get(DEFAULTS).with(jwt().jwt(claims -> claims.subject(Long.toString(userId)))))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("confirmed").value(false))
                 .andExpect(jsonPath("leadTimeDays").value(5))
@@ -59,7 +58,7 @@ class ReplenishmentIntegrationTests extends DatabaseIntegrationTest {
                 .andExpect(jsonPath("saved").value(true))
                 .andExpect(jsonPath("runId").doesNotExist());
 
-        mvc.perform(get(DEFAULTS).with(user(Long.toString(userId))))
+        mvc.perform(get(DEFAULTS).with(jwt().jwt(claims -> claims.subject(Long.toString(userId)))))
                 .andExpect(jsonPath("confirmed").value(true))
                 .andExpect(jsonPath("leadTimeDays").value(7))
                 .andExpect(jsonPath("reviewCycleDays").value(29))
@@ -76,9 +75,9 @@ class ReplenishmentIntegrationTests extends DatabaseIntegrationTest {
                 .andExpect(status().isBadRequest()).andExpect(jsonPath("details.field").value("leadTimeDays"));
         putJson(userId, DEFAULTS, "{\"leadTimeDays\": 5, \"reviewCycleDays\": 1.5, \"orderUnitQty\": 1}")
                 .andExpect(status().isBadRequest()).andExpect(jsonPath("code").value("INVALID_INPUT"));
-        mvc.perform(put(DEFAULTS).with(user(Long.toString(userId))).contentType(MediaType.APPLICATION_JSON)
+        mvc.perform(put(DEFAULTS).contentType(MediaType.APPLICATION_JSON)
                         .content("{\"leadTimeDays\": 5, \"reviewCycleDays\": 29, \"orderUnitQty\": 1}"))
-                .andExpect(status().isForbidden());
+                .andExpect(status().isUnauthorized());
         mvc.perform(get(DEFAULTS)).andExpect(status().isUnauthorized());
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM warehouses WHERE user_id = ?", Integer.class, userId))
                 .isZero();
@@ -96,7 +95,7 @@ class ReplenishmentIntegrationTests extends DatabaseIntegrationTest {
                 .andExpect(jsonPath("saved").value(true))
                 .andExpect(jsonPath("runId").doesNotExist());
 
-        mvc.perform(get("/api/products").with(user(Long.toString(userId))))
+        mvc.perform(get("/api/products").with(jwt().jwt(claims -> claims.subject(Long.toString(userId)))))
                 .andExpect(jsonPath("items[0].unitCost").value(1800))
                 .andExpect(jsonPath("items[0].settings.leadTimeDays").value(5))
                 .andExpect(jsonPath("items[0].settings.reviewCycleDays").value(29))
@@ -106,7 +105,7 @@ class ReplenishmentIntegrationTests extends DatabaseIntegrationTest {
 
         // PUT은 보낸 값으로 모두 바꾼다. 비운 칸은 다시 기본값을 따르고, 원가는 보내지 않으면 그대로 둔다.
         putJson(userId, settingsOf(productId), "{\"leadTimeDays\": 3}").andExpect(status().isOk());
-        mvc.perform(get("/api/products").with(user(Long.toString(userId))))
+        mvc.perform(get("/api/products").with(jwt().jwt(claims -> claims.subject(Long.toString(userId)))))
                 .andExpect(jsonPath("items[0].unitCost").value(1800))
                 .andExpect(jsonPath("items[0].settings.leadTimeDays").value(3))
                 .andExpect(jsonPath("items[0].settings.orderUnitQty").value(1))
@@ -119,7 +118,7 @@ class ReplenishmentIntegrationTests extends DatabaseIntegrationTest {
     void productListUsesSuggestedValuesBeforeDefaultsAreSaved() throws Exception {
         long userId = newUser();
         registerProduct(userId);
-        mvc.perform(get("/api/products").with(user(Long.toString(userId))))
+        mvc.perform(get("/api/products").with(jwt().jwt(claims -> claims.subject(Long.toString(userId)))))
                 .andExpect(jsonPath("items[0].settings.leadTimeDays").value(5))
                 .andExpect(jsonPath("items[0].settings.reviewCycleDays").doesNotExist())
                 .andExpect(jsonPath("items[0].settings.orderUnitQty").value(1))
@@ -144,7 +143,7 @@ class ReplenishmentIntegrationTests extends DatabaseIntegrationTest {
     }
 
     private ResultActions putJson(long userId, String path, String body) throws Exception {
-        return mvc.perform(put(path).with(user(Long.toString(userId))).with(csrf())
+        return mvc.perform(put(path).with(jwt().jwt(claims -> claims.subject(Long.toString(userId))))
                 .contentType(MediaType.APPLICATION_JSON).content(body));
     }
 

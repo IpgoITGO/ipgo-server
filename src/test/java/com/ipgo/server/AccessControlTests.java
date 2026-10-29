@@ -25,8 +25,7 @@ import org.springframework.web.servlet.mvc.method.annotation.RequestMappingHandl
 import tools.jackson.databind.json.JsonMapper;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.csrf;
-import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.user;
+import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.jwt;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.request;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -40,6 +39,9 @@ class AccessControlTests extends DatabaseIntegrationTest {
             "GET /api/auth/csrf",
             "GET /api/auth/email-availability",
             "POST /api/auth/signup",
+            "POST /api/auth/login",
+            "POST /api/auth/refresh",
+            "POST /api/auth/logout",
             "POST /api/auth/email-verifications",
             "POST /api/auth/email-verifications/confirm");
 
@@ -72,8 +74,7 @@ class AccessControlTests extends DatabaseIntegrationTest {
                     found.add(endpoint);
                     if (PUBLIC.contains(endpoint)) continue;
                     // 경로 변수는 아무 숫자로 채운다. 로그인 검사가 먼저라 값은 상관없다.
-                    mvc.perform(request(HttpMethod.valueOf(method.name()), path.replaceAll("\\{[^}]+}", "1"))
-                                    .with(csrf()))
+                    mvc.perform(request(HttpMethod.valueOf(method.name()), path.replaceAll("\\{[^}]+}", "1")))
                             .andExpect(result -> assertThat(result.getResponse().getStatus())
                                     .as(endpoint).isEqualTo(401));
                 }
@@ -119,16 +120,16 @@ class AccessControlTests extends DatabaseIntegrationTest {
                 "{\"leadTimeDays\": 7, \"reviewCycleDays\": 29, \"orderUnitQty\": 6}").andExpect(status().isOk());
 
         String asOther = Long.toString(other);
-        mvc.perform(get("/api/products").with(user(asOther))).andExpect(jsonPath("total").value(0));
-        mvc.perform(get("/api/planned-receipts").with(user(asOther))).andExpect(jsonPath("total").value(0));
-        mvc.perform(get("/api/uploads/periods").with(user(asOther))).andExpect(jsonPath("items.length()").value(0));
-        mvc.perform(get("/api/replenishment-settings").with(user(asOther)))
+        mvc.perform(get("/api/products").with(jwt().jwt(claims -> claims.subject(asOther)))).andExpect(jsonPath("total").value(0));
+        mvc.perform(get("/api/planned-receipts").with(jwt().jwt(claims -> claims.subject(asOther)))).andExpect(jsonPath("total").value(0));
+        mvc.perform(get("/api/uploads/periods").with(jwt().jwt(claims -> claims.subject(asOther)))).andExpect(jsonPath("items.length()").value(0));
+        mvc.perform(get("/api/replenishment-settings").with(jwt().jwt(claims -> claims.subject(asOther))))
                 .andExpect(jsonPath("confirmed").value(false))
                 .andExpect(jsonPath("leadTimeDays").value(5));
     }
 
     private ResultActions send(long userId, HttpMethod method, String path, String body) throws Exception {
-        var builder = request(method, path).with(user(Long.toString(userId))).with(csrf());
+        var builder = request(method, path).with(jwt().jwt(claims -> claims.subject(Long.toString(userId))));
         if (body != null) builder.contentType(MediaType.APPLICATION_JSON).content(body);
         return mvc.perform(builder);
     }

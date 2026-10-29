@@ -17,8 +17,7 @@ import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.ResultActions;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.csrf;
-import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.user;
+import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.jwt;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.multipart;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -153,7 +152,7 @@ class UploadRecordIntegrationTests extends DatabaseIntegrationTest {
 
         long latest = jdbc.queryForObject("SELECT MAX(u.id) FROM upload_files u JOIN warehouses w "
                 + "ON w.id = u.warehouse_id WHERE w.user_id = ?", Long.class, owner);
-        mvc.perform(get("/api/uploads/periods").with(user(Long.toString(owner))))
+        mvc.perform(get("/api/uploads/periods").with(jwt().jwt(claims -> claims.subject(Long.toString(owner)))))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("items.length()").value(2))
                 .andExpect(jsonPath("items[0].period").value("2026-09"))
@@ -169,7 +168,7 @@ class UploadRecordIntegrationTests extends DatabaseIntegrationTest {
     @Test
     void periodsAreEmptyBeforeFirstUploadAndRequireLogin() throws Exception {
         long userId = newUser();
-        mvc.perform(get("/api/uploads/periods").with(user(Long.toString(userId))))
+        mvc.perform(get("/api/uploads/periods").with(jwt().jwt(claims -> claims.subject(Long.toString(userId)))))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("items.length()").value(0))
                 .andExpect(jsonPath("latestUploadId").doesNotExist());
@@ -183,7 +182,7 @@ class UploadRecordIntegrationTests extends DatabaseIntegrationTest {
     private ResultActions upload(long userId, String fileName, byte[] content, boolean overwrite) throws Exception {
         var file = new MockMultipartFile("file", fileName, "application/octet-stream", content);
         return mvc.perform(multipart("/api/uploads").file(file).param("overwrite", Boolean.toString(overwrite))
-                .with(user(Long.toString(userId))).with(csrf()));
+                .with(jwt().jwt(claims -> claims.subject(Long.toString(userId)))));
     }
 
     private long newUser() {

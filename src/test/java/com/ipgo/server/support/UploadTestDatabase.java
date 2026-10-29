@@ -12,6 +12,8 @@ public final class UploadTestDatabase {
     }
 
     public static void clear(JdbcTemplate jdbc) {
+        jdbc.update("DELETE FROM calculation_results");
+        jdbc.update("DELETE FROM calculation_runs");
         jdbc.update("DELETE FROM upload_files");
         jdbc.update("DELETE FROM planned_receipts");
         jdbc.update("DELETE FROM replenishment_settings");

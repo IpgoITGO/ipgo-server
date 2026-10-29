@@ -18,7 +18,7 @@ public record ProductSettings(Integer leadTimeDays, Integer reviewCycleDays, Lon
     }
 
     // 상품별 값이 있으면 그 값을, 없으면 기본값을 쓴다.
-    ProductSettings applying(ReplenishmentSetting override) {
+    public ProductSettings applying(ReplenishmentSetting override) {
         if (override == null) return this;
         return new ProductSettings(
                 override.getLeadTimeDays() != null ? override.getLeadTimeDays() : leadTimeDays,

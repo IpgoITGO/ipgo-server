@@ -39,7 +39,8 @@ public class ProductService {
     @Transactional(readOnly = true)
     public ProductPage list(long userId, String query, int page, int size) {
         if (page < 0 || size < 1 || size > MAX_PAGE_SIZE) throw ProductException.invalidInput();
-        String keyword = query == null || query.isBlank() ? null : query.strip();
+        // 검색어가 없으면 빈 문자열로 보내 전체를 찾는다. null을 넘기면 PostgreSQL이 값의 타입을 몰라 실패한다.
+        String keyword = query == null ? "" : query.strip();
         Page<Product> result = products.search(userId, keyword, PageRequest.of(page, size, Sort.by("id")));
         return new ProductPage(items(userId, result.getContent()), result.getTotalElements(), page, size);
     }

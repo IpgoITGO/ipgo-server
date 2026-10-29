@@ -77,6 +77,22 @@ PostgreSQL을 준비한 뒤 실행 환경에 아래 변수를 설정합니다. �
 
 JWT 키는 환경변수 또는 비밀 관리 도구에서 주입하며 Git·로그에 기록하지 않습니다. 키가 없거나 형식·길이가 잘못되면 서버 시작을 중단합니다. 키를 변경하면 기존 액세스 토큰은 검증에 실패합니다. 테스트에서는 임시 키를 자동 생성하므로 PostgreSQL·서명 키 설정 없이 `./gradlew test`를 실행할 수 있습니다. H2는 테스트에서만 사용합니다.
 
+### 실제 PostgreSQL로 테스트
+
+`./gradlew test`는 기본으로 H2를 씁니다. H2와 PostgreSQL은 타입 검사가 달라서, 표·조회를 바꿨다면 실제 PostgreSQL로도 한 번 돌려 봅니다. 테스트가 행을 만들고 회원을 지우므로 **비어 있는 검증용 DB만** 씁니다. 아래 비밀번호는 이 검증용 컨테이너에서만 쓰는 임시 값으로 바꿔 넣습니다.
+
+```bash
+# 1) 검증용 PostgreSQL 띄우기 (끝나면 docker rm -f ipgo-pg-check)
+docker run -d --name ipgo-pg-check -e POSTGRES_DB=ipgo -e POSTGRES_USER=ipgo \
+  -e POSTGRES_PASSWORD=<임시 비밀번호> -p 127.0.0.1:55432:5432 postgres:17
+
+# 2) 같은 테스트를 PostgreSQL에서 실행
+IPGO_TEST_DB_URL=jdbc:postgresql://127.0.0.1:55432/ipgo \
+IPGO_TEST_DB_USERNAME=ipgo IPGO_TEST_DB_PASSWORD=<임시 비밀번호> ./gradlew test
+```
+
+`IPGO_TEST_DB_URL`을 주지 않으면 H2로 돌아갑니다. 회원을 모두 지우는 인증 테스트는 H2나 `IPGO_TEST_DB_URL`로 직접 지정한 DB에서만 실행되고, 그 밖의 DB면 실패해서 멈춥니다.
+
 이메일 암호화 키는 서버 실행에 필요하지 않습니다. 이전 버전의 암호화된 회원 데이터가 있다면 아래 이관 절차를 완료할 때까지 기존 키를 보존해야 합니다.
 
 ## 인증 API

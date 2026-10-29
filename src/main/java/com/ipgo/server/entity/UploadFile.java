@@ -12,6 +12,8 @@ import jakarta.persistence.Table;
 import lombok.AccessLevel;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
+import org.hibernate.annotations.JdbcTypeCode;
+import org.hibernate.type.SqlTypes;
 
 // 수불부 업로드 기록. validation_report는 Python 정제 연동 때 매핑한다.
 @Entity
@@ -35,7 +37,9 @@ public class UploadFile {
     @Column(name = "storage_key", nullable = false, updatable = false)
     private String storageKey;
 
-    @Column(name = "file_hash", nullable = false, updatable = false, columnDefinition = "CHAR(64)")
+    // DB는 고정 길이 CHAR(64)다. JDBC 타입도 CHAR로 맞춰야 PostgreSQL 스키마 검증을 통과한다.
+    @JdbcTypeCode(SqlTypes.CHAR)
+    @Column(name = "file_hash", nullable = false, updatable = false, length = 64)
     private String fileHash;
 
     @Column(name = "revision_no", nullable = false, updatable = false)

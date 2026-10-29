@@ -52,7 +52,11 @@ class AuthIntegrationTests extends DatabaseIntegrationTest {
     @BeforeEach
     void clearTestDatabase() throws Exception {
         try (var connection = dataSource.getConnection()) {
-            assertThat(connection.getMetaData().getURL()).startsWith("jdbc:h2:mem:");
+            // 회원을 모두 지우므로 H2 메모리 DB나, 테스트용으로 직접 지정한 DB(IPGO_TEST_DB_URL)에서만 돈다.
+            String url = connection.getMetaData().getURL();
+            String testDb = System.getenv("IPGO_TEST_DB_URL");
+            assertThat(url.startsWith("jdbc:h2:mem:") || (testDb != null && !testDb.isBlank() && url.equals(testDb)))
+                    .as("테스트 DB가 아닌 곳에서 회원 삭제 테스트를 막습니다: " + url).isTrue();
         }
         users.deleteAll();
         verifications.deleteAll();

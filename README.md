@@ -311,6 +311,21 @@ S2·S3 모두 Bearer JWT가 필요하며 CSRF는 요구하지 않습니다. 수�
 
 R2·R3은 Bearer JWT가 필요하고, 다른 회원의 상품·발주는 `403`, 없는 상품·발주는 `404`입니다. 수불부 입고로 도착을 확인하는 `RECEIVED`와 기준일이 지났는데 입고가 없는 `OVERDUE` 판정은 정제 연동 뒤에 붙입니다. 저장 뒤 계산 시작(`runId`)도 계산 엔진 연동 때 붙입니다.
 
+## 대시보드와 SKU 상세 (D1 · K1)
+
+`calculation_runs`·`calculation_results`(V9)에 저장된 가장 최근 성공 계산을 읽어 보여줍니다(BE-11 · BE-12). 계산 엔진 연동(#27) 전에는 이 표를 채우는 코드가 없어 결과가 비어 있으며, 테스트는 표에 결과를 직접 넣어 확인합니다.
+
+| API | 동작 |
+|---|---|
+| `GET /api/dashboard/replenishment-needs?sort=shortage` (D1) | 입고 필요 목록. `sort`는 `shortage`(소진일 빠른 순, 기본) · `risk`(품절 위험 높은 순) · `amount`(금액 큰 순), 그 밖의 값은 `400`. 계산 결과가 없으면 `asOfDate`·`runId`가 `null`이고 목록이 비어 있습니다 |
+| `GET /api/products/{productId}/detail?from=&to=` (K1) | SKU 상세: 상품 · 입고 조건과 출처(`PRODUCT`·`DEFAULT`·`SUGGESTED`/`ESTIMATED`) · 계산 근거 · 정확도. 다른 회원 상품 `403`, 없는 상품 `404`, `from`이 `to`보다 늦거나 날짜 형식이 틀리면 `400` |
+
+- 판정: 화면을 열 때마다 오늘(한국 시간) 기준으로 다시 맞춥니다. 예상 소진일이 오늘 + 리드타임 안이면 `NEED_NOW`, 아니면 `NOT_NEEDED`입니다. 리드타임은 지금 적용되는 입고 조건(상품별 값 → 기본값 → 제안값)을 씁니다.
+- 기준일이 7일 넘게 지나면 `REUPLOAD_REQUIRED`이며, D1에서는 계산 불가 목록에 재업로드 안내 사유와 함께 보여줍니다.
+- 가장 최근 계산이 실패했으면 이전 성공 결과를 보여주면서 `resultStatus: STALE`과 `lastFailedRunAt`을 함께 돌려줍니다.
+- 화면용 정수(미확정): 재고는 내림, 수요(예상 출고 · 미충족 수요 · 예측 범위)는 올림, 금액은 원 단위 반올림입니다. 팀 결정이 나면 `DisplayQuantities`만 바꿉니다.
+- 아직 비어 있는 값: K1 `trend`(일별 수불 저장 #26 이후), `accuracy.history`(백테스트 연동 이후), `result.requiredQtyBeforeRounding`(ERD 저장 칸 없음), D1 `excluded[].date`(검증 리포트 연동 #26 이후).
+
 ## 비밀번호와 개인정보 저장
 
 - 비밀번호: PBKDF2-HMAC-SHA-256, 회원별 무작위 16바이트 salt, 600,000회 반복, 256비트 해시. `password_hash`에는 알고리즘 식별자와 salt·해시만 저장합니다. 단순 SHA-256 단회 해시는 사용하지 않습니다.
@@ -329,7 +344,7 @@ R2·R3은 Bearer JWT가 필요하고, 다른 회원의 상품·발주는 `403`, 
 
 ## Database 변경과 복구
 
-이미 병합된 `V1__create_users.sql`은 Flyway 이력을 보존하기 위해 수정하지 않습니다. 후속 `V2__store_plain_email.sql`에서 이메일을 `VARCHAR(254)`로 변경하고 unique 제약을 추가한 뒤 `email_lookup_hash`를 제거합니다. 새 DB에서는 V1~V8을 순서대로 적용합니다. V4는 `warehouses`·`products`·`inventory_units`, V5는 `upload_files`, V6은 `replenishment_settings`, V7은 `planned_receipts`, V8은 `auth_sessions`·`refresh_tokens`를 새로 만들며 기존 표는 바꾸지 않습니다. 나머지 테이블은 해당 기능 구현 시 추가합니다. Hibernate는 스키마를 자동 수정하지 않고 검증만 수행합니다.
+이미 병합된 `V1__create_users.sql`은 Flyway 이력을 보존하기 위해 수정하지 않습니다. 후속 `V2__store_plain_email.sql`에서 이메일을 `VARCHAR(254)`로 변경하고 unique 제약을 추가한 뒤 `email_lookup_hash`를 제거합니다. 새 DB에서는 V1~V9를 순서대로 적용합니다. V4는 `warehouses`·`products`·`inventory_units`, V5는 `upload_files`, V6은 `replenishment_settings`, V7은 `planned_receipts`, V8은 `auth_sessions`·`refresh_tokens`, V9는 `calculation_runs`·`calculation_results`를 새로 만들며 기존 표는 바꾸지 않습니다. 나머지 테이블은 해당 기능 구현 시 추가합니다. Hibernate는 스키마를 자동 수정하지 않고 검증만 수행합니다.
 
 V2는 첫 단계에서 기존 `v1:` 암호문을 검사합니다. 남아 있으면 칼럼 변경·삭제 전에 실패하여 서버 시작을 중단합니다. 자동 복호화나 데이터 삭제는 수행하지 않습니다.
 

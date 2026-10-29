@@ -5,6 +5,7 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 
@@ -44,7 +45,16 @@ final class UploadTestFiles {
         return parts;
     }
 
-    static byte[] workbook() throws IOException { return zip(parts(), 0); }
+    // 서버가 내용이 같은 파일을 막으므로, 부를 때마다 셀 값이 다른 파일을 만든다.
+    // 같은 파일을 다시 올리는 테스트는 돌려받은 바이트를 그대로 다시 쓴다.
+    private static final AtomicInteger SEQUENCE = new AtomicInteger();
+
+    static byte[] workbook() throws IOException {
+        var parts = parts();
+        parts.put("xl/worksheets/sheet1.xml", parts.get("xl/worksheets/sheet1.xml")
+                .replace("<v>10</v>", "<v>" + SEQUENCE.incrementAndGet() + "</v>"));
+        return zip(parts, 0);
+    }
 
     static byte[] zip(Map<String, String> parts, int expandedMegabytes) throws IOException {
         var bytes = new ByteArrayOutputStream();

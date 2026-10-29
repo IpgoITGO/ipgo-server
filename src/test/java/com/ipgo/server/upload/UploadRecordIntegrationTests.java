@@ -73,6 +73,7 @@ class UploadRecordIntegrationTests extends DatabaseIntegrationTest {
         upload(userId, "수불부_202609.xlsx", false)
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("code").value("UPLOAD_DUPLICATE"))
+                .andExpect(jsonPath("details.reason").value("SAME_PERIOD"))
                 .andExpect(jsonPath("details.existing.originalName").value("2026-09.xlsx"))
                 .andExpect(jsonPath("details.existing.periodStart").value("2026-09-01"))
                 .andExpect(jsonPath("details.existing.periodEnd").value("2026-09-30"))
@@ -85,6 +86,48 @@ class UploadRecordIntegrationTests extends DatabaseIntegrationTest {
         assertThat(jdbc.queryForList("SELECT u.revision_no FROM upload_files u JOIN warehouses w "
                 + "ON w.id = u.warehouse_id WHERE w.user_id = ? ORDER BY u.revision_no", Integer.class, userId))
                 .containsExactly(1, 2);
+    }
+
+    @Test
+    void sameFileUnderAnotherPeriodIsRejectedEvenWithOverwrite() throws Exception {
+        long userId = newUser();
+        byte[] september = UploadTestFiles.workbook();
+        upload(userId, "2026-09.xlsx", september, false).andExpect(status().isAccepted());
+
+        for (boolean overwrite : new boolean[] {false, true}) {
+            upload(userId, "2026-10.xlsx", september, overwrite)
+                    .andExpect(status().isConflict())
+                    .andExpect(jsonPath("code").value("UPLOAD_DUPLICATE"))
+                    .andExpect(jsonPath("details.reason").value("SAME_FILE"))
+                    .andExpect(jsonPath("details.existing.originalName").value("2026-09.xlsx"))
+                    .andExpect(jsonPath("details.existing.periodStart").value("2026-09-01"));
+        }
+        assertThat(uploadCount(userId)).isEqualTo(1);
+        assertThat(root.resolve(Long.toString(userId)).toFile().list()).hasSize(1);
+    }
+
+    @Test
+    void sameFileCanBeUploadedAgainForSamePeriodWithOverwrite() throws Exception {
+        long userId = newUser();
+        byte[] september = UploadTestFiles.workbook();
+        upload(userId, "2026-09.xlsx", september, false).andExpect(status().isAccepted());
+
+        upload(userId, "2026-09.xlsx", september, false)
+                .andExpect(status().isConflict()).andExpect(jsonPath("details.reason").value("SAME_PERIOD"));
+        upload(userId, "2026-09.xlsx", september, true).andExpect(status().isAccepted());
+        assertThat(uploadCount(userId)).isEqualTo(2);
+    }
+
+    @Test
+    void sameFileOfAnotherUserOrFailedUploadIsNotDuplicate() throws Exception {
+        long owner = newUser();
+        long other = newUser();
+        byte[] september = UploadTestFiles.workbook();
+        upload(owner, "2026-09.xlsx", september, false).andExpect(status().isAccepted());
+        upload(other, "2026-10.xlsx", september, false).andExpect(status().isAccepted());
+
+        jdbc.update("UPDATE upload_files SET status = 'FAILED' WHERE storage_key LIKE ?", owner + "/%");
+        upload(owner, "2026-10.xlsx", september, false).andExpect(status().isAccepted());
     }
 
     @Test
@@ -134,7 +177,11 @@ class UploadRecordIntegrationTests extends DatabaseIntegrationTest {
     }
 
     private ResultActions upload(long userId, String fileName, boolean overwrite) throws Exception {
-        var file = new MockMultipartFile("file", fileName, "application/octet-stream", UploadTestFiles.workbook());
+        return upload(userId, fileName, UploadTestFiles.workbook(), overwrite);
+    }
+
+    private ResultActions upload(long userId, String fileName, byte[] content, boolean overwrite) throws Exception {
+        var file = new MockMultipartFile("file", fileName, "application/octet-stream", content);
         return mvc.perform(multipart("/api/uploads").file(file).param("overwrite", Boolean.toString(overwrite))
                 .with(user(Long.toString(userId))).with(csrf()));
     }

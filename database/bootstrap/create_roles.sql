@@ -26,9 +26,11 @@ ALTER ROLE ipgo_ai_reader SET default_transaction_read_only = on;
 -- 객체 소유권을 넘길 수 있다. 이전 직전에 SET 권한을 켜고 직후 다시 끈다.
 SELECT format('GRANT ipgo_migrator TO %I WITH SET TRUE', current_user)
 \gexec
+SET ROLE ipgo_migrator;
+REVOKE CREATE ON SCHEMA public FROM PUBLIC;
+RESET ROLE;
 ALTER SCHEMA public OWNER TO ipgo_migrator;
 SELECT format('ALTER DATABASE %I OWNER TO ipgo_migrator', current_database())
 \gexec
 SELECT format('GRANT ipgo_migrator TO %I WITH SET FALSE', current_user)
 \gexec
-REVOKE CREATE ON SCHEMA public FROM PUBLIC;

@@ -21,6 +21,7 @@ import java.util.UUID;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
@@ -29,7 +30,8 @@ import org.springframework.web.multipart.MultipartFile;
 import tools.jackson.databind.json.JsonMapper;
 
 @Service
-public class LocalUploadStorage {
+@ConditionalOnProperty(name = "ipgo.upload.storage", havingValue = "local", matchIfMissing = true)
+public class LocalUploadStorage implements UploadStorage {
     private static final Logger log = LoggerFactory.getLogger(LocalUploadStorage.class);
     private final Path root;
     private final long maxBytes;
@@ -44,6 +46,7 @@ public class LocalUploadStorage {
     }
 
     // 디스크나 DB를 건드리기 전에 할 수 있는 검사: 파일명·확장자·빈 파일·크기.
+    @Override
     public void precheck(MultipartFile file) {
         validateName(file.getOriginalFilename());
         if (file.isEmpty()) throw invalid("빈 파일은 업로드할 수 없습니다.");
@@ -51,6 +54,7 @@ public class LocalUploadStorage {
     }
 
     // 저장하기 전에 같은 파일을 이미 올렸는지 보려고 내용 해시(SHA-256)를 먼저 구한다.
+    @Override
     public String contentHash(MultipartFile file) {
         MessageDigest digest = sha256();
         try (var input = new DigestInputStream(file.getInputStream(), digest)) {
@@ -63,6 +67,7 @@ public class LocalUploadStorage {
         return HexFormat.of().formatHex(digest.digest());
     }
 
+    @Override
     public StoredUpload store(long userId, MultipartFile file) {
         if (userId <= 0) throw new IllegalArgumentException("회원 ID가 올바르지 않습니다.");
         String name = file.getOriginalFilename();

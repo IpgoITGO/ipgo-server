@@ -96,6 +96,18 @@ one-off task로 실행하며 상시 서비스에서는 이 이미지를 사용�
 `verify` task에는 각각 필요한 최소 역할만 전달합니다. 실제 RDS 실행은 migration 직전 snapshot이
 `available`인 것을 확인하고 Server·AI service가 0인 상태에서만 진행합니다.
 
+### AWS dev 실행
+
+AWS에서는 `IPGO_UPLOAD_STORAGE=s3`와 `IPGO_UPLOAD_BUCKET`을 설정해 원본을 private S3에
+저장합니다. ECS task role의 임시 자격 증명을 사용하므로 애플리케이션에 AWS Access Key를 넣지
+않습니다. DB 연결 값과 JWT 서명 키는 Secrets Manager에서 주입하고 runtime에서는 Flyway를
+실행하지 않습니다.
+
+`dev` 브랜치의 `Deploy server to AWS dev` workflow는 수동 승인 후 GitHub OIDC로 image를 ECR에
+push하고 ECS task revision을 갱신합니다. GitHub `dev` Environment 승인과
+`AWS_DEPLOY_ROLE_ARN`, `AWS_ACCOUNT_ID` 변수가 필요하며 실제 Secret 값은 GitHub에 저장하지
+않습니다. 배포가 끝난 뒤 `desired_count`를 `0`으로 내려 task 실행 비용을 멈출 수 있습니다.
+
 JWT 키는 환경변수 또는 비밀 관리 도구에서 주입하며 Git·로그에 기록하지 않습니다. 키가 없거나 형식·길이가 잘못되면 서버 시작을 중단합니다. 키를 변경하면 기존 액세스 토큰은 검증에 실패합니다. 테스트에서는 임시 키를 자동 생성하므로 PostgreSQL·서명 키 설정 없이 `./gradlew test`를 실행할 수 있습니다. H2는 테스트에서만 사용합니다.
 
 ### 실제 PostgreSQL로 테스트

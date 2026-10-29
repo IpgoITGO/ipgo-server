@@ -24,6 +24,8 @@ ipgo:
     jwt-secret: ${IPGO_JWT_SECRET:}
     cookie-secure: ${IPGO_AUTH_COOKIE_SECURE:true}
   upload:
+    storage: ${IPGO_UPLOAD_STORAGE:local}
     directory: ${IPGO_UPLOAD_DIR:./storage/uploads}
+    bucket: ${IPGO_UPLOAD_BUCKET:}
   mail:
     from: ${IPGO_MAIL_FROM:}

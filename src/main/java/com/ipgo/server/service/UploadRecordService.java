@@ -7,7 +7,7 @@ import com.ipgo.server.entity.UploadFile;
 import com.ipgo.server.entity.UploadPeriod;
 import com.ipgo.server.entity.Warehouse;
 import com.ipgo.server.exception.UploadException;
-import com.ipgo.server.infrastructure.storage.LocalUploadStorage;
+import com.ipgo.server.infrastructure.storage.UploadStorage;
 import com.ipgo.server.repository.UploadFileRepository;
 
 import java.util.List;
@@ -24,11 +24,11 @@ public class UploadRecordService {
     static final String SAME_PERIOD = "SAME_PERIOD";
     static final String SAME_FILE = "SAME_FILE";
 
-    private final LocalUploadStorage storage;
+    private final UploadStorage storage;
     private final WarehouseService warehouses;
     private final UploadFileRepository uploads;
 
-    public UploadRecordService(LocalUploadStorage storage, WarehouseService warehouses, UploadFileRepository uploads) {
+    public UploadRecordService(UploadStorage storage, WarehouseService warehouses, UploadFileRepository uploads) {
         this.storage = storage;
         this.warehouses = warehouses;
         this.uploads = uploads;

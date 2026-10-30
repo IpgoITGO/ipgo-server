@@ -152,6 +152,27 @@ class DashboardIntegrationTests extends DatabaseIntegrationTest {
     }
 
     @Test
+    void hidesInactiveProductsFromNeedsButKeepsDetail() throws Exception {
+        long userId = newUser();
+        long active = product(userId, "8800000000001", "케어트릿 120g");
+        long inactive = product(userId, "8800000000002", "단종 간식");
+        long run = run(warehouseOf(userId), TODAY.minusDays(1), "DONE");
+        result(run, active, "OK", TODAY.plusDays(1), 10L, "1000", "0.1000", null);
+        result(run, inactive, "OK", TODAY.plusDays(1), 20L, "2000", "0.2000", null);
+        jdbc.update("UPDATE products SET is_active = FALSE WHERE id = ?", inactive);
+
+        get(userId, NEEDS)
+                .andExpect(jsonPath("summary.needCount").value(1))
+                .andExpect(jsonPath("items.length()").value(1))
+                .andExpect(jsonPath("items[0].productId").value(active));
+        get(userId, detail(inactive)).andExpect(status().isOk());
+
+        // 다시 켜면 남아 있는 계산 결과로 바로 다시 보인다.
+        jdbc.update("UPDATE products SET is_active = TRUE WHERE id = ?", inactive);
+        get(userId, NEEDS).andExpect(jsonPath("summary.needCount").value(2));
+    }
+
+    @Test
     void asksForReuploadWhenAsOfDateIsTooOld() throws Exception {
         long userId = newUser();
         long product = product(userId, "8800000000001", "케어트릿 120g");

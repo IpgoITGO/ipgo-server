@@ -88,6 +88,8 @@ public class DashboardService {
         int notNeeded = 0;
         for (CalculationResult result : runResults) {
             Product product = byId.get(result.getProductId());
+            // 셀러가 사용을 끈 상품은 계산 뒤에 껐더라도 바로 목록에서 뺀다.
+            if (!product.isActive()) continue;
             Integer leadTime = defaults.applying(overrides.get(product.getId())).leadTimeDays();
             switch (NeedJudgment.needStatus(result, run.getAsOfDate(), today, leadTime)) {
                 case NeedJudgment.NEED_NOW -> items.add(new ReplenishmentNeeds.Item(product.getId(), result.getId(),

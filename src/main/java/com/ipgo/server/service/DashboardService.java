@@ -1,5 +1,6 @@
 package com.ipgo.server.service;
 
+import com.ipgo.server.dto.UploadProcessingReport;
 import com.ipgo.server.dto.response.ProductSettings;
 import com.ipgo.server.dto.response.ReplenishmentNeeds;
 import com.ipgo.server.entity.CalculationResult;
@@ -23,12 +24,14 @@ import java.time.OffsetDateTime;
 import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -43,17 +46,19 @@ public class DashboardService {
     private final ProductRepository products;
     private final ReplenishmentSettingRepository settings;
     private final UploadFileRepository uploads;
+    private final JdbcTemplate jdbc;
     private final Clock clock;
 
     public DashboardService(WarehouseService warehouses, CalculationRunRepository runs,
             CalculationResultRepository results, ProductRepository products,
-            ReplenishmentSettingRepository settings, UploadFileRepository uploads, Clock clock) {
+            ReplenishmentSettingRepository settings, UploadFileRepository uploads, JdbcTemplate jdbc, Clock clock) {
         this.warehouses = warehouses;
         this.runs = runs;
         this.results = results;
         this.products = products;
         this.settings = settings;
         this.uploads = uploads;
+        this.jdbc = jdbc;
         this.clock = clock;
     }
 
@@ -81,6 +86,7 @@ public class DashboardService {
         Map<Long, ReplenishmentSetting> overrides = settings.findByProductIdIn(productIds).stream()
                 .collect(Collectors.toMap(ReplenishmentSetting::getProductId, Function.identity()));
         ProductSettings defaults = ProductSettings.defaults(warehouse);
+        Map<Long, LocalDate> mismatchDates = mismatchDates(run.getId());
 
         List<ReplenishmentNeeds.Item> items = new ArrayList<>();
         List<ReplenishmentNeeds.NotCalculable> notCalculable = new ArrayList<>();
@@ -97,7 +103,7 @@ public class DashboardService {
                         DisplayQuantities.won(result.getRecommendedAmount()), result.getExpectedShortageOn(),
                         leadTime, result.getPreArrivalRisk()));
                 case CalculationResult.EXCLUDED -> excluded.add(new ReplenishmentNeeds.Excluded(product.getId(),
-                        product.getSkuName(), null, result.getReason()));
+                        product.getSkuName(), mismatchDates.get(product.getId()), result.getReason()));
                 // 기준일이 오래돼 재업로드가 필요한 상품도 계산할 수 없는 목록에 사유와 함께 보여준다.
                 case CalculationResult.NOT_CALCULABLE, CalculationResult.REUPLOAD_REQUIRED ->
                         notCalculable.add(new ReplenishmentNeeds.NotCalculable(product.getId(), product.getSkuName(),
@@ -111,6 +117,20 @@ public class DashboardService {
                 lastFailedRunAt, latestUploadId,
                 new ReplenishmentNeeds.Summary(items.size(), notNeeded, notCalculable.size(), excluded.size()),
                 items, notCalculable, excluded);
+    }
+
+    // 이 계산에 쓴 업로드들의 검증 리포트에서 상품별 검산 불일치 날짜를 찾는다. 여러 파일에 있으면 최근 업로드 값을 쓴다.
+    private Map<Long, LocalDate> mismatchDates(long runId) {
+        List<Long> uploadIds = jdbc.queryForList(
+                "SELECT upload_file_id FROM run_source_files WHERE run_id = ? ORDER BY upload_file_id", Long.class, runId);
+        Map<Long, LocalDate> dates = new HashMap<>();
+        for (UploadFile upload : uploads.findAllById(uploadIds).stream()
+                .sorted(Comparator.comparing(UploadFile::getId)).toList()) {
+            UploadProcessingReport report = upload.getValidationReport();
+            if (report == null || report.validation() == null) continue;
+            report.validation().excludedSkus().forEach(sku -> dates.put(sku.productId(), sku.date()));
+        }
+        return dates;
     }
 
     static final String REUPLOAD_REASON = "기준일이 7일 넘게 지났어요. 최신 수불부를 다시 올려 주세요";

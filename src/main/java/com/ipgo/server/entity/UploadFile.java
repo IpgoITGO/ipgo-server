@@ -1,5 +1,8 @@
 package com.ipgo.server.entity;
 
+import com.ipgo.server.dto.UploadProcessingReport;
+import java.util.UUID;
+
 import java.time.Instant;
 import java.time.LocalDate;
 
@@ -15,7 +18,7 @@ import lombok.NoArgsConstructor;
 import org.hibernate.annotations.JdbcTypeCode;
 import org.hibernate.type.SqlTypes;
 
-// 수불부 업로드 기록. validation_report는 Python 정제 연동 때 매핑한다.
+// 수불부 업로드 기록과 정제 결과. 원본과 revision은 완료 후에도 보존한다.
 @Entity
 @Table(name = "upload_files")
 @Getter
@@ -57,6 +60,10 @@ public class UploadFile {
     @Column(name = "job_id", length = 100)
     private String jobId;
 
+    @JdbcTypeCode(SqlTypes.JSON)
+    @Column(name = "validation_report", columnDefinition = "jsonb")
+    private UploadProcessingReport validationReport;
+
     @Column(name = "created_at", nullable = false, updatable = false)
     private Instant createdAt;
 
@@ -70,6 +77,22 @@ public class UploadFile {
         this.periodStart = period.start();
         this.periodEnd = period.end();
         this.status = PROCESSING;
+        this.jobId = UUID.randomUUID().toString();
         this.createdAt = Instant.now();
+    }
+
+    public boolean isProcessing() { return PROCESSING.equals(status); }
+
+    public void complete(LocalDate periodEnd, UploadProcessingReport report) {
+        if (!isProcessing()) throw new IllegalStateException("Upload already finished");
+        this.periodEnd = periodEnd;
+        this.validationReport = report;
+        this.status = "DONE";
+    }
+
+    public void fail(UploadProcessingReport.Failure failure) {
+        if (!isProcessing()) throw new IllegalStateException("Upload already finished");
+        this.validationReport = new UploadProcessingReport(null, null, null, failure);
+        this.status = FAILED;
     }
 }

@@ -2,6 +2,8 @@ package com.ipgo.server.controller;
 
 import com.ipgo.server.dto.response.UploadAccepted;
 import com.ipgo.server.dto.response.UploadPeriods;
+import com.ipgo.server.dto.response.UploadResult;
+import org.springframework.web.bind.annotation.PathVariable;
 import com.ipgo.server.service.UploadRecordService;
 
 import java.security.Principal;
@@ -39,5 +41,10 @@ public class UploadController {
     @GetMapping("/periods")
     public UploadPeriods periods(Principal principal) {
         return uploads.periods(Long.parseLong(principal.getName()));
+    }
+
+    @GetMapping("/{uploadId}")
+    public UploadResult result(@PathVariable long uploadId, Principal principal) {
+        return uploads.result(Long.parseLong(principal.getName()), uploadId);
     }
 }

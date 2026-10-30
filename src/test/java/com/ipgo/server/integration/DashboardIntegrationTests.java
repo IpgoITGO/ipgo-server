@@ -2,7 +2,10 @@ package com.ipgo.server.integration;
 
 import com.ipgo.server.DatabaseIntegrationTest;
 import com.ipgo.server.dto.CleanedStockUnit;
+import com.ipgo.server.dto.UploadProcessingReport;
+import com.ipgo.server.entity.UploadFile;
 import com.ipgo.server.repository.ProductRepository;
+import com.ipgo.server.repository.UploadFileRepository;
 import com.ipgo.server.service.ProductRegistrationService;
 import com.ipgo.server.service.WarehouseService;
 
@@ -39,6 +42,7 @@ class DashboardIntegrationTests extends DatabaseIntegrationTest {
     @Autowired ProductRegistrationService registration;
     @Autowired WarehouseService warehouses;
     @Autowired ProductRepository products;
+    @Autowired UploadFileRepository uploads;
 
     @AfterEach
     void cleanUp() {
@@ -50,6 +54,7 @@ class DashboardIntegrationTests extends DatabaseIntegrationTest {
         jdbc.update("DELETE FROM calculation_runs");
         jdbc.update("DELETE FROM product_daily_stocks");
         jdbc.update("DELETE FROM daily_stock_records");
+        jdbc.update("DELETE FROM upload_files");
         jdbc.update("DELETE FROM replenishment_settings");
         jdbc.update("DELETE FROM inventory_units");
         jdbc.update("DELETE FROM products");
@@ -173,6 +178,53 @@ class DashboardIntegrationTests extends DatabaseIntegrationTest {
     }
 
     @Test
+    void showsMismatchDateOfExcludedProductFromRunSourceReport() throws Exception {
+        long userId = newUser();
+        long warehouse = warehouseOf(userId);
+        long product = product(userId, "8800000000001", "덴탈껌 M 5입");
+        long upload = upload(warehouse, LocalDate.of(2026, 10, 1), "PROCESSING");
+        UploadFile saved = uploads.findById(upload).orElseThrow();
+        saved.complete(LocalDate.of(2026, 10, 14), new UploadProcessingReport(LocalDate.of(2026, 10, 14),
+                new UploadProcessingReport.Validation(1, 0, List.of(new UploadProcessingReport.ExcludedSku(product,
+                        "8800000000001", "덴탈껌 M 5입", LocalDate.of(2026, 10, 12), "검산이 3개 달라요"))),
+                null, null));
+        uploads.save(saved);
+        long run = run(warehouse, TODAY.minusDays(1), "DONE");
+        jdbc.update("INSERT INTO run_source_files (run_id, upload_file_id) VALUES (?, ?)", run, upload);
+        result(run, product, "EXCLUDED", null, null, null, null, "검산이 3개 달라요");
+
+        get(userId, NEEDS)
+                .andExpect(jsonPath("excluded[0].productId").value(product))
+                .andExpect(jsonPath("excluded[0].date").value("2026-10-12"));
+    }
+
+    @Test
+    void detailTrendUsesLatestDoneUploadPerDate() throws Exception {
+        long userId = newUser();
+        long warehouse = warehouseOf(userId);
+        long product = product(userId, "8800000000001", "케어트릿 120g");
+        long first = upload(warehouse, LocalDate.of(2026, 10, 1), "DONE");
+        long overwritten = upload(warehouse, LocalDate.of(2026, 10, 1), "DONE");
+        long failed = upload(warehouse, LocalDate.of(2026, 10, 1), "FAILED");
+        daily(product, first, LocalDate.of(2026, 10, 1), "10.000", "2.000", true);
+        daily(product, first, LocalDate.of(2026, 10, 2), "0.000", "0.000", false);
+        daily(product, overwritten, LocalDate.of(2026, 10, 2), "7.600", "1.200", true);
+        daily(product, failed, LocalDate.of(2026, 10, 3), "99.000", "9.000", true);
+
+        get(userId, detail(product))
+                .andExpect(jsonPath("trend.length()").value(2))
+                .andExpect(jsonPath("trend[0].date").value("2026-10-01"))
+                .andExpect(jsonPath("trend[0].closingQty").value(10))
+                // 덮어쓴 업로드 값을 쓰고, 재고는 내림 · 출고는 올림으로 보여준다.
+                .andExpect(jsonPath("trend[1].closingQty").value(7))
+                .andExpect(jsonPath("trend[1].outboundQty").value(2))
+                .andExpect(jsonPath("trend[1].isValidObservation").value(true));
+        get(userId, detail(product) + "?from=2026-10-02&to=2026-10-02")
+                .andExpect(jsonPath("trend.length()").value(1))
+                .andExpect(jsonPath("trend[0].date").value("2026-10-02"));
+    }
+
+    @Test
     void asksForReuploadWhenAsOfDateIsTooOld() throws Exception {
         long userId = newUser();
         long product = product(userId, "8800000000001", "케어트릿 120g");
@@ -262,6 +314,25 @@ class DashboardIntegrationTests extends DatabaseIntegrationTest {
                 VALUES (?, ?, ?, ?, 1.000, 30, ?, CAST(? AS NUMERIC(18, 2)), ?, ?, ?, JSON '{}',
                     CAST(? AS NUMERIC(5, 4)))
                 """, runId, productId, TODAY.minusDays(2), TODAY, qty, amount, shortageOn, status, reason, risk);
+    }
+
+    private long upload(long warehouseId, LocalDate periodStart, String status) {
+        int revision = jdbc.queryForObject("SELECT COUNT(*) FROM upload_files WHERE warehouse_id = ? AND period_start = ?",
+                Integer.class, warehouseId, periodStart) + 1;
+        jdbc.update("""
+                INSERT INTO upload_files (warehouse_id, original_name, storage_key, file_hash, revision_no,
+                    period_start, period_end, status)
+                VALUES (?, 'ledger.xlsx', 'test-key', ?, ?, ?, ?, ?)
+                """, warehouseId, "a".repeat(64), revision, periodStart, periodStart.plusDays(30), status);
+        return jdbc.queryForObject("SELECT MAX(id) FROM upload_files", Long.class);
+    }
+
+    private void daily(long productId, long uploadId, LocalDate date, String closing, String outbound, boolean valid) {
+        jdbc.update("""
+                INSERT INTO product_daily_stocks (product_id, upload_file_id, stock_date, opening_qty, inbound_qty,
+                    outbound_qty, adjustment_qty, closing_qty, is_valid_observation)
+                VALUES (?, ?, ?, 0, 0, CAST(? AS NUMERIC(18, 3)), 0, CAST(? AS NUMERIC(18, 3)), ?)
+                """, productId, uploadId, date, outbound, closing, valid);
     }
 
     private ResultActions get(long userId, String path) throws Exception {

@@ -21,30 +21,37 @@ import java.time.LocalDate;
 import java.util.List;
 import java.util.Optional;
 
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 // K1 SKU 상세 (BE-11 · BE-12). 상품 · 입고 조건 · 가장 최근에 성공한 계산 결과 · 정확도를 모은다.
-// 재고 추이(trend)는 일별 수불 저장(#26), 정확도 이력(history)은 백테스트 연동 뒤에 채운다.
+// 정확도 이력(history)은 백테스트 연동 뒤에 채운다.
 @Service
 public class ProductDetailService {
+    // from · to를 주지 않으면 마지막 수불 날짜까지 90일을 보여준다.
+    static final int DEFAULT_TREND_DAYS = 90;
+
     private final ProductRepository products;
     private final WarehouseService warehouses;
     private final ReplenishmentSettingRepository settings;
     private final CalculationRunRepository runs;
     private final CalculationResultRepository results;
     private final InventoryUnitRepository inventoryUnits;
+    private final JdbcTemplate jdbc;
     private final Clock clock;
 
     public ProductDetailService(ProductRepository products, WarehouseService warehouses,
             ReplenishmentSettingRepository settings, CalculationRunRepository runs,
-            CalculationResultRepository results, InventoryUnitRepository inventoryUnits, Clock clock) {
+            CalculationResultRepository results, InventoryUnitRepository inventoryUnits, JdbcTemplate jdbc,
+            Clock clock) {
         this.products = products;
         this.warehouses = warehouses;
         this.settings = settings;
         this.runs = runs;
         this.results = results;
         this.inventoryUnits = inventoryUnits;
+        this.jdbc = jdbc;
         this.clock = clock;
     }
 
@@ -65,9 +72,10 @@ public class ProductDetailService {
                 .map(InventoryUnit::getReceivedOn).orElse(null);
         var summary = new ProductDetail.Product(product.getId(), product.getSkuBarcode(), product.getSkuName(),
                 warehouse.map(Warehouse::getName).orElse(null));
+        List<ProductDetail.Trend> trend = trend(productId, from, to);
         if (result.isEmpty()) {
             return new ProductDetail(summary, null, run.map(CalculationRun::getAsOfDate).orElse(null), null,
-                    productSettings, null, null, List.of());
+                    productSettings, null, null, trend);
         }
 
         CalculationResult calculated = result.get();
@@ -75,7 +83,30 @@ public class ProductDetailService {
         LocalDate today = LocalDate.now(clock.withZone(DashboardService.SEOUL));
         String needStatus = NeedJudgment.needStatus(calculated, asOfDate, today, productSettings.leadTimeDays());
         return new ProductDetail(summary, needStatus, asOfDate, calculated.getExpectedShortageOn(), productSettings,
-                result(calculated), accuracy(calculated, firstInboundOn), List.of());
+                result(calculated), accuracy(calculated, firstInboundOn), trend);
+    }
+
+    // 정제가 끝난(DONE) 업로드의 상품 일별 수불. 같은 날짜가 덮어쓰기로 여러 번 올라왔으면 가장 최근 업로드를 쓴다.
+    private List<ProductDetail.Trend> trend(long productId, LocalDate from, LocalDate to) {
+        LocalDate end = to != null ? to : jdbc.queryForObject("""
+                SELECT MAX(s.stock_date) FROM product_daily_stocks s
+                JOIN upload_files u ON u.id = s.upload_file_id
+                WHERE s.product_id = ? AND u.status = 'DONE'
+                """, LocalDate.class, productId);
+        if (end == null) return List.of();
+        LocalDate start = from != null ? from : end.minusDays(DEFAULT_TREND_DAYS - 1);
+        return jdbc.query("""
+                SELECT s.stock_date, s.closing_qty, s.outbound_qty, s.is_valid_observation
+                FROM product_daily_stocks s
+                WHERE s.product_id = ? AND s.stock_date BETWEEN ? AND ?
+                  AND s.upload_file_id = (
+                      SELECT MAX(l.upload_file_id) FROM product_daily_stocks l
+                      JOIN upload_files u ON u.id = l.upload_file_id
+                      WHERE l.product_id = s.product_id AND l.stock_date = s.stock_date AND u.status = 'DONE')
+                ORDER BY s.stock_date
+                """, (rs, i) -> new ProductDetail.Trend(rs.getObject(1, LocalDate.class),
+                        DisplayQuantities.stock(rs.getBigDecimal(2)), DisplayQuantities.demand(rs.getBigDecimal(3)),
+                        rs.getBoolean(4)), productId, start, end);
     }
 
     private static ProductDetail.Settings settings(Product product, Optional<Warehouse> warehouse,

@@ -1,0 +1,15 @@
+{
+  "periodStart": "2026-09-01",
+  "periodEnd": "2026-09-01",
+  "asOfDate": "2026-09-01",
+  "products": [{"skuBarcode": "TEST-A", "skuName": "테스트 상품", "unitCost": 1000, "isNew": true}],
+  "inventoryUnits": [{"sourceInventoryKey": "LOT-1", "skuBarcode": "TEST-A", "receivedOn": "2026-09-01"}],
+  "unitDailyRecords": [{"uploadFileId": 1, "sourceInventoryKey": "LOT-1", "receivedOn": "2026-09-01",
+    "stockDate": "2026-09-01", "openingQty": 10, "inboundQty": 0, "outboundQty": 2,
+    "adjustmentQty": 0, "closingQty": 8, "sourceSheet": "재고변동", "sourceRow": 5}],
+  "productDailyStocks": [{"uploadFileId": 1, "skuBarcode": "TEST-A", "stockDate": "2026-09-01",
+    "openingQty": 10, "inboundQty": 0, "outboundQty": 2, "adjustmentQty": 0, "closingQty": 8,
+    "isValidObservation": true, "observationNote": null}],
+  "validation": {"checkedSkuCount": 1, "targetSkuCount": 1, "excludedSkus": []},
+  "estimatedReviewCycleDays": 7
+}

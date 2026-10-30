@@ -9,8 +9,17 @@ import java.util.Optional;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
+import org.springframework.data.jpa.repository.Lock;
+import jakarta.persistence.LockModeType;
 
 public interface UploadFileRepository extends JpaRepository<UploadFile, Long> {
+    @Query("SELECT u.warehouseId FROM UploadFile u WHERE u.id = :id")
+    Optional<Long> warehouseId(@Param("id") long id);
+
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("SELECT u FROM UploadFile u WHERE u.id = :id")
+    Optional<UploadFile> findByIdForUpdate(@Param("id") long id);
+
     // 실패하지 않은 같은 기간 업로드 중 가장 최근 것. 있으면 "이미 올린 기간"이다.
     Optional<UploadFile> findFirstByWarehouseIdAndPeriodStartAndStatusNotOrderByRevisionNoDesc(
             Long warehouseId, LocalDate periodStart, String status);

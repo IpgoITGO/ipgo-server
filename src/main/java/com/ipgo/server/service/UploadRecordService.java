@@ -3,6 +3,8 @@ package com.ipgo.server.service;
 import com.ipgo.server.dto.StoredUpload;
 import com.ipgo.server.dto.response.UploadAccepted;
 import com.ipgo.server.dto.response.UploadPeriods;
+import com.ipgo.server.dto.response.UploadResult;
+import com.ipgo.server.repository.WarehouseRepository;
 import com.ipgo.server.entity.UploadFile;
 import com.ipgo.server.entity.UploadPeriod;
 import com.ipgo.server.entity.Warehouse;
@@ -27,11 +29,14 @@ public class UploadRecordService {
     private final UploadStorage storage;
     private final WarehouseService warehouses;
     private final UploadFileRepository uploads;
+    private final WarehouseRepository warehouseRepository;
 
-    public UploadRecordService(UploadStorage storage, WarehouseService warehouses, UploadFileRepository uploads) {
+    public UploadRecordService(UploadStorage storage, WarehouseService warehouses, UploadFileRepository uploads,
+            WarehouseRepository warehouseRepository) {
         this.storage = storage;
         this.warehouses = warehouses;
         this.uploads = uploads;
+        this.warehouseRepository = warehouseRepository;
     }
 
     @Transactional
@@ -67,6 +72,17 @@ public class UploadRecordService {
                         uploads.findLatestPerPeriod(warehouse.getId()).stream().map(UploadPeriods.Item::from).toList(),
                         uploads.findFirstByWarehouseIdOrderByIdDesc(warehouse.getId()).map(UploadFile::getId).orElse(null)))
                 .orElse(new UploadPeriods(List.of(), null));
+    }
+
+    @Transactional(readOnly = true)
+    public UploadResult result(long userId, long uploadId) {
+        UploadFile upload = uploads.findById(uploadId).orElseThrow(() ->
+                new UploadException(HttpStatus.NOT_FOUND, "NOT_FOUND", "업로드 기록을 찾을 수 없습니다."));
+        Warehouse warehouse = warehouseRepository.findById(upload.getWarehouseId()).orElseThrow();
+        if (!warehouse.getUserId().equals(userId)) {
+            throw new UploadException(HttpStatus.FORBIDDEN, "FORBIDDEN", "접근 권한이 없습니다.");
+        }
+        return UploadResult.from(upload);
     }
 
     // reason이 SAME_PERIOD면 화면이 덮어쓰기 확인을 띄우고, SAME_FILE이면 덮어쓰기 없이 안내만 한다.

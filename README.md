@@ -13,7 +13,7 @@ Ipgo 서비스의 API와 서버 동작을 관리하는 저장소입니다.
 | Gradle | 9.8.2, 저장소의 Wrapper 사용 |
 | 기본 의존성 | Spring MVC, Validation, Actuator, OAuth2 Resource Server, JPA, Flyway, PostgreSQL 드라이버, JavaMail, Lombok |
 
-기본 패키지는 `com.ipgo.server`, Gradle group은 `com.ipgo`입니다. 상품 자동 등록·조회·수정과 재고관리단위 구분을 제공하며, 수불부 정제·검증, 계산·AI 연동 기능은 아직 구현하지 않았습니다.
+기본 패키지는 `com.ipgo.server`, Gradle group은 `com.ipgo`입니다. 상품 자동 등록·조회·수정과 재고관리단위 구분, 정제 결과의 서버 내부 저장·검증과 U2 조회를 제공합니다. 실제 수불부 정제 요청·AI 결과 수신과 계산 연동은 아직 구현하지 않았습니다.
 
 ## 프로젝트 구조
 
@@ -300,6 +300,29 @@ if (!response.ok) throw new Error(result.message ?? '업로드에 실패했습�
 ```
 
 업로드 일시(`uploadedAt`)는 한국 시간(+09:00)으로 돌려줍니다. DB에는 시간대 포함 시각으로 저장합니다.
+
+### 업로드 결과 조회 (U2 · #26 1차)
+
+`GET /api/uploads/{uploadId}`는 본인의 처리 상태·자료 기간·검증 보고서를 반환합니다.
+Bearer 인증이 없으면 401, 다른 회원 자료면 403, 없는 업로드면 404입니다.
+
+```json
+{"uploadId":12,"status":"PROCESSING","periodStart":"2026-09-01","periodEnd":"2026-09-30",
+ "asOfDate":null,"runId":null,"validation":null,"matchedReceipts":[],"error":null}
+```
+
+DONE이면 `asOfDate`와 `validation`의 `checkedSkuCount`, `targetSkuCount`, `excludedSkus`가 채워집니다.
+제외 항목은 서버가 확인한 `productId`, `skuBarcode`, `skuName`, `date`, `reason`을 포함합니다.
+FAILED이면 `error.code`와 안전한 `error.message`를 반환합니다. 처리 중·실패의 기준일과 검증 집계는 null입니다.
+
+정제 결과 저장 경계는 상품·LOT·일별 수불·보고서·상태를 한 트랜잭션에서 저장하고, 잘못된 jobId나
+다른 업로드의 행을 거절합니다. 같은 결과의 중복 전달과 같은 창고의 동시 처리를 잠금으로 보호합니다.
+이전 revision과 셀러가 수정한 상품 값은 보존합니다. 기존 schema를 사용하며 새 migration은 없습니다.
+
+**현재 일반 업로드에서 AI 호출·큐 발송은 자동 실행되지 않습니다.** 이 단계는 결과 저장·조회 경계이며,
+실제 AI 연결은 아직 미완료입니다. `runId`는 #27 전까지 null, `matchedReceipts`는 정책 확정 전까지 빈 배열입니다.
+추정 입고 주기는 보고서에만 보관합니다. 프론트 타입·문구 조정과 남은 합의는
+[#26 구현 범위](docs/decisions/0002-upload-cleaning-boundary.md)를 확인합니다.
 
 DB 기록 저장이 실패하면 이미 보관한 원본 폴더는 남을 수 있습니다.
 

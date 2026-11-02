@@ -36,6 +36,8 @@ class ScenarioIntegrationTests extends DatabaseIntegrationTest {
     @Autowired WarehouseService warehouses;
     @Autowired ProductRepository products;
 
+    private int barcodeSeq;
+
     @AfterEach
     void cleanUp() {
         jdbc.update("DELETE FROM scenario_results");
@@ -113,7 +115,7 @@ class ScenarioIntegrationTests extends DatabaseIntegrationTest {
     private long result(long userId, String status, LocalDate startDate, String risk, Integer sampleSize,
             String basis, String grade) {
         long warehouse = warehouses.lockDefault(userId).getId();
-        String barcode = "88" + Long.toString(System.nanoTime()).substring(4);
+        String barcode = "88000000%05d".formatted(++barcodeSeq);
         registration.register(userId, warehouse,
                 List.of(new CleanedStockUnit(barcode, "케어트릿 120g", "MIX-" + barcode, LocalDate.of(2026, 9, 1))));
         long product = products.findByUserIdAndSkuBarcodeIn(userId, List.of(barcode)).getFirst().getId();

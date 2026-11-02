@@ -67,7 +67,7 @@ run_migrate() {
   export FLYWAY_PASSWORD="${DB_PASSWORD}"
   flyway \
     -connectRetries=12 \
-    -target=13 \
+    -target=14 \
     -validateMigrationNaming=true \
     migrate
 
@@ -75,7 +75,7 @@ run_migrate() {
     --tuples-only --no-align \
     --command="
       SELECT CASE
-        WHEN COUNT(*) = 13 AND MAX(version::integer) = 13 THEN 'ok'
+        WHEN COUNT(*) = 14 AND MAX(version::integer) = 14 THEN 'ok'
         ELSE 'invalid'
       END
       FROM flyway_schema_history
@@ -85,7 +85,7 @@ run_migrate() {
     echo "unexpected Flyway state after migration" >&2
     exit 1
   fi
-  echo "Flyway V1-V13 migration verified."
+  echo "Flyway V1-V14 migration verified."
 }
 
 run_verify() {
@@ -112,6 +112,10 @@ SQL
       exit 1
       ;;
   esac
+
+  PGPASSWORD="${IPGO_AI_READER_PASSWORD}" psql_base "${IPGO_AI_READER_USERNAME}" \
+    --command="SELECT upload_file_id,user_id,warehouse_id FROM ai_cleaning_sources_v1 LIMIT 0; SELECT user_id,sku_barcode FROM ai_cleaning_products_v1 LIMIT 0; SELECT upload_file_id,closing_qty FROM ai_cleaning_previous_units_v1 LIMIT 0;" >/dev/null
+  expect_denied "${IPGO_AI_READER_USERNAME}" "${IPGO_AI_READER_PASSWORD}" "SELECT * FROM engine_jobs"
 
   read_only="$(PGPASSWORD="${IPGO_AI_READER_PASSWORD}" \
     psql_base "${IPGO_AI_READER_USERNAME}" --tuples-only --no-align \

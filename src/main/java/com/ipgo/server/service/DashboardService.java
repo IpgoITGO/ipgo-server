@@ -107,7 +107,9 @@ public class DashboardService {
                 // 기준일이 오래돼 재업로드가 필요한 상품도 계산할 수 없는 목록에 사유와 함께 보여준다.
                 case CalculationResult.NOT_CALCULABLE, CalculationResult.REUPLOAD_REQUIRED ->
                         notCalculable.add(new ReplenishmentNeeds.NotCalculable(product.getId(), product.getSkuName(),
-                                result.getReason() != null ? result.getReason() : REUPLOAD_REASON));
+                                result.getReason() != null ? result.getReason()
+                                        : NeedJudgment.daysSince(run.getAsOfDate(), today) > NeedJudgment.MAX_DAYS_SINCE_AS_OF
+                                                ? REUPLOAD_REASON : NeedJudgment.UNKNOWN_NEED_REASON));
                 default -> notNeeded++;
             }
         }

@@ -41,7 +41,7 @@ public class CalculationResult {
     @Column(name = "method", length = 10)
     private String method;
 
-    @Column(name = "method_reason", length = 30)
+    @Column(name = "method_reason", length = 255)
     private String methodReason;
 
     @Column(name = "multiplier", nullable = false, precision = 5, scale = 3)

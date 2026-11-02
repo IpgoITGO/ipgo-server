@@ -56,7 +56,8 @@ public class CalculationRunService {
         if (!warehouse.getUserId().equals(userId)) throw ProductException.forbidden();
 
         boolean done = CalculationRun.DONE.equals(run.getStatus());
-        return new CalculationRunStatus(run.getId(), run.getStatus(), run.getAsOfDate(), run.getEngineVersion(), null,
+        return new CalculationRunStatus(run.getId(), run.getStatus(), run.getAsOfDate(), run.getEngineVersion(), "B-1.00".equals(run.getPolicyVersion())
+                        ? new CalculationRunStatus.Policy("B", new java.math.BigDecimal("1.00")) : null,
                 CalculationRun.FAILED.equals(run.getStatus()) ? run.getErrorMessage() : null,
                 seoul(run.getCreatedAt()), seoul(run.getCompletedAt()), done ? summary(run, warehouse) : null);
     }

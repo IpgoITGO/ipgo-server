@@ -30,13 +30,17 @@ public class UploadRecordService {
     private final WarehouseService warehouses;
     private final UploadFileRepository uploads;
     private final WarehouseRepository warehouseRepository;
+    private final EngineJobs engineJobs;
+    private final org.springframework.jdbc.core.JdbcTemplate jdbc;
 
     public UploadRecordService(UploadStorage storage, WarehouseService warehouses, UploadFileRepository uploads,
-            WarehouseRepository warehouseRepository) {
+            WarehouseRepository warehouseRepository, EngineJobs engineJobs, org.springframework.jdbc.core.JdbcTemplate jdbc) {
         this.storage = storage;
         this.warehouses = warehouses;
         this.uploads = uploads;
         this.warehouseRepository = warehouseRepository;
+        this.engineJobs = engineJobs;
+        this.jdbc = jdbc;
     }
 
     @Transactional
@@ -62,6 +66,18 @@ public class UploadRecordService {
         StoredUpload stored = storage.store(userId, file);
         UploadFile saved = uploads.save(new UploadFile(warehouse.getId(), stored.originalName(),
                 userId + "/" + stored.uploadId(), stored.sha256(), revision, period));
+        if (engineJobs.enabled()) {
+            var previous = uploads.findLatestPerPeriod(warehouse.getId()).stream()
+                    .filter(u -> u.getPeriodStart().equals(period.start().minusMonths(1)))
+                    .filter(u -> "DONE".equals(u.getStatus())).findFirst();
+            Map<String,Object> payload = new java.util.LinkedHashMap<>();
+            payload.put("uploadId", saved.getId()); payload.put("userId", userId);
+            payload.put("warehouseId", warehouse.getId());
+            payload.put("previousUploadFileId", previous.map(UploadFile::getId).orElse(null));
+            payload.put("files", List.of(Map.of("uploadFileId", saved.getId(), "storageKey", saved.getStorageKey(),
+                    "originalName", saved.getOriginalName())));
+            engineJobs.enqueue(saved.getJobId(), "CLEAN", saved.getId(), warehouse.getId(), payload);
+        }
         return UploadAccepted.from(saved);
     }
 
@@ -82,7 +98,10 @@ public class UploadRecordService {
         if (!warehouse.getUserId().equals(userId)) {
             throw new UploadException(HttpStatus.FORBIDDEN, "FORBIDDEN", "접근 권한이 없습니다.");
         }
-        return UploadResult.from(upload);
+        UploadResult result = UploadResult.from(upload);
+        var runIds = jdbc.queryForList("SELECT run_id FROM run_source_files WHERE upload_file_id = ? ORDER BY run_id DESC FETCH FIRST 1 ROWS ONLY", Long.class, uploadId);
+        return new UploadResult(result.uploadId(), result.status(), result.periodStart(), result.periodEnd(),
+                result.asOfDate(), runIds.isEmpty() ? null : runIds.getFirst(), result.validation(), result.matchedReceipts(), result.error());
     }
 
     // reason이 SAME_PERIOD면 화면이 덮어쓰기 확인을 띄우고, SAME_FILE이면 덮어쓰기 없이 안내만 한다.

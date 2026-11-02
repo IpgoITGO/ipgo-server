@@ -28,12 +28,14 @@ public class ProductService {
     private final ProductRepository products;
     private final WarehouseService warehouses;
     private final ReplenishmentSettingRepository settings;
+    private final EngineCalculationService calculations;
 
     public ProductService(ProductRepository products, WarehouseService warehouses,
-            ReplenishmentSettingRepository settings) {
+            ReplenishmentSettingRepository settings, EngineCalculationService calculations) {
         this.products = products;
         this.warehouses = warehouses;
         this.settings = settings;
+        this.calculations = calculations;
     }
 
     @Transactional(readOnly = true)
@@ -47,9 +49,13 @@ public class ProductService {
 
     @Transactional
     public ProductItem update(long userId, long productId, ProductUpdateRequest request) {
+        var warehouse = warehouses.lockDefault(userId);
         Product product = products.findById(productId).orElseThrow(ProductException::notFound);
         if (!product.getUserId().equals(userId)) throw ProductException.forbidden();
+        boolean wasActive = product.isActive();
         product.update(request.skuName(), request.unitCost(), request.isActive());
+        if ((!wasActive && product.isActive()) || request.unitCost() != null)
+            calculations.request(userId, warehouse.getId(), "PRODUCT", false);
         return items(userId, List.of(product)).getFirst();
     }
 

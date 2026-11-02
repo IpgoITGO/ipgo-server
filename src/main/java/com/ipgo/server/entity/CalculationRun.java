@@ -35,6 +35,9 @@ public class CalculationRun {
     @Column(name = "engine_version", nullable = false, length = 50)
     private String engineVersion;
 
+    @Column(name = "policy_version", length = 50)
+    private String policyVersion;
+
     @Column(name = "error_message")
     private String errorMessage;
 

@@ -65,14 +65,22 @@ public class SecurityConfig {
 
     @Bean
     SecurityFilterChain securityFilterChain(HttpSecurity http, JsonMapper jsonMapper,
-            JwtTokens jwt, CookieCsrfTokenRepository csrfTokens) throws Exception {
+            JwtTokens jwt, CookieCsrfTokenRepository csrfTokens,
+            @Value("${springdoc.api-docs.enabled:false}") boolean apiDocsEnabled) throws Exception {
         var bearer = new DefaultBearerTokenResolver();
-        http.authorizeHttpRequests(requests -> requests
+        http.authorizeHttpRequests(requests -> {
+                    if (apiDocsEnabled) {
+                        requests.requestMatchers(HttpMethod.GET,
+                                "/swagger-ui.html", "/swagger-ui/**", "/v3/api-docs", "/v3/api-docs/**",
+                                "/v3/api-docs.yaml").permitAll();
+                    }
+                    requests
                         .dispatcherTypeMatchers(DispatcherType.ERROR).permitAll()
                         .requestMatchers(HttpMethod.GET, "/api/auth/csrf", "/actuator/health", "/api/auth/email-availability").permitAll()
                         .requestMatchers(HttpMethod.POST, "/api/auth/signup", "/api/auth/login", "/api/auth/refresh", "/api/auth/logout",
                                 "/api/auth/email-verifications", "/api/auth/email-verifications/confirm").permitAll()
-                        .anyRequest().authenticated())
+                        .anyRequest().authenticated();
+                })
                 .requestCache(cache -> cache.disable())
                 .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .formLogin(login -> login.disable())

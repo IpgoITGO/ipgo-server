@@ -57,6 +57,8 @@ jobs:
           task-definition: ${{ runner.temp }}/task-definition.json
           container-name: server
           image: ${{ steps.login-ecr.outputs.registry }}/ipgo-dev/server:${{ github.sha }}
+          environment-variables: |
+            IPGO_API_DOCS_ENABLED=true
       - name: Deploy task definition
         uses: aws-actions/amazon-ecs-deploy-task-definition@a00d4d57ac0de1a99b39fe469f3d898d38717c2b
         with:

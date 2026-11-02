@@ -80,6 +80,12 @@ public class CalculationResult {
     @Column(name = "pre_arrival_risk", precision = 5, scale = 4)
     private BigDecimal preArrivalRisk;
 
+    @Column(name = "risk_sample_size")
+    private Integer riskSampleSize;
+
+    @Column(name = "risk_basis", length = 10)
+    private String riskBasis;
+
     @Column(name = "accuracy_grade", length = 10)
     private String accuracyGrade;
 

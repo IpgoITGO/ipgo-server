@@ -19,6 +19,20 @@ spring:
     hibernate:
       ddl-auto: validate
 
+springdoc:
+  api-docs:
+    enabled: ${IPGO_API_DOCS_ENABLED:false}
+  swagger-ui:
+    enabled: ${IPGO_API_DOCS_ENABLED:false}
+    persist-authorization: false
+    try-it-out-enabled: false
+    display-request-duration: true
+    tags-sorter: alpha
+    operations-sorter: method
+  paths-to-match: /api/**
+  packages-to-scan: com.ipgo.server.controller
+  show-actuator: false
+
 ipgo:
   auth:
     jwt-secret: ${IPGO_JWT_SECRET:}

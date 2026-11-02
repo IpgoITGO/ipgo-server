@@ -49,6 +49,26 @@ src/test/java/com/ipgo/server/
 
 최상위 패키지는 기능이 아닌 역할을 기준으로 나눕니다. 회원·상품·업로드 Controller는 모두 `controller`에, Service는 `service`에 둡니다. 요청은 Controller → Service → Repository 순서로 처리하며, 외부 메일·파일 접근은 `infrastructure`에서 담당합니다. API DTO는 Controller 내부에 선언하지 않고 `dto/request`·`dto/response`에 둡니다. 패키지 재배치로 API 경로·JSON 형식·인증 정책·database 스키마는 변경하지 않습니다.
 
+## Swagger로 API 확인하기
+
+Swagger는 API 목록과 입력·응답 형식을 브라우저에서 보는 화면입니다.
+AWS 개발 배포에서만 켜며 기본 실행에서는 문서가 공개되지 않습니다.
+
+- 화면: 개발 서버의 `/swagger-ui/index.html` (또는 `/swagger-ui.html`)
+- API 문서: `/v3/api-docs`
+- 서버 연결 확인: `/actuator/health`
+
+`/api`를 직접 열어 나오는 401은 로그인하지 않은 요청을 서버가 차단했다는 뜻입니다.
+Swagger 화면을 열어도 실제 업무 API의 로그인·권한 검사는 그대로 유지됩니다.
+로그인은 `application/x-www-form-urlencoded` 형식이며, 쿠키를 사용하는 인증 요청에는
+먼저 `/api/auth/csrf`에서 받은 토큰을 해당 응답의 `headerName` 헤더로 보내야 합니다.
+현재 HTTP 주소는 연결 확인용입니다. 실제 계정 정보·토큰 입력과 로그인·갱신 전체 검증은 HTTPS 전환 후 진행합니다.
+Swagger는 인증값을 저장하지 않으며, 화면을 여는 것만으로 API 요청을 실행하지 않습니다.
+
+문서 공개 설정은 `IPGO_API_DOCS_ENABLED`입니다. 기본값은 꺼짐이며
+AWS dev 배포 workflow가 개발 컨테이너에서만 켭니다. 문서를 닫아야 하면 이 설정을 끄거나
+이전 task definition으로 되돌립니다. DB·업무 데이터 변경은 필요하지 않습니다.
+
 ## 빌드와 실행
 
 JDK 21을 설치하고 `JAVA_HOME`을 해당 JDK 경로로 설정합니다. Windows에서는 `./gradlew` 대신 `gradlew.bat`을 사용합니다.

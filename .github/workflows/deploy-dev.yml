@@ -8,6 +8,16 @@ on:
         required: false
         default: false
         type: boolean
+      engine_enabled:
+        description: "Enable actual engine exchange after V14, queue and capacity validation"
+        required: false
+        default: false
+        type: boolean
+      engine_connection_approved:
+        description: "Approve this exact engine connection deployment after integration validation"
+        required: false
+        default: false
+        type: boolean
       desired_count:
         description: "Spring Boot ECS task count after deployment"
         required: true
@@ -39,8 +49,14 @@ jobs:
       - name: Check deployment mode and maintenance approval
         env:
           MAINTENANCE_APPROVED: ${{ inputs.maintenance_approved }}
+          ENGINE_ENABLED: ${{ inputs.engine_enabled }}
+          ENGINE_CONNECTION_APPROVED: ${{ inputs.engine_connection_approved }}
         shell: bash
         run: |
+          if [[ "$ENGINE_ENABLED" == true && "$ENGINE_CONNECTION_APPROVED" != true ]]; then
+            echo '::error::Actual engine exchange requires reviewed V14, queue and integration validation.'
+            exit 1
+          fi
           case "$COMPUTE_MODE" in
             ''|legacy) ;;
             onebox)
@@ -85,6 +101,7 @@ jobs:
           image: ${{ steps.login-ecr.outputs.registry }}/ipgo-dev/server:${{ env.IMAGE_TAG }}
           environment-variables: |
             IPGO_API_DOCS_ENABLED=true
+            IPGO_ENGINE_ENABLED=${{ inputs.engine_enabled }}
       - name: Configure approved one-box restart
         if: env.COMPUTE_MODE == 'onebox'
         run: |

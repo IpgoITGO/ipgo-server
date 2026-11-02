@@ -114,7 +114,7 @@ PostgreSQL을 준비한 뒤 실행 환경에 아래 변수를 설정합니다. �
 ### AWS DB one-off 작업 이미지
 
 `Dockerfile.database`는 애플리케이션 이미지와 분리된 DB 관리 전용 이미지입니다. `bootstrap`은
-최초 PostgreSQL 역할 생성과 비밀번호 설정, `migrate`는 Flyway V1~V13 적용과 이력 확인,
+최초 PostgreSQL 역할 생성과 비밀번호 설정, `migrate`는 Flyway V1~V14 적용과 이력 확인,
 `verify`는 Spring DML·AI 조회 권한과 금지 권한을 점검합니다. AWS에서는 각 명령을 별도 ECS
 one-off task로 실행하며 상시 서비스에서는 이 이미지를 사용하지 않습니다.
 
@@ -515,3 +515,30 @@ flowchart LR
 - [작업 흐름](docs/rules/workflow.md)
 - [작성 규칙](docs/rules/conventions.md)
 - [안전 규칙](docs/rules/safety.md)
+
+
+## 실제 정제·계산 연결 (IPGO-111 / #73)
+
+`IPGO_ENGINE_ENABLED=true`일 때 새 업로드와 설정·발주 변경에 작업을 함께 기록합니다.
+서버는 작업을 SQS로 보내고 AI 결과를 검증해 기존 정제 저장 경계와 계산·시나리오 표에 저장합니다.
+DB commit이 끝난 뒤에만 결과 메시지를 삭제하며 같은 jobId의 재전달은 한 번만 반영합니다.
+전송 후 상태 기록 직전에 종료되면 같은 jobId로 재전송합니다. 두 시간 동안 끝나지 않은 작업은
+안전한 실패 상태로 바꾸며 이전 성공 결과는 보존합니다. 기본값은 꺼짐입니다.
+
+실행 전 V14 migration과 조회 전용 view 권한을 적용하고 jobs/results queue URL을 설정해야 합니다.
+기존 PROCESSING 업로드는 자동으로 재시작하지 않습니다. 사용자가 새로 올린 업로드부터 처리합니다.
+동일 기간의 최신 revision이 처리 중/실패 상태면 예전 DONE revision으로 대체하지 않습니다.
+전월 재고 연결은 직전 월 최신 DONE 원본의 월말 재고만 사용하며, 월말 기록이 없으면 명시적으로 실패합니다.
+계산 전 창고 기본 입고 조건을 확인해야 합니다. 원가·설정이 없는 상품은 계산 불가 사유를 반환합니다.
+꺼진 상품, 날짜 없는 발주와 기준일이 지난 예정 발주는 미래 입고량에 넣지 않습니다.
+선택한 자료에서 검산 제외된 상품은 이번 계산에서도 제외하며, 미확정 입고 매칭 정책은 새로 추측하지 않습니다.
+
+업로드 결과의 `runId`와 저장 응답의 `runId`로 C2 계산 상태를 확인합니다. 같은 입력은 기존 실행을
+재사용하고 S2의 `recalculate=true`는 새 실행을 만듭니다. 완료 결과는 D1/K1·K2로 조회합니다.
+유료 LLM 활성화는 별도이므로 정상 계산의 인사이트는 `TABLE_ONLY`를 명시하고 생성 중으로 무한 대기시키지 않습니다.
+계산 불가·제외·입고 불필요의 기존 고정 문장은 유지합니다. 위험·정확도의 미구현 null은 성공 수치가 아닙니다.
+
+테스트용 `IPGO_ENGINE_TRANSPORT_ENABLED=false`는 outbox/결과 트랜잭션을 실제 SQS 없이 검사할 때만 씁니다.
+`IPGO_SQS_ENDPOINT`는 격리 큐 모의 서버를 지정하는 검증용 설정이며 AWS 운영에서는 비워 둡니다.
+실제 적용·검증 결과와 고정 SHA는 [배포 이슈](https://github.com/IpgoITGO/ipgo-server/issues/72)에 기록합니다.
+기능 원복은 엔진 발송을 끄고 이전 task revision으로 돌아가며, 추가 schema와 기존 데이터를 삭제하지 않습니다.

@@ -74,10 +74,10 @@ public class EngineCalculationService {
             var setting = defaults.applying(overrides.get(product.getId()));
             // Missing cost/settings remains NOT_CALCULABLE in the engine, rather than silently using zero cost.
             if (setting.leadTimeDays() != null && setting.reviewCycleDays() != null && setting.orderUnitQty() != null
-                    && product.getUnitCost() != null) {
+                    && product.getUnitCost() != null && product.getUnitCost().stripTrailingZeros().scale() <= 0) {
                 inputSettings.add(Map.of("productId", product.getId(), "leadTimeDays", setting.leadTimeDays(),
                         "reviewCycleDays", setting.reviewCycleDays(), "orderUnitQty", setting.orderUnitQty(),
-                        "unitCost", product.getUnitCost()));
+                        "unitCost", product.getUnitCost().longValueExact()));
             }
         }
         Map<String, String> excluded = new LinkedHashMap<>();
@@ -101,7 +101,7 @@ public class EngineCalculationService {
         request.put("policy", Map.of("defaultMethod", "B", "multiplier", 1.0));
         request.put("settings", inputSettings.stream().filter(s -> !excluded.containsKey(""+s.get("productId"))).toList());
         request.put("plannedReceipts", planned);
-        String hash = hash(mapper.writeValueAsString(Map.of("request", request, "excluded", excluded)));
+        String hash = hash(canonical(mapper.valueToTree(Map.of("request", request, "excluded", excluded))));
         if (!force) {
             List<Long> same = jdbc.queryForList("""
                     SELECT id FROM calculation_runs WHERE warehouse_id = ? AND input_hash = ?
@@ -123,6 +123,22 @@ public class EngineCalculationService {
         for (UploadFile source : sources) jdbc.update("INSERT INTO run_source_files(run_id,upload_file_id) VALUES (?,?)", runId, source.getId());
         jobs.enqueue(jobId, "CALCULATE", runId, warehouseId, request);
         return runId;
+    }
+
+    private String canonical(tools.jackson.databind.JsonNode node) {
+        if (node.isNumber()) return node.decimalValue().stripTrailingZeros().toPlainString();
+        if (node.isArray()) {
+            List<String> items = new ArrayList<>();
+            for (var child : node) items.add(canonical(child));
+            return "[" + String.join(",", items) + "]";
+        }
+        if (node.isObject()) {
+            java.util.SortedMap<String,String> fields = new java.util.TreeMap<>();
+            for (var entry : node.properties()) fields.put(entry.getKey(), canonical(entry.getValue()));
+            return "{" + fields.entrySet().stream().map(e -> mapper.writeValueAsString(e.getKey())+":"+e.getValue())
+                    .collect(java.util.stream.Collectors.joining(",")) + "}";
+        }
+        return mapper.writeValueAsString(node);
     }
 
     private static String hash(String text) {

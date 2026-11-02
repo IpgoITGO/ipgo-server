@@ -21,7 +21,8 @@ public class EngineResultWriter {
     public EngineResultWriter(JdbcTemplate jdbc, JsonMapper mapper) { this.jdbc = jdbc; this.mapper = mapper; }
 
     public void complete(EngineJobs.Job job, JsonNode response) {
-        var row = jdbc.queryForMap("SELECT job_id,status,selection_snapshot FROM calculation_runs WHERE id = ? AND warehouse_id = ? FOR UPDATE",
+        var row = jdbc.queryForObject("SELECT job_id,status,selection_snapshot FROM calculation_runs WHERE id = ? AND warehouse_id = ? FOR UPDATE",
+                (rs, n) -> Map.of("job_id", rs.getString(1), "status", rs.getString(2), "selection_snapshot", rs.getString(3)),
                 job.targetId(), job.warehouseId());
         require(job.id().equals(row.get("job_id")));
         if (Set.of("DONE", "FAILED").contains(row.get("status"))) return;

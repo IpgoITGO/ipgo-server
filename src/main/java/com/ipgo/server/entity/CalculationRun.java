@@ -32,6 +32,12 @@ public class CalculationRun {
     @Column(name = "status", nullable = false, length = 20)
     private String status;
 
+    @Column(name = "engine_version", nullable = false, length = 50)
+    private String engineVersion;
+
+    @Column(name = "error_message")
+    private String errorMessage;
+
     @Column(name = "created_at", nullable = false)
     private Instant createdAt;
 

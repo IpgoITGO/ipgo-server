@@ -39,6 +39,7 @@ class EngineRealFlowIntegrationTests {
     @Autowired UploadFileRepository uploads;
     @Autowired TransactionTemplate tx;
     @Autowired JsonMapper mapper;
+    @Autowired com.ipgo.server.service.ProductDetailService details;
     static final LocalDate DAY = LocalDate.of(2026, 9, 1);
 
     @DynamicPropertySource static void engineProperties(DynamicPropertyRegistry r) {
@@ -161,7 +162,7 @@ class EngineRealFlowIntegrationTests {
             Map.of("type", "P80", "qty", 20, "expectedEndingStock", 0, "unmetDemandQty", 5, "isDuplicate", false, "dailyProjection", List.of()),
             Map.of("type", "P100", "qty", 25, "expectedEndingStock", 0, "unmetDemandQty", 0, "isDuplicate", false, "dailyProjection", List.of()),
             Map.of("type", "P120", "qty", 30, "expectedEndingStock", 5, "unmetDemandQty", 0, "isDuplicate", false, "dailyProjection", List.of()));
-        var good = Map.of("productId", product, "status", "OK", "recommendedQty", 25, "recommendedAmount", 2500, "horizonDays", 12, "scenarios", scenarios);
+        var good = Map.of("productId", product, "status", "OK", "recommendedQty", 25, "recommendedAmount", 2500, "horizonDays", 12, "requiredQtyBeforeRounding", 25.0, "scenarios", scenarios);
         var bad = Map.of("productId", product, "status", "OK", "recommendedQty", 25, "horizonDays", 12, "scenarios", scenarios.subList(0, 2));
         java.util.function.Function<Object,String> envelope = result -> mapper.writeValueAsString(Map.of("contractVersion", "1", "jobId", jobId, "jobType", "CALCULATE", "status", "SUCCEEDED", "result", Map.of("engineVersion", "test", "results", List.of(result))));
         assertThatThrownBy(() -> results.accept(envelope.apply(bad))).isInstanceOf(IllegalArgumentException.class);
@@ -178,6 +179,7 @@ class EngineRealFlowIntegrationTests {
         assertThat(jdbc.queryForObject("SELECT status FROM ai_explanations", String.class)).isEqualTo("DISABLED");
         assertThat(jobs.find(jobId).status()).isEqualTo("DONE");
         assertThat(records.result(owner, u.getId()).runId()).isEqualTo(run);
+        assertThat(details.detail(owner, product, null, null).result().requiredQtyBeforeRounding()).isEqualTo(25);
         Long forced = calculations.request(owner, u.getWarehouseId(), "RECALCULATE", true);
         assertThat(forced).isNotEqualTo(run);
         String nextJob = jdbc.queryForObject("SELECT job_id FROM calculation_runs WHERE id=?", String.class, forced);

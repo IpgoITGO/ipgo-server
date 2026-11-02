@@ -40,11 +40,12 @@ public class ProductDetailService {
     private final InventoryUnitRepository inventoryUnits;
     private final JdbcTemplate jdbc;
     private final Clock clock;
+    private final tools.jackson.databind.json.JsonMapper mapper;
 
     public ProductDetailService(ProductRepository products, WarehouseService warehouses,
             ReplenishmentSettingRepository settings, CalculationRunRepository runs,
             CalculationResultRepository results, InventoryUnitRepository inventoryUnits, JdbcTemplate jdbc,
-            Clock clock) {
+            Clock clock, tools.jackson.databind.json.JsonMapper mapper) {
         this.products = products;
         this.warehouses = warehouses;
         this.settings = settings;
@@ -53,6 +54,7 @@ public class ProductDetailService {
         this.inventoryUnits = inventoryUnits;
         this.jdbc = jdbc;
         this.clock = clock;
+        this.mapper = mapper;
     }
 
     @Transactional(readOnly = true)
@@ -83,7 +85,7 @@ public class ProductDetailService {
         LocalDate today = LocalDate.now(clock.withZone(DashboardService.SEOUL));
         String needStatus = NeedJudgment.needStatus(calculated, asOfDate, today, productSettings.leadTimeDays());
         return new ProductDetail(summary, needStatus, asOfDate, calculated.getExpectedShortageOn(), productSettings,
-                result(calculated), accuracy(calculated, firstInboundOn), trend);
+                result(calculated, needStatus), accuracy(calculated, firstInboundOn), trend);
     }
 
     // 정제가 끝난(DONE) 업로드의 상품 일별 수불. 같은 날짜가 덮어쓰기로 여러 번 올라왔으면 가장 최근 업로드를 쓴다.
@@ -121,15 +123,24 @@ public class ProductDetailService {
                 reviewCycleSource, applied.orderUnitQty(), DisplayQuantities.won(product.getUnitCost()));
     }
 
-    private static ProductDetail.Result result(CalculationResult result) {
-        return new ProductDetail.Result(result.getId(), result.getStatus(), result.getReason(), result.getMethod(),
+    private ProductDetail.Result result(CalculationResult result, String needStatus) {
+        return new ProductDetail.Result(result.getId(), result.getStatus(), result.getReason() != null ? result.getReason()
+                        : CalculationResult.NOT_CALCULABLE.equals(needStatus) && CalculationResult.OK.equals(result.getStatus())
+                                ? NeedJudgment.UNKNOWN_NEED_REASON : null, result.getMethod(),
                 result.getMethodReason(), result.getMultiplier(), result.getHorizonDays(),
                 DisplayQuantities.demand(result.getForecastOutboundQty()),
                 DisplayQuantities.stock(result.getStartStockQty()),
                 // 계산일이 기준일보다 늦으면 시작 재고는 예상 출고로 이어서 추정한 값이다.
                 result.getStartDate().isAfter(result.getOriginDate()),
-                result.getPlannedReceiptQty(), DisplayQuantities.demand(result.getPreArrivalUnmetQty()), null,
+                result.getPlannedReceiptQty(), DisplayQuantities.demand(result.getPreArrivalUnmetQty()), beforeRounding(result),
                 result.getRecommendedQty(), DisplayQuantities.won(result.getRecommendedAmount()));
+    }
+
+    private Long beforeRounding(CalculationResult result) {
+        String raw = jdbc.queryForObject("SELECT selection_snapshot FROM calculation_runs WHERE id = ?", String.class, result.getRunId());
+        var snapshot = EngineJobs.readDatabaseJson(mapper, raw);
+        var value = snapshot.path("resultFacts").path(""+result.getProductId()).path("requiredQtyBeforeRounding");
+        return value.isNumber() ? DisplayQuantities.demand(value.decimalValue()) : null;
     }
 
     private static ProductDetail.Accuracy accuracy(CalculationResult result, LocalDate firstInboundOn) {

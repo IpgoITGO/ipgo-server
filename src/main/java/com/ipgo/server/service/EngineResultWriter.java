@@ -33,10 +33,13 @@ public class EngineResultWriter {
         JsonNode results = response.get("results");
         require(results != null && results.isArray());
         Set<Long> expected = ids(input.get("productIds")), seen = new HashSet<>();
+        var facts = ((tools.jackson.databind.node.ObjectNode) snapshot).putObject("resultFacts");
         for (JsonNode result : results) {
             long productId = positiveId(result.get("productId"));
             require(expected.contains(productId) && seen.add(productId));
             save(job, productId, input, result);
+            var beforeRounding = number(result, "requiredQtyBeforeRounding", false);
+            if (beforeRounding != null) facts.putObject(""+productId).put("requiredQtyBeforeRounding", beforeRounding);
         }
         require(seen.equals(expected));
         var excluded = snapshot.get("excluded");
@@ -50,8 +53,8 @@ public class EngineResultWriter {
             }
         }
         require(seen.equals(ids(snapshot.get("productIds"))));
-        jdbc.update("UPDATE calculation_runs SET status = 'DONE', engine_version = ?, completed_at = CURRENT_TIMESTAMP WHERE id = ?",
-                version, job.targetId());
+        jdbc.update("UPDATE calculation_runs SET status = 'DONE', engine_version = ?, selection_snapshot = CAST(? AS JSONB), completed_at = CURRENT_TIMESTAMP WHERE id = ?",
+                version, mapper.writeValueAsString(snapshot), job.targetId());
     }
 
     public void fail(EngineJobs.Job job) {

@@ -62,7 +62,7 @@ AWS 개발 배포에서만 켜며 기본 실행에서는 문서가 공개되지 
 Swagger 화면을 열어도 실제 업무 API의 로그인·권한 검사는 그대로 유지됩니다.
 로그인은 `application/x-www-form-urlencoded` 형식이며, 쿠키를 사용하는 인증 요청에는
 먼저 `/api/auth/csrf`에서 받은 토큰을 해당 응답의 `headerName` 헤더로 보내야 합니다.
-현재 HTTP 주소는 연결 확인용입니다. 실제 계정 정보·토큰 입력과 로그인·갱신 전체 검증은 HTTPS 전환 후 진행합니다.
+개발 주소는 `https://ipgo-dev-api.iwhya.kr`입니다. 실제 계정과 쿠키를 사용하는 검사는 HTTPS로 진행합니다.
 Swagger는 인증값을 저장하지 않으며, 화면을 여는 것만으로 API 요청을 실행하지 않습니다.
 
 문서 공개 설정은 `IPGO_API_DOCS_ENABLED`입니다. 기본값은 꺼짐이며
@@ -70,6 +70,13 @@ AWS dev 배포 workflow가 개발 컨테이너에서만 켭니다. 문서를 닫
 이전 task definition으로 되돌립니다. DB·업무 데이터 변경은 필요하지 않습니다.
 
 ## 빌드와 실행
+
+AWS 단일 호스트 개발 환경에서는 `AWS_DEV_COMPUTE_MODE=onebox`가 ARM 이미지와
+`ipgo-dev-onebox-server` 서비스를 선택합니다. 기존 DB·JWT·S3 설정과 메모리 제한을 이어받습니다.
+한 호스트의 같은 포트를 사용하므로 이후 코드 배포에는 짧은 서비스 재시작이 필요합니다.
+해당 SHA의 메모리·부하와 배포 영향을 확인한 뒤 workflow의 `maintenance_approved`를 선택해야 합니다.
+이번 서버 이전에서는 기존 서버를 병행해 연결을 넘기며, 최신 dev 기능을 자동으로 배포하지 않습니다.
+자세한 비용·장애 알림·복구 순서는 [인프라 운영 문서](https://github.com/IpgoITGO/ipgo-infra/blob/dev/docs/onebox.md)를 참고합니다.
 
 JDK 21을 설치하고 `JAVA_HOME`을 해당 JDK 경로로 설정합니다. Windows에서는 `./gradlew` 대신 `gradlew.bat`을 사용합니다.
 

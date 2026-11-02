@@ -27,13 +27,15 @@ public class PlannedReceiptService {
     private final ProductRepository products;
     private final WarehouseService warehouses;
     private final WarehouseRepository warehouseRepository;
+    private final EngineCalculationService calculations;
 
     public PlannedReceiptService(PlannedReceiptRepository receipts, ProductRepository products,
-            WarehouseService warehouses, WarehouseRepository warehouseRepository) {
+            WarehouseService warehouses, WarehouseRepository warehouseRepository, EngineCalculationService calculations) {
         this.receipts = receipts;
         this.products = products;
         this.warehouses = warehouses;
         this.warehouseRepository = warehouseRepository;
+        this.calculations = calculations;
     }
 
     @Transactional(readOnly = true)
@@ -54,19 +56,23 @@ public class PlannedReceiptService {
         Warehouse warehouse = warehouses.lockDefault(userId);
         PlannedReceipt saved = receipts.save(new PlannedReceipt(request.productId(), warehouse.getId(),
                 request.quantity(), request.expectedOn()));
-        return PlannedReceiptCreated.from(saved);
+        return new PlannedReceiptCreated(saved.getId(), saved.isReflected(), calculations.request(userId, warehouse.getId(), "RECEIPTS", false));
     }
 
     @Transactional
     public PlannedReceiptItem update(long userId, long receiptId, PlannedReceiptUpdateRequest request) {
+        var warehouse = warehouses.lockDefault(userId);
         PlannedReceipt receipt = ownedReceipt(userId, receiptId);
         receipt.update(request.quantity(), request.expectedOn());
+        calculations.request(userId, warehouse.getId(), "RECEIPTS", false);
         return PlannedReceiptItem.from(receipt, ownedProduct(userId, receipt.getProductId()));
     }
 
     @Transactional
     public void cancel(long userId, long receiptId) {
+        var warehouse = warehouses.lockDefault(userId);
         ownedReceipt(userId, receiptId).cancel();
+        calculations.request(userId, warehouse.getId(), "RECEIPTS", false);
     }
 
     private Product ownedProduct(long userId, long productId) {

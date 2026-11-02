@@ -92,7 +92,7 @@ migration_count="$(docker exec "${database_container}" \
 table_count="$(docker exec "${database_container}" \
   psql -U ipgo_migrator -d ipgo -Atc \
   "SELECT COUNT(*) FROM pg_tables WHERE schemaname = 'public' AND tablename <> 'flyway_schema_history'")"
-if [[ "${migration_count}" != "13" || "${table_count}" != "18" ]]; then
+if [[ "${migration_count}" != "14" || "${table_count}" != "19" ]]; then
   echo "unexpected schema: migrations=${migration_count}, tables=${table_count}" >&2
   exit 1
 fi
@@ -113,6 +113,12 @@ if [[ "${visible_rows}" != "1" || "${read_only}" != "on" ]]; then
   exit 1
 fi
 
+# Cleaning metadata is available only through the three explicit views; base tables remain denied.
+docker exec "${database_container}" psql -v ON_ERROR_STOP=1 -U ipgo_ai_reader -d ipgo \
+  -c "SELECT upload_file_id,user_id,warehouse_id FROM ai_cleaning_sources_v1; SELECT user_id,sku_barcode FROM ai_cleaning_products_v1; SELECT upload_file_id,closing_qty FROM ai_cleaning_previous_units_v1" >/dev/null
+expect_denied ipgo_ai_reader "SELECT * FROM engine_jobs"
+expect_denied ipgo_ai_reader "SELECT * FROM upload_files"
+expect_denied ipgo_ai_reader "SELECT * FROM users"
 expect_denied ipgo_ai_reader "SELECT * FROM product_daily_stocks"
 expect_denied ipgo_ai_reader "INSERT INTO products (user_id, sku_barcode, sku_name) VALUES (1, 'DENIED', 'denied')"
 expect_denied ipgo_ai_reader "UPDATE products SET sku_name = 'denied' WHERE id = 100"

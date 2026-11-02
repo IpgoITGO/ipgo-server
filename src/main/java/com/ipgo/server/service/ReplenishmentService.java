@@ -19,12 +19,14 @@ public class ReplenishmentService {
     private final WarehouseService warehouses;
     private final ProductRepository products;
     private final ReplenishmentSettingRepository settings;
+    private final EngineCalculationService calculations;
 
     public ReplenishmentService(WarehouseService warehouses, ProductRepository products,
-            ReplenishmentSettingRepository settings) {
+            ReplenishmentSettingRepository settings, EngineCalculationService calculations) {
         this.warehouses = warehouses;
         this.products = products;
         this.settings = settings;
+        this.calculations = calculations;
     }
 
     @Transactional(readOnly = true)
@@ -34,13 +36,14 @@ public class ReplenishmentService {
 
     @Transactional
     public SettingsSaved saveDefaults(long userId, DefaultSettingsRequest request) {
-        warehouses.lockDefault(userId)
-                .confirmDefaults(request.leadTimeDays(), request.reviewCycleDays(), request.orderUnitQty());
-        return SettingsSaved.withoutRun();
+        var warehouse = warehouses.lockDefault(userId);
+        warehouse.confirmDefaults(request.leadTimeDays(), request.reviewCycleDays(), request.orderUnitQty());
+        return new SettingsSaved(true, calculations.request(userId, warehouse.getId(), "SETTINGS", Boolean.TRUE.equals(request.recalculate())));
     }
 
     @Transactional
     public SettingsSaved saveForProduct(long userId, long productId, ProductSettingsRequest request) {
+        var warehouse = warehouses.lockDefault(userId);
         Product product = products.findById(productId).orElseThrow(ProductException::notFound);
         if (!product.getUserId().equals(userId)) throw ProductException.forbidden();
 
@@ -48,6 +51,6 @@ public class ReplenishmentService {
         setting.replace(request.leadTimeDays(), request.reviewCycleDays(), request.orderUnitQty());
         settings.save(setting);
         product.update(null, request.unitCost(), null);
-        return SettingsSaved.withoutRun();
+        return new SettingsSaved(true, calculations.request(userId, warehouse.getId(), "SETTINGS", false));
     }
 }

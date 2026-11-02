@@ -34,6 +34,12 @@ springdoc:
   show-actuator: false
 
 ipgo:
+  engine:
+    enabled: ${IPGO_ENGINE_ENABLED:false}
+    transport-enabled: ${IPGO_ENGINE_TRANSPORT_ENABLED:true}
+    sqs-endpoint: ${IPGO_SQS_ENDPOINT:}
+    jobs-queue-url: ${IPGO_JOBS_QUEUE_URL:}
+    results-queue-url: ${IPGO_RESULTS_QUEUE_URL:}
   auth:
     jwt-secret: ${IPGO_JWT_SECRET:}
     cookie-secure: ${IPGO_AUTH_COOKIE_SECURE:true}

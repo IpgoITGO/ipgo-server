@@ -411,6 +411,7 @@ R2·R3은 Bearer JWT가 필요하고, 다른 회원의 상품·발주는 `403`, 
 |---|---|
 | `GET /api/dashboard/replenishment-needs?sort=shortage` (D1) | 입고 필요 목록. `sort`는 `shortage`(소진일 빠른 순, 기본) · `risk`(품절 위험 높은 순) · `amount`(금액 큰 순), 그 밖의 값은 `400`. 계산 결과가 없으면 `asOfDate`·`runId`가 `null`이고 목록이 비어 있습니다. 셀러가 사용을 끈(`isActive: false`) 상품은 계산 뒤에 껐더라도 모든 목록과 개수에서 빠지고, 다시 켜면 남아 있는 결과로 바로 다시 보입니다 |
 | `GET /api/products/{productId}/detail?from=&to=` (K1) | SKU 상세: 상품 · 입고 조건과 출처(`PRODUCT`·`DEFAULT`·`SUGGESTED`/`ESTIMATED`) · 계산 근거 · 정확도 · 재고 추이(`trend`). `trend`는 정제가 끝난 업로드의 상품 일별 수불(날짜 · 기말 재고 · 출고 · 유효 관측일)이고, 같은 날짜를 덮어써 올렸으면 가장 최근 업로드 값을 씁니다. `from`·`to`가 없으면 마지막 수불 날짜까지 90일입니다. 다른 회원 상품 `403`, 없는 상품 `404`, `from`이 `to`보다 늦거나 날짜 형식이 틀리면 `400` |
+| `GET /api/results/{resultId}/scenarios` (K2) | 시나리오 비교표: 계산 엔진이 `scenario_results`(V11)에 저장한 시나리오를 `P80` → `P100` → `P120` → `CUSTOM` 순서로 돌려줍니다. 권장량이 0개거나 계산하지 못한 결과는 빈 배열입니다. `riskStatus`는 저장된 값으로 정합니다: 정확도 `LOW`면 `LOW_GRADE`, 위험값이 없으면 `INSUFFICIENT_SAMPLE`, 그 밖은 `OK`(정상 결과가 아니면 `null`). `isEstimate`는 시작 재고를 예상 출고로 이어서 추정했을 때 `true`입니다. 다른 회원 결과 `403`, 없는 결과 `404` |
 
 - 판정: 화면을 열 때마다 오늘(한국 시간) 기준으로 다시 맞춥니다. 예상 소진일이 오늘 + 리드타임 안이면 `NEED_NOW`, 아니면 `NOT_NEEDED`입니다. 리드타임은 지금 적용되는 입고 조건(상품별 값 → 기본값 → 제안값)을 씁니다.
 - 기준일이 7일 넘게 지나면 `REUPLOAD_REQUIRED`이며, D1에서는 계산 불가 목록에 재업로드 안내 사유와 함께 보여줍니다.

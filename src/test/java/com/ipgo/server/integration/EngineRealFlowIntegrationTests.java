@@ -40,6 +40,7 @@ class EngineRealFlowIntegrationTests {
     @Autowired TransactionTemplate tx;
     @Autowired JsonMapper mapper;
     @Autowired com.ipgo.server.service.ProductDetailService details;
+    @Autowired com.ipgo.server.service.ScenarioService scenarioService;
     static final LocalDate DAY = LocalDate.of(2026, 9, 1);
 
     @DynamicPropertySource static void engineProperties(DynamicPropertyRegistry r) {
@@ -185,7 +186,7 @@ class EngineRealFlowIntegrationTests {
             Map.of("type", "P80", "qty", 20, "expectedEndingStock", 0, "unmetDemandQty", 5, "isDuplicate", false, "dailyProjection", List.of()),
             Map.of("type", "P100", "qty", 25, "expectedEndingStock", 0, "unmetDemandQty", 0, "isDuplicate", false, "dailyProjection", List.of()),
             Map.of("type", "P120", "qty", 30, "expectedEndingStock", 5, "unmetDemandQty", 0, "isDuplicate", false, "dailyProjection", List.of()));
-        var good = Map.of("productId", product, "status", "OK", "recommendedQty", 25, "recommendedAmount", 2500, "horizonDays", 12, "requiredQtyBeforeRounding", 25.0, "scenarios", scenarios);
+        var good = Map.of("productId", product, "status", "OK", "recommendedQty", 25, "recommendedAmount", 2500, "horizonDays", 12, "requiredQtyBeforeRounding", 25.0, "scenarios", scenarios, "riskBasis", "POOLED", "riskSampleSize", 20, "preArrivalRisk", 0.1);
         var bad = Map.of("productId", product, "status", "OK", "recommendedQty", 25, "horizonDays", 12, "scenarios", scenarios.subList(0, 2));
         java.util.function.Function<Object,String> envelope = result -> mapper.writeValueAsString(Map.of("contractVersion", "1", "jobId", jobId, "jobType", "CALCULATE", "status", "SUCCEEDED", "result", Map.of("engineVersion", "test", "results", List.of(result))));
         assertThatThrownBy(() -> results.accept(envelope.apply(bad))).isInstanceOf(IllegalArgumentException.class);
@@ -194,6 +195,10 @@ class EngineRealFlowIntegrationTests {
         assertThat(count("ai_explanations")).isZero();
         var wrong = Map.of("productId", product+99999, "status", "OK", "recommendedQty", 25, "horizonDays", 12, "scenarios", scenarios);
         assertThatThrownBy(() -> results.accept(envelope.apply(wrong))).isInstanceOf(IllegalArgumentException.class);
+        var badBasis = new java.util.HashMap<String,Object>(good);
+        badBasis.put("riskBasis", "UNKNOWN");
+        assertThatThrownBy(() -> results.accept(envelope.apply(badBasis))).isInstanceOf(IllegalArgumentException.class);
+        assertThat(count("calculation_results")).isZero();
         results.accept(envelope.apply(good)); results.accept(envelope.apply(good));
         assertThat(count("calculation_results")).isEqualTo(1);
         assertThat(count("scenario_results")).isEqualTo(3);
@@ -203,6 +208,10 @@ class EngineRealFlowIntegrationTests {
         assertThat(jobs.find(jobId).status()).isEqualTo("DONE");
         assertThat(records.result(owner, u.getId()).runId()).isEqualTo(run);
         assertThat(details.detail(owner, product, null, null).result().requiredQtyBeforeRounding()).isEqualTo(25);
+        long resultId = jdbc.queryForObject("SELECT id FROM calculation_results", Long.class);
+        assertThat(jdbc.queryForObject("SELECT risk_basis FROM calculation_results WHERE id=?", String.class, resultId))
+                .isEqualTo("POOLED");
+        assertThat(scenarioService.scenarios(owner, resultId).riskBasis()).isEqualTo("POOLED");
         Long forced = calculations.request(owner, u.getWarehouseId(), "RECALCULATE", true);
         assertThat(forced).isNotEqualTo(run);
         String nextJob = jdbc.queryForObject("SELECT job_id FROM calculation_runs WHERE id=?", String.class, forced);

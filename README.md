@@ -555,3 +555,7 @@ AI의 큰 결과는 SQS wire900,000bytes 제한 안에서 gzip/base64 v2로 받�
 길이·해시와 해제16MiB 상한을 검증한 뒤 기존 v1 결과 저장을 실행합니다. 작은 v1 결과와
 중복 처리·저장 성공 후ACK 규칙은 유지합니다. 서버를 먼저 배포해야 하며,
 [압축 계약과 복구 순서](docs/decisions/001-engine-result-compression.md)를 따릅니다.
+
+계산 결과 저장은 엔진의 `riskBasis`를 기존 `risk_basis` 열에 그대로 보존합니다.
+허용값은 `SKU`·`POOLED`·미산출 null이며 알 수 없는 값은 저장 전에 거부합니다.
+이 보완은 기존 schema의 누락 저장을 수정하며 migration은 추가하지 않습니다.

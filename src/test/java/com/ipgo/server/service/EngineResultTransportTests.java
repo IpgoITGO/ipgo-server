@@ -46,4 +46,10 @@ class EngineResultTransportTests {
         length.put("uncompressedBytes", 1);
         assertThrows(IllegalArgumentException.class, () -> EngineResultTransport.decode(length.toString(), mapper));
     }
+    @Test void trailingJsonIsRejectedInPlainAndCompressedEnvelopes() throws Exception {
+        String raw = "{\"contractVersion\":\"1\"} {\"jobId\":\"another\"}";
+        assertThrows(RuntimeException.class, () -> EngineResultTransport.decode(raw, mapper));
+        assertThrows(RuntimeException.class, () -> EngineResultTransport.decode(wrap(raw), mapper));
+    }
+
 }

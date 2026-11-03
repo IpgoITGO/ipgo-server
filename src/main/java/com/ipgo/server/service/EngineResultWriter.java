@@ -103,6 +103,9 @@ public class EngineResultWriter {
         String grade = text(r,"accuracyGrade",10,false);
         require(grade == null || Set.of("HIGH","MEDIUM","LOW").contains(grade));
         values.put("accuracy_grade", grade);
+        String riskBasis = text(r, "riskBasis", 10, false);
+        require(riskBasis == null || Set.of("SKU", "POOLED").contains(riskBasis));
+        values.put("risk_basis", riskBasis);
         var one = input.deepCopy();
         var object = (tools.jackson.databind.node.ObjectNode) one;
         object.putArray("productIds").add(productId);

@@ -30,7 +30,7 @@ public class EngineResults {
 
     @Transactional
     public void accept(String body) {
-        JsonNode message = mapper.readTree(body);
+        JsonNode message = EngineResultTransport.decode(body, mapper);
         require(message.isObject() && "1".equals(message.path("contractVersion").asText()));
         require(message.path("jobId").isString());
         EngineJobs.Job job = lock(message.get("jobId").asText());

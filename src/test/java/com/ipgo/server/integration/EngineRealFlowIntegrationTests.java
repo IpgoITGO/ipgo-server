@@ -131,6 +131,29 @@ class EngineRealFlowIntegrationTests {
         assertThat(jobs.find(u.getJobId()).status()).isEqualTo("DONE");
         assertThat(uploads.findById(u.getId()).orElseThrow().getStatus()).isEqualTo("DONE");
     }
+    @Test void compressedResultIsAtomicIdempotentAndCorruptionCannotWrite() throws Exception {
+        var u = upload(user());
+        String raw = success(u, clean(u.getId()));
+        byte[] bytes = raw.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        var buffer = new java.io.ByteArrayOutputStream();
+        try (var gzip = new java.util.zip.GZIPOutputStream(buffer)) { gzip.write(bytes); }
+        var wrapper = new java.util.HashMap<String, Object>();
+        wrapper.put("contractVersion", "2"); wrapper.put("encoding", "gzip+base64");
+        wrapper.put("uncompressedBytes", bytes.length);
+        wrapper.put("payload", java.util.Base64.getEncoder().encodeToString(buffer.toByteArray()));
+        wrapper.put("sha256", "corrupt");
+        assertThatThrownBy(() -> results.accept(mapper.writeValueAsString(wrapper)))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThat(count("products")).isZero();
+        assertThat(jobs.find(u.getJobId()).status()).isEqualTo("PENDING");
+        wrapper.put("sha256", java.util.HexFormat.of().formatHex(
+                java.security.MessageDigest.getInstance("SHA-256").digest(bytes)));
+        String wire = mapper.writeValueAsString(wrapper);
+        results.accept(wire); results.accept(wire);
+        assertThat(count("daily_stock_records")).isEqualTo(1);
+        assertThat(jobs.find(u.getJobId()).status()).isEqualTo("DONE");
+    }
+
     @Test void failureAndExpiryAreTerminal() throws Exception {
         var first = upload(user()); results.accept(failure(first));
         assertThat(jobs.find(first.getJobId()).status()).isEqualTo("FAILED");

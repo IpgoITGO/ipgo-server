@@ -64,8 +64,11 @@ public class UploadRecordService {
         int revision = uploads.lastRevision(warehouse.getId(), period.start()) + 1;
 
         StoredUpload stored = storage.store(userId, file);
+        if (!hash.equals(stored.sha256())) throw new IllegalStateException("Upload changed during validation");
+        String key = ("DATABASE".equals(storage.kind()) ? "db/" : "") + userId + "/" + stored.uploadId();
         UploadFile saved = uploads.save(new UploadFile(warehouse.getId(), stored.originalName(),
-                userId + "/" + stored.uploadId(), stored.sha256(), revision, period));
+                key, stored.sha256(), revision, period));
+        storage.persistOriginal(saved, file);
         if (engineJobs.enabled()) {
             var previous = uploads.findLatestPerPeriod(warehouse.getId()).stream()
                     .filter(u -> u.getPeriodStart().equals(period.start().minusMonths(1)))

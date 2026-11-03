@@ -7,7 +7,7 @@ database_container="ipgo-db-check-${check_id}"
 repository_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 cleanup() {
-  docker rm -f "${database_container}" >/dev/null 2>&1 || true
+  docker rm -fv "${database_container}" >/dev/null 2>&1 || true
   docker network rm "${network_name}" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
@@ -22,7 +22,7 @@ expect_denied() {
   fi
 }
 
-docker network create "${network_name}" >/dev/null
+docker network create --internal "${network_name}" >/dev/null
 docker run -d --name "${database_container}" --network "${network_name}" \
   -e POSTGRES_DB=ipgo \
   -e POSTGRES_USER=postgres \
@@ -92,7 +92,7 @@ migration_count="$(docker exec "${database_container}" \
 table_count="$(docker exec "${database_container}" \
   psql -U ipgo_migrator -d ipgo -Atc \
   "SELECT COUNT(*) FROM pg_tables WHERE schemaname = 'public' AND tablename <> 'flyway_schema_history'")"
-if [[ "${migration_count}" != "14" || "${table_count}" != "19" ]]; then
+if [[ "${migration_count}" != "15" || "${table_count}" != "20" ]]; then
   echo "unexpected schema: migrations=${migration_count}, tables=${table_count}" >&2
   exit 1
 fi
@@ -112,6 +112,25 @@ if [[ "${visible_rows}" != "1" || "${read_only}" != "on" ]]; then
   echo "AI view or read-only default is not active" >&2
   exit 1
 fi
+
+# V15 preserves external metadata and limits raw originals to the explicit reader view.
+docker exec -i "${database_container}" psql -v ON_ERROR_STOP=1 -U ipgo_server -d ipgo >/dev/null <<'SQL'
+DO $$ BEGIN
+    IF (SELECT storage_kind FROM upload_files WHERE id = 2000) <> 'EXTERNAL' THEN
+        RAISE EXCEPTION 'existing external original changed';
+    END IF;
+END $$;
+INSERT INTO upload_files(id,warehouse_id,original_name,storage_key,file_hash,revision_no,period_start,period_end,status,storage_kind)
+VALUES (2001,10,'2026-11.xlsx','db/1/test',repeat('b',64),1,DATE '2026-11-01',DATE '2026-11-30','PROCESSING','DATABASE');
+INSERT INTO upload_originals(upload_file_id,content,content_type,size_bytes)
+VALUES (2001,decode('616263','hex'),'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',3);
+SQL
+docker exec "${database_container}" psql -v ON_ERROR_STOP=1 -U ipgo_ai_reader -d ipgo \
+  -c "SELECT upload_file_id,user_id,warehouse_id,size_bytes,content FROM ai_upload_originals_v1" >/dev/null
+expect_denied ipgo_ai_reader "SELECT * FROM upload_originals"
+expect_denied ipgo_server "UPDATE upload_originals SET size_bytes=3 WHERE upload_file_id=2001"
+expect_denied ipgo_server "DELETE FROM upload_originals WHERE upload_file_id=2001"
+expect_denied ipgo_server "INSERT INTO upload_originals VALUES (2000,decode('61','hex'),'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',2,CURRENT_TIMESTAMP)"
 
 # Cleaning metadata is available only through the three explicit views; base tables remain denied.
 docker exec "${database_container}" psql -v ON_ERROR_STOP=1 -U ipgo_ai_reader -d ipgo \

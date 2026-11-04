@@ -111,6 +111,12 @@ PostgreSQL을 준비한 뒤 실행 환경에 아래 변수를 설정합니다. �
 
 현재 `.env` 파일을 자동으로 읽는 별도 설정은 없습니다. 터미널 또는 IDE의 실행 환경변수로 전달해야 합니다.
 
+새로 만든 빈 PostgreSQL로 실행할 때는 서버를 켜기 전에 DB 사용자(role)를 먼저 만들어야 합니다. 없으면 V13 migration이 `ipgo database roles are missing`으로 실패하고 서버가 시작 직후 종료됩니다(`bootRun`이 `BUILD SUCCESSFUL`로 바로 끝남). 관리자 계정으로 한 번만 실행합니다.
+
+```bash
+psql -U <관리자> -d <database> -f database/bootstrap/create_roles.sql
+```
+
 ### AWS DB one-off 작업 이미지
 
 `Dockerfile.database`는 애플리케이션 이미지와 분리된 DB 관리 전용 이미지입니다. `bootstrap`은
@@ -271,6 +277,24 @@ SMTP 연결·읽기·쓰기 제한은 각각 5초입니다. SMTP 설정이 없�
 동일 이메일의 동시 발송·코드 확인·가입은 DB 행 잠금으로 처리합니다. SMTP 발송도 해당 트랜잭션에서 수행하므로 같은 이메일의 요청은 발송 완료까지 대기합니다. SMTP 수락 직후 DB commit이 실패하면 메일의 코드가 유효하지 않을 수 있으므로 재발송이 필요합니다. 별도 발송 큐는 추가하지 않았습니다.
 
 공개 운영 전에는 이메일별 제한 외에 IP·전체 발송량 제한과 메일 서비스 한도를 설정해야 합니다. 만료 상태는 요청 시 검사하며, 만료된 행은 현재 자동 삭제하지 않습니다. `email_verifications`의 보관 기간과 정리 작업도 운영 전에 정해야 합니다. 이메일 중복 조회는 요청한 명세에 따라 가입 여부를 알려줍니다.
+
+### 개발용 Gmail (#82)
+
+개발·시연에서는 팀 공용 Gmail 계정(`ipgoITgo@gmail.com`)으로 인증 메일을 보냅니다. 받는 사람은 Gmail이 아니어도 되며 사용자는 아래 값을 알 필요가 없습니다.
+
+| 환경변수 | 값 |
+|---|---|
+| `SPRING_MAIL_HOST` | `smtp.gmail.com` |
+| `SPRING_MAIL_PORT` | `587` |
+| `SPRING_MAIL_USERNAME` · `IPGO_MAIL_FROM` | `ipgoITgo@gmail.com` |
+| `SPRING_MAIL_PASSWORD` | 계정의 **앱 비밀번호** 16자리(띄어쓰기 없이). Gmail 로그인 비밀번호가 아님 |
+| `SPRING_MAIL_PROPERTIES_MAIL_SMTP_AUTH` | `true` |
+| `SPRING_MAIL_PROPERTIES_MAIL_SMTP_STARTTLS_ENABLE` · `..._STARTTLS_REQUIRED` | `true` |
+
+- 앱 비밀번호는 2단계 인증을 켠 계정에서 [앱 비밀번호](https://myaccount.google.com/apppasswords) 화면으로 만듭니다. 메일 발송 같은 일부 권한만 가진 별도 열쇠라서, 새어 나가면 그 앱 비밀번호만 지우면 됩니다. Gmail 로그인 비밀번호를 바꾸면 기존 앱 비밀번호가 무효가 될 수 있습니다.
+- 앱 비밀번호는 저장소·Issue·채팅·로그에 적지 않습니다. 담당자에게 직접 전달하고, 개발 서버에는 secret으로 넣습니다.
+- 2026-11-04 로컬에서 인증 메일 요청 202 → 받은편지함 도착 → 코드 확인 200 → 가입 201 → 로그인 200을 확인했습니다. 개발 서버 적용은 #82에서 진행합니다.
+- Gmail은 하루 약 500통 한도와 스팸 분류·계정 잠김 위험이 있어 개발·시연용으로만 씁니다. 실제 사용자를 받기 전에는 AWS SES 같은 발송 서비스와 우리 도메인 주소로 위 값만 바꾸고, IP·전체 발송량 제한을 추가합니다.
 
 ## 수불부 엑셀 원본 업로드
 

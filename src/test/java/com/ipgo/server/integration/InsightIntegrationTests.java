@@ -95,11 +95,13 @@ class InsightIntegrationTests extends DatabaseIntegrationTest {
         long fallback = result(userId, "OK", null);
         long notCalled = result(userId, "OK", null);
         long tableOnly = result(userId, "OK", null);
+        long disabled = result(userId, "OK", null);
         long generating = result(userId, "OK", null);
         explanation(ai, "LLM", null, "200개를 넣으면 다음 입고 때 40개가 남습니다.");
         explanation(fallback, "TEMPLATE", "LLM_TIMEOUT", "기본 문장입니다.");
         explanation(notCalled, "TEMPLATE", null, "기본 문장입니다.");
         explanation(tableOnly, "NONE", "VALIDATION_FAILED", null);
+        explanation(disabled, "NONE", "LLM_DISABLED", null);
 
         insight(userId, ai)
                 .andExpect(status().isOk())
@@ -113,6 +115,10 @@ class InsightIntegrationTests extends DatabaseIntegrationTest {
                 .andExpect(jsonPath("isFallback").value(false));
         insight(userId, tableOnly).andExpect(jsonPath("mode").value("TABLE_ONLY"))
                 .andExpect(jsonPath("isFallback").value(true))
+                .andExpect(jsonPath("text").doesNotExist());
+        // LLM을 꺼 둬서 부르지 않은 결과는 실패가 아니다.
+        insight(userId, disabled).andExpect(jsonPath("mode").value("TABLE_ONLY"))
+                .andExpect(jsonPath("isFallback").value(false))
                 .andExpect(jsonPath("text").doesNotExist());
         insight(userId, generating).andExpect(status().isAccepted())
                 .andExpect(jsonPath("status").value("GENERATING"));

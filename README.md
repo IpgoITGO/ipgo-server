@@ -443,7 +443,7 @@ R2·R3은 Bearer JWT가 필요하고, 다른 회원의 상품·발주는 `403`, 
 | 결과 상태 | 응답 |
 |---|---|
 | `NOT_CALCULABLE` · `EXCLUDED` · `REUPLOAD_REQUIRED` · `NOT_NEEDED` | LLM을 부르지 않고 고정 문장을 `mode: "FIXED"`로 바로 돌려줍니다. 문장은 ipgo-ai `docs/ai-insight/prompt-and-fallback.md` 6장 template이고, 숫자는 화면용 정수와 천 단위 쉼표로 채웁니다. 넣을 값(사유 등)이 비어 있으면 `TABLE_ONLY`(문장 없이 비교표만) |
-| `OK` + `ai_explanations`에 저장된 문장 있음 | 저장된 문장을 돌려줍니다. ipgo-ai 0002의 `LLM` → `AI`, `TEMPLATE` → `FIXED`, `NONE` → `TABLE_ONLY`. 실패 사유(`reason_code`)가 있으면 LLM이 실패해 대체한 것이라 `isFallback: true` |
+| `OK` + `ai_explanations`에 저장된 문장 있음 | 저장된 문장을 돌려줍니다. ipgo-ai 0002의 `LLM` → `AI`, `TEMPLATE` → `FIXED`, `NONE` → `TABLE_ONLY`. 실패 사유(`reason_code`)가 있으면 LLM이 실패해 대체한 것이라 `isFallback: true`. 단, LLM을 꺼 둬서 부르지 않은 `LLM_DISABLED`는 실패가 아니라 `isFallback: false` |
 | `OK` + 저장된 문장 없음 | `202 {"status": "GENERATING"}`. 2차 전에는 문장을 만드는 쪽이 없어 계속 이 응답입니다 |
 
 - 고정 문장은 만들어 둔 문장이 아니라서 `generatedAt`이 `null`입니다.

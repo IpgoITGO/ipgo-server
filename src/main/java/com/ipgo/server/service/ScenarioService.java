@@ -8,6 +8,7 @@ import com.ipgo.server.repository.CalculationResultRepository;
 import com.ipgo.server.repository.ProductRepository;
 import com.ipgo.server.util.DisplayQuantities;
 
+import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.util.List;
 
@@ -34,6 +35,7 @@ public class ScenarioService {
         Product product = products.findById(result.getProductId()).orElseThrow(ProductException::notFound);
         if (!product.getUserId().equals(userId)) throw ProductException.forbidden();
 
+        BigDecimal preArrival = result.getPreArrivalUnmetQty();
         List<ScenarioComparison.Scenario> scenarios = jdbc.query("""
                 SELECT id, scenario_type, scenario_qty, is_duplicate, expected_depletion_on, expected_ending_stock,
                     unmet_demand_qty, post_arrival_risk
@@ -41,11 +43,19 @@ public class ScenarioService {
                 ORDER BY CASE scenario_type WHEN 'P80' THEN 1 WHEN 'P100' THEN 2 WHEN 'P120' THEN 3 ELSE 4 END, id
                 """, (rs, i) -> new ScenarioComparison.Scenario(rs.getLong(1), rs.getString(2), rs.getLong(3),
                         rs.getBoolean(4), rs.getObject(5, LocalDate.class), DisplayQuantities.stock(rs.getBigDecimal(6)),
-                        DisplayQuantities.demand(rs.getBigDecimal(7)), rs.getBigDecimal(8)), resultId);
+                        DisplayQuantities.demand(rs.getBigDecimal(7)), postArrival(rs.getBigDecimal(7), preArrival),
+                        rs.getBigDecimal(8)), resultId);
         // 계산일이 기준일보다 늦으면 시작 재고를 예상 출고로 이어서 추정했으므로 비교표 값도 추정치다.
         boolean estimated = result.getStartDate().isAfter(result.getOriginDate());
         return new ScenarioComparison(result.getId(), estimated, result.getPreArrivalRisk(),
-                result.getRiskSampleSize(), result.getRiskBasis(), riskStatus(result), scenarios);
+                result.getRiskSampleSize(), result.getRiskBasis(), riskStatus(result),
+                DisplayQuantities.demand(preArrival), scenarios);
+    }
+
+    // 도착 후 몫 = 합계 − 도착 전 몫. 화면용 정수로 올리기 전 소수 값으로 빼야 1개씩 어긋나지 않는다.
+    private static Long postArrival(BigDecimal total, BigDecimal preArrival) {
+        if (total == null || preArrival == null) return null;
+        return DisplayQuantities.demand(total.subtract(preArrival).max(BigDecimal.ZERO));
     }
 
     // 엔진은 정확도가 낮거나 표본이 모자라면 위험값을 비워 둔다(ipgo-ai 0002 3-8).

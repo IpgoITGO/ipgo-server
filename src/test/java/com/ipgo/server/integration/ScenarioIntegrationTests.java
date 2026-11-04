@@ -81,6 +81,26 @@ class ScenarioIntegrationTests extends DatabaseIntegrationTest {
     }
 
     @Test
+    void splitsUnmetDemandIntoBeforeAndAfterArrival() throws Exception {
+        long userId = newUser();
+        long result = result(userId, "OK", AS_OF, "0.0400", 38, "SKU", "HIGH");
+        // 도착 전에는 넣는 양과 관계없이 4.6개를 못 판다. 시나리오의 unmet은 도착 전 + 도착 후 합계다.
+        jdbc.update("UPDATE calculation_results SET pre_arrival_unmet_qty = 4.600 WHERE id = ?", result);
+        scenario(result, "P80", 32, false, AS_OF.plusDays(9), "0.000", "12.600", "0.2500");
+        scenario(result, "P100", 40, false, null, "0.000", "4.900", "0.0800");
+        scenario(result, "P120", 48, false, null, "8.000", "4.600", "0.0200");
+
+        scenarios(userId, result)
+                .andExpect(jsonPath("preArrivalUnmetQty").value(5))
+                .andExpect(jsonPath("scenarios[0].unmetDemandQty").value(13))
+                .andExpect(jsonPath("scenarios[0].postArrivalUnmetQty").value(8))
+                // 올린 정수끼리 빼면 5 − 5 = 0이 되지만, 실제 도착 후 몫 0.3개는 1개로 보여야 한다.
+                .andExpect(jsonPath("scenarios[1].unmetDemandQty").value(5))
+                .andExpect(jsonPath("scenarios[1].postArrivalUnmetQty").value(1))
+                .andExpect(jsonPath("scenarios[2].postArrivalUnmetQty").value(0));
+    }
+
+    @Test
     void marksRiskStatusFromStoredValues() throws Exception {
         long userId = newUser();
         long lowGrade = result(userId, "OK", AS_OF, null, 12, null, "LOW");

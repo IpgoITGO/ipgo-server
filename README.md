@@ -477,6 +477,33 @@ R2·R3은 Bearer JWT가 필요하고, 다른 회원의 상품·발주는 `403`, 
 - D1 `excluded[].date`는 그 계산에 쓴 업로드(`run_source_files`)의 검증 리포트에서 찾은 검산 불일치 날짜입니다. 리포트에 없으면 `null`입니다.
 - 아직 비어 있는 값: K1 `accuracy.history`(백테스트 연동 이후), `result.requiredQtyBeforeRounding`(ERD 저장 칸 없음).
 
+### 직접 입력 수량 시나리오 (K3 · #94)
+
+`POST /api/results/{resultId}/scenarios`에 JSON `{"qty": 80}`을 보내면 `201`과 CUSTOM 시나리오 한 행을
+반환합니다. Bearer 인증을 사용하며 다른 회원 결과는403, 없는 결과는404입니다. 반환 형식은 K2의
+`scenarios` 한 행과 같고 `postArrivalUnmetQty`도 같은 소수 차감·표시 규칙을 적용합니다.
+
+qty는 숫자형 JSON 정수1 이상이어야 합니다. 문자열·소수·누락을 거절하며 저장된 원래 계산의 입고
+단위로 올립니다(예: 단위12·입력80 →84). 올림 전후의 수량은 DB 수량 저장 범위에 맞춰
+999,999,999,999,999 이하로 제한합니다. 같은 올림 수량은 저장된 CUSTOM을 재사용하고, 다른 수량은
+결과당 CUSTOM 한 행만 갱신합니다. 기본 추천량·P80/P100/P120·원본 입력·기존 설명은 보존합니다.
+
+최신 실행이 DONE이고 상품이 활성 상태인 OK/NOT_NEEDED 결과만 받습니다. 기준일7일 초과·새 revision·
+미완료 자료·다른 최신 실행·원래 입력 누락은409 `SCENARIO_STALE`입니다. 동시 다른 수량 요청은
+먼저 저장한 결과를 유지하고 뒤늦은 응답에409 `SCENARIO_CHANGED`를 반환합니다. 화면에서 확인 후
+재시도하며 자동으로 이전 성공을 덮어쓰지 않습니다.
+
+`IPGO_ENGINE_ENABLED=true`와 `IPGO_ENGINE_BASE_URL`(AI의 승인된 내부 HTTP(S) origin)이 필요합니다.
+서버는 고정 경로 `/engine/scenarios`만 호출하고 인증 토큰을 전달하지 않습니다. base URL이 없으면
+새 계산은503 `ENGINE_UNAVAILABLE`이며 기존 API 기동에는 영향을 주지 않습니다.
+`IPGO_SCENARIO_TIMEOUT`의 기본값은10s로 응답 본문 수신까지 제한하고, 연결은1초·본문은512KiB로
+제한합니다. 지연은504 `ENGINE_TIMEOUT`, 잘못된 응답/실패는502 `ENGINE_ERROR`, AI 사용 중은503입니다.
+DB 저장 실패는503 `SCENARIO_SAVE_FAILED`로 반환하며 이전 CUSTOM도 transaction rollback으로 보존합니다.
+
+기존 V11 시나리오 표와 V14 계산 입력을 사용합니다. DB migration·#76/PR77·AI60의 원본 DB 전환·
+CUSTOM 설명 재생성·실제 LLM 활성화는 포함하지 않습니다. 운영 설정과 검증 한계는
+[직접 입력 계약·복구](docs/decisions/0004-custom-quantity-scenario.md)를 확인합니다.
+
 ### AI 인사이트 (K4)
 
 `GET /api/results/{resultId}/insight`는 SKU 상세의 설명 문장을 돌려줍니다(BE-09 · BE-14). 현재 K4는 저장된 계산 결과와 `ai_explanations`를 읽으며 FastAPI `/engine/insight`를 직접 호출하지 않습니다.

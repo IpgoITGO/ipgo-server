@@ -102,11 +102,13 @@ public class EngineCalculationService {
         request.put("settings", inputSettings.stream().filter(s -> !excluded.containsKey(""+s.get("productId"))).toList());
         request.put("plannedReceipts", planned);
         String hash = hash(canonical(mapper.valueToTree(Map.of("request", request, "excluded", excluded))));
+        // Only the current run can be reused: historical IDs must not hide a later state change.
         if (!force) {
             List<Long> same = jdbc.queryForList("""
                     SELECT id FROM calculation_runs WHERE warehouse_id = ? AND input_hash = ?
+                    AND id = (SELECT MAX(id) FROM calculation_runs WHERE warehouse_id = ?)
                     AND status IN ('QUEUED','RUNNING','DONE') ORDER BY id DESC FETCH FIRST 1 ROWS ONLY
-                    """, Long.class, warehouseId, hash);
+                    """, Long.class, warehouseId, hash, warehouseId);
             if (!same.isEmpty()) return same.getFirst();
         }
         String jobId = UUID.randomUUID().toString();

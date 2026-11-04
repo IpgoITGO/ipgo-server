@@ -10,6 +10,7 @@ import java.security.Principal;
 
 import jakarta.validation.Valid;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PatchMapping;
@@ -44,16 +45,21 @@ public class PlannedReceiptController {
 
     // R3 수량 · 도착 예정일 수정
     @PatchMapping("/{receiptId}")
-    public PlannedReceiptItem update(Principal principal, @PathVariable long receiptId,
+    public ResponseEntity<PlannedReceiptItem> update(Principal principal, @PathVariable long receiptId,
             @Valid @RequestBody PlannedReceiptUpdateRequest request) {
-        return receipts.update(userId(principal), receiptId, request);
+        var changed = receipts.update(userId(principal), receiptId, request);
+        var response = ResponseEntity.ok();
+        if (changed.runId() != null) response.header("X-Calculation-Run-Id", changed.runId().toString());
+        return response.body(changed.receipt());
     }
 
     // R3 취소. 행은 CANCELLED로 남기고 목록에서는 뺀다.
     @DeleteMapping("/{receiptId}")
-    @ResponseStatus(HttpStatus.NO_CONTENT)
-    public void cancel(Principal principal, @PathVariable long receiptId) {
-        receipts.cancel(userId(principal), receiptId);
+    public ResponseEntity<Void> cancel(Principal principal, @PathVariable long receiptId) {
+        Long runId = receipts.cancel(userId(principal), receiptId);
+        var response = ResponseEntity.noContent();
+        if (runId != null) response.header("X-Calculation-Run-Id", runId.toString());
+        return response.build();
     }
 
     private static long userId(Principal principal) {

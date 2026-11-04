@@ -60,19 +60,22 @@ public class PlannedReceiptService {
     }
 
     @Transactional
-    public PlannedReceiptItem update(long userId, long receiptId, PlannedReceiptUpdateRequest request) {
+    public Changed update(long userId, long receiptId, PlannedReceiptUpdateRequest request) {
         var warehouse = warehouses.lockDefault(userId);
         PlannedReceipt receipt = ownedReceipt(userId, receiptId);
         receipt.update(request.quantity(), request.expectedOn());
-        calculations.request(userId, warehouse.getId(), "RECEIPTS", false);
-        return PlannedReceiptItem.from(receipt, ownedProduct(userId, receipt.getProductId()));
+        Long runId = calculations.request(userId, warehouse.getId(), "RECEIPTS", false);
+        return new Changed(PlannedReceiptItem.from(receipt, ownedProduct(userId, receipt.getProductId())), runId);
     }
 
     @Transactional
-    public void cancel(long userId, long receiptId) {
+    public Long cancel(long userId, long receiptId) {
         var warehouse = warehouses.lockDefault(userId);
         ownedReceipt(userId, receiptId).cancel();
-        calculations.request(userId, warehouse.getId(), "RECEIPTS", false);
+        return calculations.request(userId, warehouse.getId(), "RECEIPTS", false);
+    }
+
+    public record Changed(PlannedReceiptItem receipt, Long runId) {
     }
 
     private Product ownedProduct(long userId, long productId) {

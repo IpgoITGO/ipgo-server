@@ -23,6 +23,7 @@ public class InsightService {
     static final String AI = "AI";
     static final String FIXED = "FIXED";
     static final String TABLE_ONLY = "TABLE_ONLY";
+    static final String LLM_DISABLED = "LLM_DISABLED";
 
     private final CalculationResultRepository results;
     private final ProductRepository products;
@@ -50,6 +51,7 @@ public class InsightService {
     }
 
     // ipgo-ai 0002의 mode(LLM · TEMPLATE · NONE)를 명세 이름으로 바꾼다. 실패 사유가 있으면 LLM을 불렀다가 실패한 것이다.
+    // 단, LLM을 꺼 둬서 부르지 않은 것(LLM_DISABLED, #74)은 실패가 아니다.
     private static Insight stored(long resultId, String mode, String reasonCode, String text, Timestamp createdAt) {
         String shown = switch (mode) {
             case "LLM" -> AI;
@@ -57,7 +59,7 @@ public class InsightService {
             case "NONE" -> TABLE_ONLY;
             default -> mode;
         };
-        boolean fallback = !AI.equals(shown) && reasonCode != null;
+        boolean fallback = !AI.equals(shown) && reasonCode != null && !LLM_DISABLED.equals(reasonCode);
         return new Insight(resultId, shown, fallback, TABLE_ONLY.equals(shown) ? null : text,
                 createdAt == null ? null
                         : createdAt.toInstant().atZone(DashboardService.SEOUL).toOffsetDateTime());

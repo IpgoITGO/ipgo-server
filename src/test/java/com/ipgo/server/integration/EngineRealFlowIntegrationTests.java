@@ -35,6 +35,8 @@ class EngineRealFlowIntegrationTests {
     @Autowired EngineJobs jobs;
     @Autowired EngineResults results;
     @Autowired EngineCalculationService calculations;
+    @Autowired com.ipgo.server.service.CalculationRunService calculationStatus;
+    @Autowired com.ipgo.server.service.DashboardService dashboard;
     @Autowired UploadRecordService records;
     @Autowired UploadFileRepository uploads;
     @Autowired TransactionTemplate tx;
@@ -220,6 +222,16 @@ class EngineRealFlowIntegrationTests {
         assertThat(count("calculation_results")).isEqualTo(1);
         assertThat(count("scenario_results")).isEqualTo(3);
         assertThat(jdbc.queryForObject("SELECT status FROM calculation_runs WHERE id=?", String.class, run)).isEqualTo("DONE");
+        // A synthetic failure callback exercises server failure handling in isolated H2, not a real AI outage.
+        results.accept(mapper.writeValueAsString(Map.of("contractVersion", "1", "jobId", nextJob,
+                "jobType", "CALCULATE", "status", "FAILED", "error", Map.of("code", "ENGINE_UNAVAILABLE"))));
+        assertThat(calculationStatus.status(owner, forced).status()).isEqualTo("FAILED");
+        assertThat(calculationStatus.status(owner, forced).errorMessage()).isNotBlank();
+        assertThat(dashboard.needs(owner, "shortage").runId()).isEqualTo(run);
+        assertThat(dashboard.needs(owner, "shortage").resultStatus()).isEqualTo("STALE");
+        assertThat(details.detail(owner, product, null, null).result().resultId()).isEqualTo(resultId);
+        assertThat(count("calculation_results")).isEqualTo(1);
+        assertThat(count("scenario_results")).isEqualTo(3);
     }
     @Test void latestProcessingOrFailedRevisionDoesNotFallBackToOldDone() throws Exception {
         long owner = user(); var first = upload(owner); results.accept(success(first, clean(first.getId())));
@@ -267,6 +279,33 @@ class EngineRealFlowIntegrationTests {
         var nextCost = jobs.find(nextJob).payload().path("settings").get(0).path("unitCost").decimalValue();
         assertThat(firstCost).isEqualByComparingTo(nextCost);
         assertThat(repeated).as("equivalent unit cost decimal scales %s/%s", firstCost.scale(), nextCost.scale()).isEqualTo(initial);
+    }
+
+    @Test void restoringEarlierInputCreatesNewRunInsteadOfReusingHistory() throws Exception {
+        long owner = user(); var u = upload(owner);
+        jdbc.update("UPDATE warehouses SET default_lead_time_days=5, default_review_cycle_days=7, default_order_unit_qty=1 WHERE id=?", u.getWarehouseId());
+        results.accept(success(u, clean(u.getId())));
+        long initial = jdbc.queryForObject("SELECT id FROM calculation_runs", Long.class);
+        var cost = jdbc.queryForObject("SELECT unit_cost FROM products WHERE user_id=?", java.math.BigDecimal.class, owner);
+        jdbc.update("UPDATE products SET unit_cost=? WHERE user_id=?", cost.add(java.math.BigDecimal.ONE), owner);
+        long changed = calculations.request(owner, u.getWarehouseId(), "SETTINGS", false);
+        jdbc.update("UPDATE products SET unit_cost=? WHERE user_id=?", cost, owner);
+        long restored = calculations.request(owner, u.getWarehouseId(), "SETTINGS", false);
+        assertThat(changed).isGreaterThan(initial);
+        assertThat(restored).as("restoring input must become the newest visible calculation").isGreaterThan(changed);
+        assertThat(calculations.request(owner, u.getWarehouseId(), "SETTINGS", false)).isEqualTo(restored);
+    }
+
+    @Test void failedLatestRunDoesNotReuseAnOlderSuccessfulRun() throws Exception {
+        long owner = user(); var u = upload(owner);
+        jdbc.update("UPDATE warehouses SET default_lead_time_days=5, default_review_cycle_days=7, default_order_unit_qty=1 WHERE id=?", u.getWarehouseId());
+        results.accept(success(u, clean(u.getId())));
+        long initial = jdbc.queryForObject("SELECT id FROM calculation_runs", Long.class);
+        jdbc.update("UPDATE calculation_runs SET status='DONE' WHERE id=?", initial);
+        long failed = calculations.request(owner, u.getWarehouseId(), "RECALCULATE", true);
+        jdbc.update("UPDATE calculation_runs SET status='FAILED', error_message='isolated failure fixture' WHERE id=?", failed);
+        long retry = calculations.request(owner, u.getWarehouseId(), "SETTINGS", false);
+        assertThat(retry).as("a failed latest attempt requires a new run rather than an old DONE ID").isGreaterThan(failed);
     }
 
     @Test void cleanAndCalculationEnqueueRollbackTogetherOnOutboxFailure() throws Exception {

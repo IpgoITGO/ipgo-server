@@ -19,17 +19,33 @@ spring:
     hibernate:
       ddl-auto: validate
 
-server:
-  servlet:
-    session:
-      timeout: 30m
-      tracking-modes: cookie
-      cookie:
-        http-only: true
-        same-site: lax
+springdoc:
+  api-docs:
+    enabled: ${IPGO_API_DOCS_ENABLED:false}
+  swagger-ui:
+    enabled: ${IPGO_API_DOCS_ENABLED:false}
+    persist-authorization: false
+    try-it-out-enabled: false
+    display-request-duration: true
+    tags-sorter: alpha
+    operations-sorter: method
+  paths-to-match: /api/**
+  packages-to-scan: com.ipgo.server.controller
+  show-actuator: false
 
 ipgo:
+  engine:
+    enabled: ${IPGO_ENGINE_ENABLED:false}
+    transport-enabled: ${IPGO_ENGINE_TRANSPORT_ENABLED:true}
+    sqs-endpoint: ${IPGO_SQS_ENDPOINT:}
+    jobs-queue-url: ${IPGO_JOBS_QUEUE_URL:}
+    results-queue-url: ${IPGO_RESULTS_QUEUE_URL:}
+  auth:
+    jwt-secret: ${IPGO_JWT_SECRET:}
+    cookie-secure: ${IPGO_AUTH_COOKIE_SECURE:true}
   upload:
+    storage: ${IPGO_UPLOAD_STORAGE:local}
     directory: ${IPGO_UPLOAD_DIR:./storage/uploads}
+    bucket: ${IPGO_UPLOAD_BUCKET:}
   mail:
     from: ${IPGO_MAIL_FROM:}

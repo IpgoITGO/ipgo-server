@@ -1,0 +1,11 @@
+.git
+.github
+.gradle
+.idea
+.vscode
+build
+docs
+storage
+*.log
+.env
+.env.*

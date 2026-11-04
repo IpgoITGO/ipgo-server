@@ -129,6 +129,13 @@ one-off task로 실행하며 상시 서비스에서는 이 이미지를 사용�
 `verify` task에는 각각 필요한 최소 역할만 전달합니다. 실제 RDS 실행은 migration 직전 snapshot이
 `available`인 것을 확인하고 Server·AI service가 0인 상태에서만 진행합니다.
 
+### AWS 데이터 접근과 계산 엔진 경계
+
+Spring이 업무 데이터와 상태 변경을 맡고, FastAPI는 정제·계산에 필요한 view와 원본 파일을 읽습니다.
+현재 구현은 V14 기반의 `CLEAN`·`CALCULATE` SQS 처리와 저장 결과 조회이며, 유료 LLM과 DB 원본
+저장 전환은 별도입니다. 역할별 권한·입력 선택·재시도·후속 범위는
+[AWS 데이터 접근과 계산 엔진 계약](docs/decisions/0001-aws-data-access-contract.md)을 따릅니다.
+
 ### AWS dev 실행
 
 AWS에서는 `IPGO_UPLOAD_STORAGE=s3`와 `IPGO_UPLOAD_BUCKET`을 설정해 원본을 private S3에
@@ -352,7 +359,7 @@ if (!response.ok) throw new Error(result.message ?? '업로드에 실패했습�
 
 업로드 일시(`uploadedAt`)는 한국 시간(+09:00)으로 돌려줍니다. DB에는 시간대 포함 시각으로 저장합니다.
 
-### 업로드 결과 조회 (U2 · #26 1차)
+### 업로드 결과 조회 (U2 · #26)
 
 `GET /api/uploads/{uploadId}`는 본인의 처리 상태·자료 기간·검증 보고서를 반환합니다.
 Bearer 인증이 없으면 401, 다른 회원 자료면 403, 없는 업로드면 404입니다.
@@ -368,12 +375,14 @@ FAILED이면 `error.code`와 안전한 `error.message`를 반환합니다. 처�
 
 정제 결과 저장 경계는 상품·LOT·일별 수불·보고서·상태를 한 트랜잭션에서 저장하고, 잘못된 jobId나
 다른 업로드의 행을 거절합니다. 같은 결과의 중복 전달과 같은 창고의 동시 처리를 잠금으로 보호합니다.
-이전 revision과 셀러가 수정한 상품 값은 보존합니다. 기존 schema를 사용하며 새 migration은 없습니다.
+이전 revision과 셀러가 수정한 상품 값은 보존합니다. 실제 엔진 연결은 V14의 outbox와 조회 view를 사용합니다.
 
-**현재 일반 업로드에서 AI 호출·큐 발송은 자동 실행되지 않습니다.** 이 단계는 결과 저장·조회 경계이며,
-실제 AI 연결은 아직 미완료입니다. `runId`는 #27 전까지 null, `matchedReceipts`는 정책 확정 전까지 빈 배열입니다.
-추정 입고 주기는 보고서에만 보관합니다. 프론트 타입·문구 조정과 남은 합의는
-[#26 구현 범위](docs/decisions/0002-upload-cleaning-boundary.md)를 확인합니다.
+`IPGO_ENGINE_ENABLED=true`이면 새 업로드의 `CLEAN` 작업을 outbox에 저장해 SQS로 처리합니다.
+정제 결과 저장 뒤 계산 선행 조건이 충족되면 계산을 요청하고 U2의 `runId`로 상태를 조회합니다.
+엔진이 꺼져 있거나 계산 조건이 준비되지 않으면 `runId`는 null일 수 있습니다.
+입고 주기 제안·발주 입고 매칭의 별도 완료 조건은
+[#26 저장 경계와 남은 계약](docs/decisions/0002-upload-cleaning-boundary.md), 현재 연결은
+[실제 정제·계산 연결](docs/decisions/0003-engine-job-connection.md)을 확인합니다.
 
 DB 기록 저장이 실패하면 이미 보관한 원본 폴더는 남을 수 있습니다.
 
@@ -416,10 +425,12 @@ storage/uploads/<인증된 사용자 ID>/<보관 UUID>/
 | API | 동작 |
 |---|---|
 | `GET /api/replenishment-settings` (S1) | 기본값 조회. 셀러가 저장하기 전에는 `confirmed: false`와 제안값(리드타임 5일, 입고 단위 1개, `reviewCycleSource: "ESTIMATED"`)을 돌려줍니다. 저장 뒤에는 `confirmed: true`, `"DEFAULT"` |
-| `PUT /api/replenishment-settings` (S2) | `{leadTimeDays, reviewCycleDays, orderUnitQty, recalculate}`. 세 칸 모두 필수. 응답 `{"saved": true, "runId": null}` |
+| `PUT /api/replenishment-settings` (S2) | `{leadTimeDays, reviewCycleDays, orderUnitQty, recalculate}`. 세 칸 모두 필수. 응답의 `runId`는 선행 조건을 충족한 계산 번호이며, 조건 미충족·엔진 비활성 때는 null |
 | `PUT /api/products/{productId}/replenishment-settings` (S3) | `{leadTimeDays, reviewCycleDays, orderUnitQty, unitCost}`. 입고 조건 세 칸은 보낸 값으로 모두 바꾸며, 비우면 기본값을 따릅니다. `unitCost`(0 이상)는 보낸 경우에만 바꿉니다. 다른 회원 상품 `403`, 없는 상품 `404` |
 
-S2·S3 모두 Bearer JWT가 필요하며 CSRF는 요구하지 않습니다. 수불부로 입고 주기를 추정하는 기능은 정제 연동 전이라 아직 없어서, 제안 단계의 `reviewCycleDays`는 `null`입니다. 저장 뒤 계산을 시작하는 기능(`runId`, `recalculate`)은 계산 엔진 연동 때 붙이며, 그 전까지 `runId`는 `null`입니다.
+S2·S3 모두 Bearer JWT가 필요하며 CSRF는 요구하지 않습니다. 기본 조건을 확인하기 전 제안값의
+`reviewCycleDays`는 null이며, 추측한 주기로 계산하지 않습니다. 엔진이 활성화되고 입력이 준비되면
+저장 후 계산을 요청합니다. S2의 `recalculate=true`는 같은 입력이어도 새 계산을 만듭니다.
 
 ### 기존 발주 물량 (R1~R3)
 
@@ -428,11 +439,11 @@ S2·S3 모두 Bearer JWT가 필요하며 CSRF는 요구하지 않습니다. 수�
 | API | 동작 |
 |---|---|
 | `GET /api/planned-receipts` (R1) | 취소하지 않은 발주 목록. 도착 예정일 빠른 순, 예정일 없는 발주는 맨 뒤. 응답 `{items, total}`, 항목은 `receiptId`, `productId`, `skuName`, `quantity`, `expectedOn`, `receivedOn`, `status`, `reflected` |
-| `POST /api/planned-receipts` (R2) | `{productId, quantity, expectedOn}`. `201 {"receiptId", "reflected", "runId": null}`. `reflected: false`면 화면이 "계산에 반영되지 않음"을 안내 |
+| `POST /api/planned-receipts` (R2) | `{productId, quantity, expectedOn}`. `201 {"receiptId", "reflected", "runId"}`. `runId`는 계산 번호 또는 선행 조건 미충족 시 null. `reflected: false`면 화면이 "계산에 반영되지 않음"을 안내 |
 | `PATCH /api/planned-receipts/{receiptId}` (R3) | `quantity`·`expectedOn` 중 보낸 칸만 수정. `NO_DATE`에 도착일을 넣으면 `PENDING` |
 | `DELETE /api/planned-receipts/{receiptId}` (R3) | 취소. `204`. 행은 지우지 않고 `CANCELLED`로 남기며, 이후 수정·취소는 `404` |
 
-R2·R3은 Bearer JWT가 필요하고, 다른 회원의 상품·발주는 `403`, 없는 상품·발주는 `404`입니다. 수불부 입고로 도착을 확인하는 `RECEIVED`와 기준일이 지났는데 입고가 없는 `OVERDUE` 판정은 정제 연동 뒤에 붙입니다. 저장 뒤 계산 시작(`runId`)도 계산 엔진 연동 때 붙입니다.
+R2·R3은 Bearer JWT가 필요하고, 다른 회원의 상품·발주는 `403`, 없는 상품·발주는 `404`입니다. 입고 자동 매칭 정책의 남은 범위는 #26에서 추적합니다. 등록·수정·취소 후 입력이 달라지면 계산을 요청합니다. 날짜 없는 발주도 설명용 입력에 포함하므로 새 계산 번호가 생길 수 있지만 미래 입고량에서는 제외합니다.
 
 ### 계산 상태 (C2)
 
@@ -442,7 +453,7 @@ R2·R3은 Bearer JWT가 필요하고, 다른 회원의 상품·발주는 `403`, 
 조회하고, 상태 확인 실패를 이유로 발주 변경을 자동 재전송하지 않습니다. 현재 프론트의 같은 출처 API
 프록시를 기준으로 하며, 다른 출처에서 직접 부르면 CORS 노출 헤더 설정을 별도 확인해야 합니다.
 
-`GET /api/calculation-runs/{runId}`는 저장 응답의 `runId`로 계산이 끝났는지 알려줍니다(BE-16). 계산을 시작하고 `calculation_runs`에 행을 만드는 쪽은 #27에서 붙이며, 이 API는 읽기만 합니다.
+`GET /api/calculation-runs/{runId}`는 저장 응답의 `runId`로 계산이 끝났는지 알려줍니다(BE-16). 업로드 정제·조건 저장·발주 변경이 계산을 요청하고 이 API는 상태를 읽습니다.
 
 - `status`: `QUEUED` · `RUNNING` · `DONE` · `FAILED`. `FAILED`면 `errorMessage`에 실패 사유가 옵니다.
 - `DONE`이면 `summary`에 완료 팝업용 개수(지금 넣어야 할 상품 · 입고 불필요 · 계산 불가 · 검산 제외)가 옵니다. D1과 같은 기준으로 오늘 날짜에 다시 판정하고, 사용을 끈 상품은 뺍니다.
@@ -466,15 +477,15 @@ R2·R3은 Bearer JWT가 필요하고, 다른 회원의 상품·발주는 `403`, 
 - D1 `excluded[].date`는 그 계산에 쓴 업로드(`run_source_files`)의 검증 리포트에서 찾은 검산 불일치 날짜입니다. 리포트에 없으면 `null`입니다.
 - 아직 비어 있는 값: K1 `accuracy.history`(백테스트 연동 이후), `result.requiredQtyBeforeRounding`(ERD 저장 칸 없음).
 
-### AI 인사이트 (K4 · 1차)
+### AI 인사이트 (K4)
 
-`GET /api/results/{resultId}/insight`는 SKU 상세의 설명 문장을 돌려줍니다(BE-09 · BE-14). FastAPI `/engine/insight` 호출과 결과 저장은 2차에서 붙이며, 지금은 읽기만 합니다.
+`GET /api/results/{resultId}/insight`는 SKU 상세의 설명 문장을 돌려줍니다(BE-09 · BE-14). 현재 K4는 저장된 계산 결과와 `ai_explanations`를 읽으며 FastAPI `/engine/insight`를 직접 호출하지 않습니다.
 
 | 결과 상태 | 응답 |
 |---|---|
 | `NOT_CALCULABLE` · `EXCLUDED` · `REUPLOAD_REQUIRED` · `NOT_NEEDED` | LLM을 부르지 않고 고정 문장을 `mode: "FIXED"`로 바로 돌려줍니다. 문장은 ipgo-ai `docs/ai-insight/prompt-and-fallback.md` 6장 template이고, 숫자는 화면용 정수와 천 단위 쉼표로 채웁니다. 넣을 값(사유 등)이 비어 있으면 `TABLE_ONLY`(문장 없이 비교표만) |
 | `OK` + `ai_explanations`에 저장된 문장 있음 | 저장된 문장을 돌려줍니다. ipgo-ai 0002의 `LLM` → `AI`, `TEMPLATE` → `FIXED`, `NONE` → `TABLE_ONLY`. 실패 사유(`reason_code`)가 있으면 LLM이 실패해 대체한 것이라 `isFallback: true`. 단, LLM을 꺼 둬서 부르지 않은 `LLM_DISABLED`는 실패가 아니라 `isFallback: false` |
-| `OK` + 저장된 문장 없음 | `202 {"status": "GENERATING"}`. 2차 전에는 문장을 만드는 쪽이 없어 계속 이 응답입니다 |
+| `OK` + 저장된 문장 없음 | `202 {"status": "GENERATING"}`. 문장 기록이 아직 없는 결과의 응답입니다. 현재 엔진이 LLM 비활성으로 완료한 결과는 `NONE/LLM_DISABLED`를 저장하므로 `TABLE_ONLY`가 됩니다 |
 
 - 고정 문장은 만들어 둔 문장이 아니라서 `generatedAt`이 `null`입니다.
 - 다른 회원 결과 `403`, 없는 결과 `404`입니다.
@@ -497,7 +508,7 @@ R2·R3은 Bearer JWT가 필요하고, 다른 회원의 상품·발주는 `403`, 
 
 ## Database 변경과 복구
 
-이미 병합된 migration은 Flyway 이력을 보존하기 위해 수정하지 않습니다. 새 DB에서는 V1~V13을 순서대로 적용합니다. V4는 `warehouses`·`products`·`inventory_units`, V5는 `upload_files`, V6은 `replenishment_settings`, V7은 `planned_receipts`, V8은 `auth_sessions`·`refresh_tokens`, V9는 `calculation_runs`·`calculation_results`, V10은 일별 수불 2개 표, V11은 계산 출처·시나리오·백테스트·AI 인사이트 4개 표를 추가합니다. V12는 PostgreSQL tenant 무결성 trigger, V13은 FastAPI view와 역할별 권한을 적용합니다. 전체 관계와 변경 규칙은 [Database ERD v1](docs/database/erd-v1.md)에 있습니다. Hibernate는 스키마를 자동 수정하지 않고 검증만 수행합니다.
+이미 병합된 migration은 Flyway 이력을 보존하기 위해 수정하지 않습니다. 새 DB에서는 V1~V14를 순서대로 적용합니다. V4는 `warehouses`·`products`·`inventory_units`, V5는 `upload_files`, V6은 `replenishment_settings`, V7은 `planned_receipts`, V8은 `auth_sessions`·`refresh_tokens`, V9는 `calculation_runs`·`calculation_results`, V10은 일별 수불 2개 표, V11은 계산 출처·시나리오·백테스트·AI 인사이트 4개 표를 추가합니다. V12는 PostgreSQL tenant 무결성 trigger, V13은 FastAPI view와 역할별 권한을 적용하고, V14는 `engine_jobs`·입력 hash·정제 조회 view를 추가합니다. V15의 DB 원본 저장 전환(Server #77·AI #60)은 보류 상태입니다. 전체 관계와 변경 규칙은 [Database ERD v1](docs/database/erd-v1.md)에 있습니다. Hibernate는 스키마를 자동 수정하지 않고 검증만 수행합니다.
 
 초기 PostgreSQL은 administrator가 `database/bootstrap/create_roles.sql`을 먼저 실행한 뒤 `ipgo_migrator`로 Flyway를 적용합니다. bootstrap SQL은 `ipgo_migrator`·`ipgo_server`·`ipgo_ai_reader` 역할만 만들고 비밀번호는 설정하지 않습니다. 비밀번호는 repository·shell history·Terraform state에 남기지 않고 승인된 Secrets Manager 절차로 설정합니다. Spring runtime은 `ipgo_server`, FastAPI는 `ipgo_ai_reader`를 사용하며 runtime에서는 `SPRING_FLYWAY_ENABLED=false`로 migration 자격 증명을 분리합니다.
 
@@ -515,9 +526,9 @@ V8은 로그인 상태와 리프레시 토큰 해시 이력을 추가하며 기�
 
 V8 애플리케이션 롤백 시 서버 쓰기를 중지하고 이전 서버·프론트의 세션 방식으로 함께 복귀합니다. 추가 테이블은 보존하고 다시 JWT 버전으로 전환하기 전에 기존 로그인 행을 폐기하는 절차를 준비합니다. 그렇지 않으면 롤백 전 토큰이 다시 유효해질 수 있습니다. 스키마까지 복구해야 하면 적용 전 백업을 사용하며, 이후 생성된 데이터는 별도 보존해야 합니다. Flyway 이력을 임의 삭제·수정하지 않습니다.
 
-H2 PostgreSQL 모드 테스트는 공통 SQL인 V1~V11과 애플리케이션 동작을 확인합니다. `scripts/verify-postgres-migrations.sh`는 임시 PostgreSQL 16에 V1~V9와 기존 행을 준비한 뒤 V10~V13으로 upgrade하고, 18개 업무 테이블, tenant 무결성, Spring DML, FastAPI view SELECT와 원본 table DML·DDL 거부를 확인합니다. 기존 테이블이 Flyway 관리 대상이 아니라면 자동 baseline이나 삭제로 우회하지 말고 별도 이관을 검토합니다.
+H2 PostgreSQL 모드 테스트는 공통 SQL인 V1~V11과 애플리케이션 동작을 확인합니다. `scripts/verify-postgres-migrations.sh`는 임시 PostgreSQL 16에 V1~V9와 기존 행을 준비한 뒤 V10~V14로 upgrade하고, 19개 업무 테이블, tenant 무결성, Spring DML, FastAPI view SELECT와 원본 table DML·DDL 거부를 확인합니다. 기존 테이블이 Flyway 관리 대상이 아니라면 자동 baseline이나 삭제로 우회하지 말고 별도 이관을 검토합니다.
 
-V10~V13은 기존 업무 행을 삭제하지 않습니다. 다만 V12는 이미 서로 다른 회원 데이터가 연결돼 있거나 발주 상태와 날짜가 맞지 않으면 적용을 중단하고, V13은 세 역할이 준비되지 않으면 적용을 중단합니다. 적용 전에는 RDS snapshot을 만들고 connection 대상과 row count를 확인합니다. 애플리케이션만 롤백할 때는 새 표와 view를 보존합니다. 스키마까지 되돌려야 하면 쓰기를 중지하고 적용 전 snapshot을 복구하며, 적용 후 들어온 데이터는 먼저 별도 보존합니다.
+V10~V14는 기존 업무 행을 삭제하지 않습니다. 다만 V12는 이미 서로 다른 회원 데이터가 연결돼 있거나 발주 상태와 날짜가 맞지 않으면 적용을 중단하고, V13은 세 역할이 준비되지 않으면 적용을 중단합니다. 적용 전에는 RDS snapshot을 만들고 connection 대상과 row count를 확인합니다. 애플리케이션만 롤백할 때는 새 표와 view를 보존합니다. 스키마까지 되돌려야 하면 쓰기를 중지하고 적용 전 snapshot을 복구하며, 적용 후 들어온 데이터는 먼저 별도 보존합니다.
 
 ## 작업 흐름
 

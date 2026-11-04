@@ -250,6 +250,11 @@ class EngineRealFlowIntegrationTests {
         assertThat(input.path("settings").size()).isEqualTo(1);
         assertThat(input.path("plannedReceipts").size()).isEqualTo(1);
         assertThat(input.path("plannedReceipts").get(0).path("quantity").asLong()).isEqualTo(7);
+        // NO_DATE stays out of plannedReceipts and is sent separately as explanation-only metadata (#86).
+        assertThat(input.path("noDateReceipts").size()).isEqualTo(1);
+        assertThat(input.path("noDateReceipts").get(0).path("productId").asLong()).isEqualTo(product);
+        assertThat(input.path("noDateReceipts").get(0).path("quantity").asLong()).isEqualTo(5);
+        assertThat(input.path("noDateReceipts").get(0).has("expectedOn")).isFalse();
         jdbc.update("UPDATE products SET unit_cost=999 WHERE id=?", product);
         assertThat(jobs.find(id).payload().path("settings").get(0).path("unitCost").asLong()).isEqualTo(100);
         assertThat(calculations.request(owner, u.getWarehouseId(), "SETTINGS", false)).isNotEqualTo(run);
@@ -267,6 +272,10 @@ class EngineRealFlowIntegrationTests {
         var nextCost = jobs.find(nextJob).payload().path("settings").get(0).path("unitCost").decimalValue();
         assertThat(firstCost).isEqualByComparingTo(nextCost);
         assertThat(repeated).as("equivalent unit cost decimal scales %s/%s", firstCost.scale(), nextCost.scale()).isEqualTo(initial);
+        // A new NO_DATE receipt changes the insight input, so the run is not reused.
+        long product = jdbc.queryForObject("SELECT id FROM products WHERE user_id=? AND sku_barcode='SKU-A'", Long.class, owner);
+        jdbc.update("INSERT INTO planned_receipts(product_id,warehouse_id,expected_on,quantity,status,created_at,updated_at) VALUES (?,?,NULL,3,'NO_DATE',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)", product, u.getWarehouseId());
+        assertThat(calculations.request(owner, u.getWarehouseId(), "RECEIPTS", false)).isNotEqualTo(initial);
     }
 
     @Test void cleanAndCalculationEnqueueRollbackTogetherOnOutboxFailure() throws Exception {

@@ -87,12 +87,19 @@ public class EngineCalculationService {
                 source.getValidationReport().validation().excludedSkus().forEach(e -> excluded.put("" + e.productId(), e.reason()));
         }
         var ids = active.stream().map(p -> p.getId()).toList();
-        List<Map<String, Object>> planned = receipts.findActive(warehouseId).stream()
+        var activeReceipts = receipts.findActive(warehouseId);
+        List<Map<String, Object>> planned = activeReceipts.stream()
                 .filter(r -> r.isReflected() && ids.contains(r.getProductId()) && r.getExpectedOn() != null)
                 // Past expected dates are not moved to today or counted as future arrivals.
                 .filter(r -> r.getExpectedOn().isAfter(asOf))
                 .sorted(Comparator.comparing(r -> r.getId()))
                 .map(r -> Map.<String,Object>of("productId", r.getProductId(), "quantity", r.getQuantity(), "expectedOn", r.getExpectedOn())).toList();
+        // NO_DATE receipts are explanation-only metadata for insights; the engine never adds them to quantities (#86).
+        List<Map<String, Object>> noDate = activeReceipts.stream()
+                .filter(r -> r.getExpectedOn() == null && ids.contains(r.getProductId())
+                        && !excluded.containsKey("" + r.getProductId()))
+                .sorted(Comparator.comparing(r -> r.getId()))
+                .map(r -> Map.<String,Object>of("productId", r.getProductId(), "quantity", r.getQuantity())).toList();
         Map<String, Object> request = new LinkedHashMap<>();
         request.put("userId", userId); request.put("warehouseId", warehouseId);
         request.put("uploadFileIds", sources.stream().map(UploadFile::getId).toList());
@@ -101,6 +108,7 @@ public class EngineCalculationService {
         request.put("policy", Map.of("defaultMethod", "B", "multiplier", 1.0));
         request.put("settings", inputSettings.stream().filter(s -> !excluded.containsKey(""+s.get("productId"))).toList());
         request.put("plannedReceipts", planned);
+        request.put("noDateReceipts", noDate);
         String hash = hash(canonical(mapper.valueToTree(Map.of("request", request, "excluded", excluded))));
         if (!force) {
             List<Long> same = jdbc.queryForList("""

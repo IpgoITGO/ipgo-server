@@ -164,6 +164,66 @@ class EngineRealFlowIntegrationTests {
         assertThat(uploads.findById(f.upload().getId()).orElseThrow().getValidationReport().validation().excludedSkus()).hasSize(2);
     }
 
+    @Test void resultStorageFailureCanRetryTheSameMessageWithoutPartialOrDuplicateRows() throws Exception {
+        var f = exclusionRun();
+        String response = calculationSuccess(f.jobId(), List.of(validCalculation(f.normal())));
+        jdbc.execute("ALTER TABLE scenario_results ADD CONSTRAINT ck_test_result_retry CHECK (scenario_qty < 0)");
+        try {
+            assertThatThrownBy(() -> results.accept(response))
+                    .isInstanceOf(org.springframework.dao.DataAccessException.class);
+            assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM calculation_results WHERE run_id=?", Long.class, f.runId())).isZero();
+            assertThat(count("scenario_results")).isZero();
+            assertThat(jobs.find(f.jobId()).status()).isEqualTo("PENDING");
+            assertThat(calculationStatus.status(f.owner(), f.runId()).status()).isEqualTo("QUEUED");
+        } finally {
+            jdbc.execute("ALTER TABLE scenario_results DROP CONSTRAINT ck_test_result_retry");
+        }
+        results.accept(response);
+        results.accept(response);
+        assertThat(jobs.find(f.jobId()).status()).isEqualTo("DONE");
+        assertThat(calculationStatus.status(f.owner(), f.runId()).status()).isEqualTo("DONE");
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM calculation_results WHERE run_id=?", Long.class, f.runId())).isEqualTo(2);
+        assertThat(count("scenario_results")).isEqualTo(3);
+    }
+
+    @Test void concurrentSettingsAndReceiptChangeKeepOldAndNewCalculationSnapshotsSeparate() throws Exception {
+        var f = exclusionRun();
+        var original = jobs.find(f.jobId()).payload();
+        String response = calculationSuccess(f.jobId(), List.of(validCalculation(f.normal())));
+        var started = new java.util.concurrent.CountDownLatch(1);
+        long[] nextRun = {0};
+        try (var executor = java.util.concurrent.Executors.newSingleThreadExecutor()) {
+            java.util.concurrent.CompletableFuture<?>[] pending = {null};
+            tx.executeWithoutResult(status -> {
+                jdbc.queryForObject("SELECT id FROM warehouses WHERE id=? FOR UPDATE", Long.class, f.upload().getWarehouseId());
+                pending[0] = java.util.concurrent.CompletableFuture.runAsync(() -> {
+                    started.countDown();
+                    results.accept(response);
+                }, executor);
+                try {
+                    if (!started.await(5, java.util.concurrent.TimeUnit.SECONDS)) throw new IllegalStateException("result thread did not start");
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt(); throw new IllegalStateException(e);
+                }
+                jdbc.update("UPDATE warehouses SET default_order_unit_qty=5 WHERE id=?", f.upload().getWarehouseId());
+                jdbc.update("INSERT INTO planned_receipts(product_id,warehouse_id,expected_on,quantity,status,created_at,updated_at) VALUES (?,?,?,?, 'PENDING', CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)",
+                        f.normal(), f.upload().getWarehouseId(), DAY.plusDays(3), 9);
+                nextRun[0] = calculations.request(f.owner(), f.upload().getWarehouseId(), "RECEIPTS", false);
+            });
+            pending[0].get(20, java.util.concurrent.TimeUnit.SECONDS);
+        }
+        assertThat(nextRun[0]).isNotEqualTo(f.runId());
+        assertThat(jobs.find(f.jobId()).payload()).isEqualTo(original);
+        assertThat(calculationStatus.status(f.owner(), f.runId()).status()).isEqualTo("DONE");
+        assertThat(calculationStatus.status(f.owner(), nextRun[0]).status()).isEqualTo("QUEUED");
+        String nextJob = jdbc.queryForObject("SELECT job_id FROM calculation_runs WHERE id=?", String.class, nextRun[0]);
+        var nextInput = jobs.find(nextJob).payload();
+        assertThat(nextInput.path("settings").get(0).path("orderUnitQty").asLong()).isEqualTo(5);
+        assertThat(nextInput.path("plannedReceipts").get(0).path("quantity").asLong()).isEqualTo(9);
+        assertThat(original.path("plannedReceipts").size()).isZero();
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM calculation_results WHERE run_id=?", Long.class, nextRun[0])).isZero();
+    }
+
     @Test void cancelStopsResendAndIgnoresLateResult() throws Exception {
         var f = exclusionRun();
         assertThatThrownBy(() -> calculationStatus.cancel(user(), f.runId()))

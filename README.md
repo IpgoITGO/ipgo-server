@@ -517,6 +517,29 @@ CUSTOM 설명 재생성·실제 LLM 활성화는 포함하지 않습니다. 운�
 - 고정 문장은 만들어 둔 문장이 아니라서 `generatedAt`이 `null`입니다.
 - 다른 회원 결과 `403`, 없는 결과 `404`입니다.
 
+### 개발 배포의 설명 활성화 승인
+
+Server dev workflow는 수동 실행만 허용하며 `expected_sha`에 승인한40자리 SHA를 넣습니다.
+현재 workflow SHA와 다르면 AWS 인증·이미지 업로드 전에 거부합니다. `engine_enabled=true`이면
+기존 `engine_connection_approved=true`와 GitHub dev 환경 변수 `AWS_AI_ENGINE_BASE_URL`이 필요합니다.
+이 변수는 실제 AI task의 내부 HTTP(S) origin이며 코드/공개 문서에 실제 주소를 기록하지 않습니다.
+경로·쿼리·인증정보·loopback 주소는 거부합니다.
+
+설명 관련 입력 `insight_enabled`, `insight_approved`, `insight_worker_enabled`는 모두 기본 `false`입니다.
+`insight_enabled=true`에는 엔진 활성화와 명시적 비용 승인이 필요하고, 작업기는 설명 활성화 없이
+켤 수 없습니다. 활성화를 승인받은 뒤 작업기를 `false`로 유지하면 새 설명 입력만 대기열에 저장하고
+자동 LLM 호출은 하지 않습니다. 정상 자동 생성은 승인한 범위에서 세 입력을 모두 `true`로 실행합니다.
+이 승인 플래그는 호출 횟수/예산 제한 장치가 아닙니다. 활성화 후 새 계산마다 과금될 수 있습니다.
+
+렌더러는 현재 task의 IAM 역할·DB/JWT Secret 참조·자원·헬스체크·다른 컨테이너 설정을 보존하고
+이미지·API docs·엔진/설명/작업기 플래그·명시한 AI origin만 변경합니다. 이전 설명 활성화 값이 남아
+있어도 `false` 입력으로 덮어씁니다. OpenAI key를 Server 컨테이너에 넣는 설정은 거부합니다.
+AI key는 AI 저장소 workflow의 `llm_enabled/llm_approved`와 Secrets Manager 주입으로 별도 관리합니다.
+
+배포 전 `python3 -m unittest discover -s scripts/testing -p 'test_dev_task.py' -v`로 승인/보존 검사를 합니다.
+이 검사는 AWS 쓰기나 LLM을 호출하지 않습니다. PR CI의 `deploy-contract`도 같은 검사를 실행합니다.
+실제 배포·환경 승인·키 등록·유료 검증은 대상 SHA·영향·복구를 확인한 사용자 승인 범위에서 실행합니다.
+
 ### 설명 생성 설정과 검증
 
 기본값 `IPGO_INSIGHT_ENABLED=false`는 유료 호출을 막습니다. 승인 후 `true`로 켜고

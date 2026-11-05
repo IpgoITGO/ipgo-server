@@ -3,6 +3,25 @@ name: Deploy server to AWS dev
 on:
   workflow_dispatch:
     inputs:
+      expected_sha:
+        description: "Full 40-character server SHA approved for this deployment"
+        required: true
+        type: string
+      insight_enabled:
+        description: "Queue new AI explanations (requires engine and explicit insight approval)"
+        required: false
+        default: false
+        type: boolean
+      insight_approved:
+        description: "Approve paid insight generation for this exact SHA and reviewed scope"
+        required: false
+        default: false
+        type: boolean
+      insight_worker_enabled:
+        description: "Run the insight worker; keep false for deployment without automatic LLM calls"
+        required: false
+        default: false
+        type: boolean
       maintenance_approved:
         description: "One-box only: approve the brief service restart after reviewing this deployment"
         required: false
@@ -40,34 +59,25 @@ jobs:
     if: github.ref == 'refs/heads/dev' && vars.AWS_DEPLOY_ROLE_ARN != '' && vars.AWS_ACCOUNT_ID != ''
     runs-on: ${{ vars.AWS_DEV_COMPUTE_MODE == 'onebox' && 'ubuntu-24.04-arm' || 'ubuntu-latest' }}
     env:
+      EXPECTED_SHA: ${{ inputs.expected_sha }}
+      AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
+      MAINTENANCE_APPROVED: ${{ inputs.maintenance_approved }}
+      ENGINE_ENABLED: ${{ inputs.engine_enabled }}
+      ENGINE_CONNECTION_APPROVED: ${{ inputs.engine_connection_approved }}
+      ENGINE_BASE_URL: ${{ vars.AWS_AI_ENGINE_BASE_URL }}
+      INSIGHT_ENABLED: ${{ inputs.insight_enabled }}
+      INSIGHT_APPROVED: ${{ inputs.insight_approved }}
+      INSIGHT_WORKER_ENABLED: ${{ inputs.insight_worker_enabled }}
+      DESIRED_COUNT: ${{ inputs.desired_count }}
       COMPUTE_MODE: ${{ vars.AWS_DEV_COMPUTE_MODE }}
       ECS_SERVICE_NAME: ${{ vars.AWS_DEV_COMPUTE_MODE == 'onebox' && 'ipgo-dev-onebox-server' || 'ipgo-dev-server' }}
       ECS_TASK_FAMILY: ${{ vars.AWS_DEV_COMPUTE_MODE == 'onebox' && 'ipgo-dev-onebox-server' || 'ipgo-dev-server' }}
       IMAGE_TAG: ${{ github.sha }}${{ vars.AWS_DEV_COMPUTE_MODE == 'onebox' && '-arm64' || '' }}
     environment: dev
     steps:
-      - name: Check deployment mode and maintenance approval
-        env:
-          MAINTENANCE_APPROVED: ${{ inputs.maintenance_approved }}
-          ENGINE_ENABLED: ${{ inputs.engine_enabled }}
-          ENGINE_CONNECTION_APPROVED: ${{ inputs.engine_connection_approved }}
-        shell: bash
-        run: |
-          if [[ "$ENGINE_ENABLED" == true && "$ENGINE_CONNECTION_APPROVED" != true ]]; then
-            echo '::error::Actual engine exchange requires reviewed V14, queue and integration validation.'
-            exit 1
-          fi
-          case "$COMPUTE_MODE" in
-            ''|legacy) ;;
-            onebox)
-              if [ "$MAINTENANCE_APPROVED" != true ]; then
-                echo '::error::One-box deployment restarts this service. Review the image and approve maintenance first.'
-                exit 1
-              fi
-              ;;
-            *) echo '::error::AWS_DEV_COMPUTE_MODE must be onebox, legacy, or unset.'; exit 1 ;;
-          esac
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Validate approved deployment before external writes
+        run: python3 scripts/deployment/render_dev_task.py validate
       - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd
         with:
           aws-region: ap-northeast-2
@@ -88,20 +98,21 @@ jobs:
           tags: ${{ steps.login-ecr.outputs.registry }}/ipgo-dev/server:${{ env.IMAGE_TAG }}
       - name: Read current task definition
         run: |
+          umask 077
           aws ecs describe-task-definition \
             --task-definition "$ECS_TASK_FAMILY" \
             --query taskDefinition \
             > "$RUNNER_TEMP/task-definition.json"
-      - name: Render image into task definition
+      - name: Render approved image and engine insight settings
         id: render
-        uses: aws-actions/amazon-ecs-render-task-definition@8d79160660ad39c402a16e5fc7cd2a32e8f7d6b7
-        with:
-          task-definition: ${{ runner.temp }}/task-definition.json
-          container-name: server
-          image: ${{ steps.login-ecr.outputs.registry }}/ipgo-dev/server:${{ env.IMAGE_TAG }}
-          environment-variables: |
-            IPGO_API_DOCS_ENABLED=true
-            IPGO_ENGINE_ENABLED=${{ inputs.engine_enabled }}
+        env:
+          SERVER_IMAGE: ${{ steps.login-ecr.outputs.registry }}/ipgo-dev/server:${{ env.IMAGE_TAG }}
+        run: |
+          python3 scripts/deployment/render_dev_task.py render \
+            --source "$RUNNER_TEMP/task-definition.json" \
+            --output "$RUNNER_TEMP/server-task-definition.json" \
+            --image "$SERVER_IMAGE"
+          echo "task-definition=$RUNNER_TEMP/server-task-definition.json" >> "$GITHUB_OUTPUT"
       - name: Configure approved one-box restart
         if: env.COMPUTE_MODE == 'onebox'
         run: |

@@ -41,3 +41,17 @@ PENDING으로 돌리지 않는다. 알 수 없는 호출 결과/작업기 중단
 마감 후 `IPGO_INSIGHT_ENABLED=false`로 전환한다. 설정을 먼저 끄면 남아 있는 작업은 처리되지
 않을 수 있으므로 잔여 행은 별도 승인된 정리 범위로 기록한다. 기존 설명/계산 행은 삭제하지 않는다.
 기존 DISABLED 행, CUSTOM 설명 갱신, 원본DB 전환/예약/인프라 변경은 이번 범위 밖이다.
+
+## 개발 배포 입력과 운영 순서
+
+- Server workflow에 고정 expected_sha, insight_enabled/insight_approved/insight_worker_enabled 기본false,
+  엔진 연결 승인과 AI 내부 origin 변수 AWS_AI_ENGINE_BASE_URL을 연결한다. 입력 gate는 AWS 인증/이미지 push보다 앞선다.
+- Java 생성 코드는 바꾸지 않고 stdlib task 렌더러와 별도 CI 계약 검사로 현재 Task 설정 보존을 검증한다.
+- AI는 별도 저장소의 llm_enabled/llm_approved를 사용한다. 두 저장소의 승인을 서로 대체하지 않는다.
+- 준비 순서는 Server/Client PR·CI·검토, Secret 실제 버전·실행 역할 권한·내부 주소 확인, 고정 SHA/개발 배포 승인을 따른다.
+  Client dev 병합은 자동 배포이므로 배포 승인 전 병합하지 않는다. Server도 최종 승인 SHA가 확정된 뒤 dispatch한다.
+- AI 키 등록 후에도 현재 task에는 자동 반영되지 않는다. AI 배포와 실제 호출은 승인 전 실행하지 않는다.
+- 비용 검증은 먼저 승인한 직접 호출로 점검한 뒤 자동 생성 활성화 범위를 따로 확인한다.
+  worker=false는 대기열 보존만 하며, 이후 true 전환 시 기존 PENDING도 처리한다. 활성화 전 누적 건수를 반드시 확인한다.
+- 비활성화/rollback 전 신규 계산을 제한하고 PENDING/PROCESSING과 확정된 외부 호출 결과를 확인한다.
+  이전 task revision으로 복구하고 기존 설명/계산/Secret을 삭제하지 않는다. 단순 플래그false는 이미 시작한 외부 호출 취소를 보장하지 않는다.

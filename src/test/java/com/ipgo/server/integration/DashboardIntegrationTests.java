@@ -72,7 +72,8 @@ class DashboardIntegrationTests extends DatabaseIntegrationTest {
                 .andExpect(jsonPath("today").value(TODAY.toString()))
                 .andExpect(jsonPath("resultStatus").doesNotExist())
                 .andExpect(jsonPath("summary.needCount").value(0))
-                .andExpect(jsonPath("items.length()").value(0));
+                .andExpect(jsonPath("items.length()").value(0))
+                .andExpect(jsonPath("notNeededItems.length()").value(0));
         get(userId, detail(product))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("product.skuName").value("케어트릿 120g"))
@@ -94,6 +95,7 @@ class DashboardIntegrationTests extends DatabaseIntegrationTest {
         long later = product(userId, "8800000000003", "케어 샴푸");
         long noData = product(userId, "8800000000004", "시즌 간식 세트");
         long mismatch = product(userId, "8800000000005", "덴탈껌 M");
+        long enough = product(userId, "8800000000006", "오리 큐브 50g");
 
         long old = run(warehouse, TODAY.minusDays(10), "DONE");
         result(old, soon, "OK", TODAY, 999L, "999000", "0.9000", null);
@@ -103,6 +105,8 @@ class DashboardIntegrationTests extends DatabaseIntegrationTest {
         result(latest, later, "OK", TODAY.plusDays(30), 0L, "0", "0.0100", null);
         result(latest, noData, "NOT_CALCULABLE", null, null, null, null, "판매한 날(유효 관측일)이 7일보다 적어요");
         result(latest, mismatch, "EXCLUDED", null, null, null, null, "재고 숫자가 맞지 않아요");
+        // 권장량이 0개인 결과는 커버 기간 안에 소진되지 않아 예상 소진일이 없다.
+        result(latest, enough, "NOT_NEEDED", null, 0L, "0", null, null);
 
         get(userId, NEEDS)
                 .andExpect(status().isOk())
@@ -113,9 +117,19 @@ class DashboardIntegrationTests extends DatabaseIntegrationTest {
                 .andExpect(jsonPath("resultComputedAt").value(endsWith("+09:00")))
                 .andExpect(jsonPath("lastFailedRunAt").doesNotExist())
                 .andExpect(jsonPath("summary.needCount").value(2))
-                .andExpect(jsonPath("summary.notNeededCount").value(1))
+                .andExpect(jsonPath("summary.notNeededCount").value(2))
                 .andExpect(jsonPath("summary.notCalculableCount").value(1))
                 .andExpect(jsonPath("summary.excludedCount").value(1))
+                // "아직 괜찮아요" 목록: 소진일 가까운 순, 소진일이 없으면 맨 뒤 (#103)
+                .andExpect(jsonPath("notNeededItems.length()").value(2))
+                .andExpect(jsonPath("notNeededItems[0].productId").value(later))
+                .andExpect(jsonPath("notNeededItems[0].skuName").value("케어 샴푸"))
+                .andExpect(jsonPath("notNeededItems[0].skuBarcode").value("8800000000003"))
+                .andExpect(jsonPath("notNeededItems[0].expectedShortageOn").value(TODAY.plusDays(30).toString()))
+                .andExpect(jsonPath("notNeededItems[0].leadTimeDays").value(5))
+                .andExpect(jsonPath("notNeededItems[0].resultId").isNumber())
+                .andExpect(jsonPath("notNeededItems[1].productId").value(enough))
+                .andExpect(jsonPath("notNeededItems[1].expectedShortageOn").doesNotExist())
                 .andExpect(jsonPath("items[0].productId").value(sooner))
                 .andExpect(jsonPath("items[1].productId").value(soon))
                 .andExpect(jsonPath("items[1].recommendedQty").value(72))

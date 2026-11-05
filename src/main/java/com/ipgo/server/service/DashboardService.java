@@ -91,7 +91,7 @@ public class DashboardService {
         List<ReplenishmentNeeds.Item> items = new ArrayList<>();
         List<ReplenishmentNeeds.NotCalculable> notCalculable = new ArrayList<>();
         List<ReplenishmentNeeds.Excluded> excluded = new ArrayList<>();
-        int notNeeded = 0;
+        List<ReplenishmentNeeds.NotNeededItem> notNeeded = new ArrayList<>();
         for (CalculationResult result : runResults) {
             Product product = byId.get(result.getProductId());
             // 셀러가 사용을 끈 상품은 계산 뒤에 껐더라도 바로 목록에서 뺀다.
@@ -110,15 +110,18 @@ public class DashboardService {
                                 result.getReason() != null ? result.getReason()
                                         : NeedJudgment.daysSince(run.getAsOfDate(), today) > NeedJudgment.MAX_DAYS_SINCE_AS_OF
                                                 ? REUPLOAD_REASON : NeedJudgment.UNKNOWN_NEED_REASON));
-                default -> notNeeded++;
+                default -> notNeeded.add(new ReplenishmentNeeds.NotNeededItem(product.getId(), result.getId(),
+                        product.getSkuBarcode(), product.getSkuName(), result.getExpectedShortageOn(), leadTime));
             }
         }
         items.sort(order);
+        notNeeded.sort(Comparator.comparing(ReplenishmentNeeds.NotNeededItem::expectedShortageOn,
+                Comparator.nullsLast(Comparator.naturalOrder())).thenComparing(ReplenishmentNeeds.NotNeededItem::productId));
         return new ReplenishmentNeeds(run.getAsOfDate(), today, NeedJudgment.daysSince(run.getAsOfDate(), today),
                 lastFailedRunAt == null ? "UP_TO_DATE" : "STALE", run.getId(), seoul(run.getCompletedAt()),
                 lastFailedRunAt, latestUploadId,
-                new ReplenishmentNeeds.Summary(items.size(), notNeeded, notCalculable.size(), excluded.size()),
-                items, notCalculable, excluded);
+                new ReplenishmentNeeds.Summary(items.size(), notNeeded.size(), notCalculable.size(), excluded.size()),
+                items, notNeeded, notCalculable, excluded);
     }
 
     // 이 계산에 쓴 업로드들의 검증 리포트에서 상품별 검산 불일치 날짜를 찾는다. 여러 파일에 있으면 최근 업로드 값을 쓴다.
@@ -154,7 +157,7 @@ public class DashboardService {
     private static ReplenishmentNeeds empty(LocalDate today, OffsetDateTime lastFailedRunAt, Long latestUploadId) {
         return new ReplenishmentNeeds(null, today, null, lastFailedRunAt == null ? null : "STALE", null, null,
                 lastFailedRunAt, latestUploadId, new ReplenishmentNeeds.Summary(0, 0, 0, 0),
-                List.of(), List.of(), List.of());
+                List.of(), List.of(), List.of(), List.of());
     }
 
     private static OffsetDateTime seoul(Instant instant) {

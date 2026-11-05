@@ -126,6 +126,36 @@ class ReceiptMatchingIntegrationTests extends DatabaseIntegrationTest {
         cleaning.complete(second.getId(), second.getJobId(), other);
         assertThat(state(id)).isEqualTo("PENDING"); assertThat(reasons(second)).contains("INVALID_OBSERVATION");
     }
+    @Test void firstInboundRemainsMatchableWhenDemandObservationIsFalse() {
+        long id = receipt(100); var upload = upload(); var r = result(upload, 100);
+        var day = new CleaningResult.ProductDay(upload.getId(), "A", DAY, 0L, 100L, 0L, 0L, 100L, false, "첫 입고 이전");
+        cleaning.complete(upload.getId(), upload.getJobId(), new CleaningResult(DAY, DAY, DAY, r.products(), r.inventoryUnits(),
+                r.unitDailyRecords(), List.of(day), r.validation(), null));
+        assertThat(state(id)).isEqualTo("RECEIVED"); assertThat(allocations()).isEqualTo(1);
+    }
+    @Test void validationExclusionDisablesTheWholeSkuAcrossDays() {
+        long id = receipt(100); var upload = upload(); var r = result(upload, 0, 100);
+        cleaning.complete(upload.getId(), upload.getJobId(), new CleaningResult(r.periodStart(), r.periodEnd(), r.asOfDate(),
+                r.products(), r.inventoryUnits(), r.unitDailyRecords(), r.productDailyStocks(),
+                new CleaningResult.Validation(1, 0, List.of(new CleaningResult.ExcludedSku("A", "상품A", DAY, "원본 검증 제외 SKU"))), null));
+        assertThat(state(id)).isEqualTo("PENDING"); assertThat(allocations()).isZero();
+        assertThat(reasons(upload)).contains("INVALID_OBSERVATION");
+    }
+    @Test void unitBalanceMismatchBlocksEvenWhenProductInboundMatches() {
+        long id = receipt(100); var upload = upload(); var r = result(upload, 100);
+        var unit = new CleaningResult.UnitDay(upload.getId(), "LOT1", DAY, DAY, 0L, 100L, 0L, 0L, 99L, "test", 1);
+        cleaning.complete(upload.getId(), upload.getJobId(), new CleaningResult(DAY, DAY, DAY, r.products(), r.inventoryUnits(),
+                List.of(unit), r.productDailyStocks(), r.validation(), null));
+        assertThat(state(id)).isEqualTo("PENDING"); assertThat(allocations()).isZero();
+    }
+    @Test void productBalanceMismatchBlocksEvenWhenLotInboundMatches() {
+        long id = receipt(100); var upload = upload(); var r = result(upload, 100);
+        var day = new CleaningResult.ProductDay(upload.getId(), "A", DAY, 0L, 100L, 0L, 0L, 99L, true, null);
+        cleaning.complete(upload.getId(), upload.getJobId(), new CleaningResult(DAY, DAY, DAY, r.products(), r.inventoryUnits(),
+                r.unitDailyRecords(), List.of(day), r.validation(), null));
+        assertThat(state(id)).isEqualTo("PENDING"); assertThat(allocations()).isZero();
+    }
+
     @Test void usesSeoulRegistrationDateAndExcludesNoDateCancelledAndLaterRegistrations() {
         long beforeMidnight = receipt(10), sameDay = receipt(10), later = receipt(10), noDate = receipt(10), cancelled = receipt(10);
         created(beforeMidnight, "2026-08-31T14:59:59Z"); created(sameDay, "2026-08-31T15:00:00Z");

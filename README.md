@@ -396,7 +396,7 @@ FAILED이면 `error.code`와 안전한 `error.message`를 반환합니다. 처�
 `IPGO_ENGINE_ENABLED=true`이면 새 업로드의 `CLEAN` 작업을 outbox에 저장해 SQS로 처리합니다.
 정제 결과 저장 뒤 계산 선행 조건이 충족되면 계산을 요청하고 U2의 `runId`로 상태를 조회합니다.
 엔진이 꺼져 있거나 계산 조건이 준비되지 않으면 `runId`는 null일 수 있습니다.
-발주 자동 매칭은 V16의 사건·배정·판정 기록을 사용합니다. 같은 창고·상품·날짜의 유효 입고로 예정일순 전량 충족한 발주만 완료하고, 다른 날의 부분 입고는 합산하지 않습니다. 실제 배정은 `matchedReceipts`, 정정·부족·등록 당일 등의 확인 사유는 `receiptMatching`으로 반환합니다. 완료 발주 수정·취소는 `409 RECEIPT_RECEIVED`입니다. [정책·응답·적용과 복구](docs/decisions/0010-receipt-matching.md)를 따르며 운영 V16 적용은 별도 승인입니다.
+발주 자동 매칭은 V16의 사건·배정·판정 기록을 사용합니다. 같은 창고·상품·날짜의 검산된 입고로 예정일순 전량 충족한 발주만 완료하고, 다른 날의 부분 입고는 합산하지 않습니다. 실제 배정은 `matchedReceipts`, 정정·부족·등록 당일 등의 확인 사유는 `receiptMatching`으로 반환합니다. 완료 발주 수정·취소는 `409 RECEIPT_RECEIVED`입니다. [정책·응답·적용과 복구](docs/decisions/0010-receipt-matching.md)를 따르며 운영 V16 적용은 별도 승인입니다.
 
 입고 주기 제안의 별도 완료 조건은
 [#26 저장 경계와 남은 계약](docs/decisions/0002-upload-cleaning-boundary.md), 현재 연결은

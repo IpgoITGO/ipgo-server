@@ -1,5 +1,7 @@
 package com.ipgo.server.exception;
 
+import java.util.Map;
+
 import org.springframework.http.HttpStatus;
 
 public class UploadException extends RuntimeException {
@@ -16,6 +18,12 @@ public class UploadException extends RuntimeException {
         this.status = status;
         this.code = code;
         this.details = details;
+    }
+
+    // 파일 자체를 받을 수 없을 때(형식 · 손상 · 빈 파일). 화면은 이 코드로 "거절된 파일" 팝업을 띄운다.
+    public static UploadException invalidFormat(String fileName, String reason) {
+        return new UploadException(HttpStatus.BAD_REQUEST, "UPLOAD_INVALID_FORMAT", reason,
+                Map.of("fileName", fileName, "reason", reason));
     }
 
     public HttpStatus status() { return status; }

@@ -288,7 +288,8 @@ class DashboardIntegrationTests extends DatabaseIntegrationTest {
         get(other, detail(product)).andExpect(status().isForbidden()).andExpect(jsonPath("code").value("FORBIDDEN"));
         get(owner, detail(Long.MAX_VALUE)).andExpect(status().isNotFound());
         get(owner, detail(product) + "?from=2026-10-14&to=2026-07-01").andExpect(status().isBadRequest());
-        get(owner, detail(product) + "?from=2026-13-01").andExpect(status().isBadRequest());
+        get(owner, detail(product) + "?from=2026-13-01").andExpect(status().isBadRequest())
+                .andExpect(jsonPath("details.field").value("from"));
         // 다른 회원의 계산 결과는 대시보드에 보이지 않는다.
         long run = run(warehouseOf(owner), TODAY, "DONE");
         result(run, product, "OK", TODAY, 1L, "100", "0.5000", null);

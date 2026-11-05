@@ -75,7 +75,8 @@ public class EngineJobs {
         Instant now = Instant.now();
         jdbc.update("""
                 UPDATE engine_jobs SET status = 'SENT',
-                    next_attempt_at = CASE WHEN job_type = 'CALCULATE' THEN ? ELSE ? END
+                    next_attempt_at = CASE WHEN job_type = 'CALCULATE'
+                        THEN CAST(? AS TIMESTAMP WITH TIME ZONE) ELSE CAST(? AS TIMESTAMP WITH TIME ZONE) END
                 WHERE job_id = ? AND status IN ('PENDING','SENT')
                 """, Timestamp.from(now.plusSeconds(CALCULATE_RESEND_SECONDS)), Timestamp.from(now.plusSeconds(RESEND_SECONDS)), id);
     }
@@ -84,7 +85,8 @@ public class EngineJobs {
         Instant now = Instant.now();
         return jdbc.queryForList("""
                 SELECT job_id FROM engine_jobs WHERE status IN ('PENDING','SENT')
-                AND created_at < CASE WHEN job_type = 'CALCULATE' THEN ? ELSE ? END
+                AND created_at < CASE WHEN job_type = 'CALCULATE'
+                    THEN CAST(? AS TIMESTAMP WITH TIME ZONE) ELSE CAST(? AS TIMESTAMP WITH TIME ZONE) END
                 ORDER BY created_at FETCH FIRST 5 ROWS ONLY
                 """, String.class, Timestamp.from(now.minusSeconds(CALCULATE_EXPIRE_SECONDS)),
                 Timestamp.from(now.minusSeconds(EXPIRE_SECONDS)));

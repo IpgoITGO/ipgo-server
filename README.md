@@ -1,6 +1,6 @@
 # Ipgo Server
 
-현재 설명·시나리오의 구현과 기존 합의·검토 잔여는 [계약 대조](docs/decisions/0009-current-insight-scenario-contract.md)에 정리합니다.
+현재 설명·시나리오의 확정 계약과 검증 범위·관련 후속은 [계약 대조](docs/decisions/0009-current-insight-scenario-contract.md)에 정리합니다.
 정제·계산 실패/재시도/동시성의 기존 근거와 검증 잔여는 [검증 대조](docs/verification/engine-failures-and-concurrency.md)에 기록합니다.
 
 Ipgo 서비스의 API와 서버 동작을 관리하는 저장소입니다.

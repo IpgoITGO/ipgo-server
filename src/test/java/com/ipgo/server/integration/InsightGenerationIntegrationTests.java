@@ -159,6 +159,7 @@ class InsightGenerationIntegrationTests extends DatabaseIntegrationTest {
         long id = save(); generation.tick(); generation.tick();
         var result = insights.insight(owner,id).orElseThrow();
         assertThat(result.mode()).isEqualTo("FIXED"); assertThat(result.isFallback()).isTrue();
+        assertThat(result.failReason()).isEqualTo("LLM_ERROR");
         assertThat(result.text()).contains("100개", "6%", "같습니다", "여유 배수 105%");
         assertThat(reason()).isEqualTo("LLM_ERROR"); assertThat(calls).hasValue(1);
         assertThat(jdbc.queryForObject("SELECT status FROM calculation_runs WHERE id=?",String.class,run)).isEqualTo("DONE");

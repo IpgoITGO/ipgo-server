@@ -1,5 +1,7 @@
 # Ipgo Server
 
+현재 설명·시나리오의 구현과 기존 합의·검토 잔여는 [계약 대조](docs/decisions/0009-current-insight-scenario-contract.md)에 정리합니다.
+
 Ipgo 서비스의 API와 서버 동작을 관리하는 저장소입니다.
 
 > 이메일 인증을 거친 회원가입·로그인·로그아웃·본인 정보 조회와 수불부 엑셀의 로컬 원본 보관을 제공합니다. 회원 인증에는 PostgreSQL과 JWT 서명 키, 인증 메일 발송에는 SMTP 설정이 필요합니다. 업로드 파일과 보관 정보는 로컬 디스크에 저장하며, 테스트는 H2 메모리 DB·로컬 테스트 SMTP·임시 폴더를 사용합니다.
@@ -13,7 +15,7 @@ Ipgo 서비스의 API와 서버 동작을 관리하는 저장소입니다.
 | Gradle | 9.8.2, 저장소의 Wrapper 사용 |
 | 기본 의존성 | Spring MVC, Validation, Actuator, OAuth2 Resource Server, JPA, Flyway, PostgreSQL 드라이버, JavaMail, Lombok |
 
-기본 패키지는 `com.ipgo.server`, Gradle group은 `com.ipgo`입니다. 상품 자동 등록·조회·수정과 재고관리단위 구분, 정제 결과의 서버 내부 저장·검증과 U2 조회를 제공합니다. 실제 수불부 정제 요청·AI 결과 수신과 계산 연동은 아직 구현하지 않았습니다.
+기본 패키지는 `com.ipgo.server`, Gradle group은 `com.ipgo`입니다. 상품 자동 등록·조회·수정과 재고관리단위 구분, 정제 결과의 서버 내부 저장·검증과 U2 조회를 제공합니다. 수불부 정제·계산 요청과 결과 수신은 outbox/SQS로 연결하며, 설명·직접 수량 시나리오는 별도의 내부 HTTP 경로를 사용합니다. 현재 계약과 남은 공동 확인은 위 계약 대조 문서를 따릅니다.
 
 ## 프로젝트 구조
 
@@ -543,6 +545,7 @@ CUSTOM 설명 재생성·실제 LLM 활성화는 포함하지 않습니다. 운�
 
 - 고정 문장은 만들어 둔 문장이 아니라서 `generatedAt`이 `null`입니다.
 - 다른 회원 결과 `403`, 없는 결과 `404`입니다.
+- `failReason`은 실패 대체일 때 `LLM_ERROR`, `LLM_TIMEOUT`, `VALIDATION_FAILED`, `VALUE_MISMATCH`, `LLM_NOT_CONFIGURED`, `INVALID_INPUT`, `INPUT_UNAVAILABLE` 중 하나입니다. 알 수 없는 내부 사유는 `LLM_ERROR`로 반환하고, 정상·비활성·계산 상태별 고정 문장은 `null`입니다. DB의 원래 `reason_code`는 변경하지 않으며 원문 오류·내부 주소는 반환하지 않습니다.
 
 ### 개발 배포의 설명 활성화 승인
 

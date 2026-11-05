@@ -11,6 +11,7 @@ import com.ipgo.server.util.DisplayQuantities;
 import java.sql.Timestamp;
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
@@ -24,6 +25,9 @@ public class InsightService {
     static final String FIXED = "FIXED";
     static final String TABLE_ONLY = "TABLE_ONLY";
     static final String LLM_DISABLED = "LLM_DISABLED";
+    private static final Set<String> PUBLIC_FAILURE_REASONS = Set.of(
+            "LLM_ERROR", "LLM_TIMEOUT", "VALIDATION_FAILED", "VALUE_MISMATCH",
+            "LLM_NOT_CONFIGURED", "INVALID_INPUT", "INPUT_UNAVAILABLE");
 
     private final CalculationResultRepository results;
     private final ProductRepository products;
@@ -62,7 +66,12 @@ public class InsightService {
         boolean fallback = !AI.equals(shown) && reasonCode != null && !LLM_DISABLED.equals(reasonCode);
         return new Insight(resultId, shown, fallback, TABLE_ONLY.equals(shown) ? null : text,
                 createdAt == null ? null
-                        : createdAt.toInstant().atZone(DashboardService.SEOUL).toOffsetDateTime());
+                        : createdAt.toInstant().atZone(DashboardService.SEOUL).toOffsetDateTime(),
+                fallback ? publicFailureReason(reasonCode) : null);
+    }
+
+    private static String publicFailureReason(String reasonCode) {
+        return PUBLIC_FAILURE_REASONS.contains(reasonCode) ? reasonCode : "LLM_ERROR";
     }
 
     // LLM을 부르지 않는 상태의 기본 문장 (ipgo-ai docs/ai-insight/prompt-and-fallback.md 6장).
@@ -79,7 +88,7 @@ public class InsightService {
             case CalculationResult.NOT_NEEDED -> notNeeded(result);
             default -> null;
         };
-        return new Insight(result.getId(), text == null ? TABLE_ONLY : FIXED, false, text, null);
+        return new Insight(result.getId(), text == null ? TABLE_ONLY : FIXED, false, text, null, null);
     }
 
     private static String notNeeded(CalculationResult result) {

@@ -10,6 +10,13 @@ permissions:
   contents: read
 
 jobs:
+  deploy-contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Verify deployment gates and task preservation without AWS
+        run: python3 -m unittest discover -s scripts/testing -p 'test_dev_task.py' -v
+
   test:
     runs-on: ubuntu-latest
     steps:

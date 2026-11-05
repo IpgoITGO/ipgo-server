@@ -18,7 +18,10 @@ import tools.jackson.databind.json.JsonMapper;
 public class EngineResultWriter {
     private final JdbcTemplate jdbc;
     private final JsonMapper mapper;
-    public EngineResultWriter(JdbcTemplate jdbc, JsonMapper mapper) { this.jdbc = jdbc; this.mapper = mapper; }
+    private final InsightGeneration insights;
+    public EngineResultWriter(JdbcTemplate jdbc, JsonMapper mapper, InsightGeneration insights) {
+        this.jdbc = jdbc; this.mapper = mapper; this.insights = insights;
+    }
 
     public void complete(EngineJobs.Job job, JsonNode response) {
         var row = jdbc.queryForObject("SELECT job_id,status,selection_snapshot FROM calculation_runs WHERE id = ? AND warehouse_id = ? FOR UPDATE",
@@ -120,13 +123,6 @@ public class EngineResultWriter {
         jdbc.update("INSERT INTO calculation_results("+String.join(",",values.keySet())+") VALUES ("+parameters+")", args.toArray());
         long resultId = jdbc.queryForObject("SELECT id FROM calculation_results WHERE run_id = ? AND product_id = ?", Long.class,
                 job.targetId(), productId);
-        if ("OK".equals(status)) {
-            // Paid LLM is a separate activation. Do not leave the frontend polling GENERATING indefinitely.
-            jdbc.update("""
-                    INSERT INTO ai_explanations(result_id,mode,status,request_payload,validation_passed,reason_code,versions)
-                    VALUES (?, 'NONE', 'DISABLED', CAST('{}' AS JSONB), TRUE, 'LLM_DISABLED', CAST(? AS JSONB))
-                    """, resultId, mapper.writeValueAsString(Map.of("engine", "calculation", "llm", "disabled")));
-        }
         JsonNode scenarios = r.get("scenarios");
         if (scenarios == null) { require(!"OK".equals(status)); return; }
         require(scenarios.isArray() && scenarios.size() <= 3);
@@ -154,7 +150,10 @@ public class EngineResultWriter {
                     """, resultId,type,qty,scenario.get("isDuplicate").asBoolean(),date(scenario,"expectedDepletionOn"),
                     ending,unmet,number(scenario,"postArrivalRisk",false),mapper.writeValueAsString(projection));
         }
-        if ("OK".equals(status)) require(types.equals(Set.of("P80","P100","P120")));
+        if ("OK".equals(status)) {
+            require(types.equals(Set.of("P80","P100","P120")));
+            insights.prepare(resultId, r, asOf.toString());
+        }
     }
 
     private static Set<Long> ids(JsonNode array) {

@@ -507,16 +507,72 @@ CUSTOM 설명 재생성·실제 LLM 활성화는 포함하지 않습니다. 운�
 
 ### AI 인사이트 (K4)
 
-`GET /api/results/{resultId}/insight`는 SKU 상세의 설명 문장을 돌려줍니다(BE-09 · BE-14). 현재 K4는 저장된 계산 결과와 `ai_explanations`를 읽으며 FastAPI `/engine/insight`를 직접 호출하지 않습니다.
+`GET /api/results/{resultId}/insight`는 SKU 상세의 설명 문장을 돌려줍니다(BE-09 · BE-14). K4 GET은 저장된 계산 결과와 `ai_explanations`를 읽기만 합니다. 설명 생성은 계산 저장 이후 별도 작업기가 FastAPI `/engine/insight`를 호출합니다.
 
 | 결과 상태 | 응답 |
 |---|---|
 | `NOT_CALCULABLE` · `EXCLUDED` · `REUPLOAD_REQUIRED` · `NOT_NEEDED` | LLM을 부르지 않고 고정 문장을 `mode: "FIXED"`로 바로 돌려줍니다. 문장은 ipgo-ai `docs/ai-insight/prompt-and-fallback.md` 6장 template이고, 숫자는 화면용 정수와 천 단위 쉼표로 채웁니다. 넣을 값(사유 등)이 비어 있으면 `TABLE_ONLY`(문장 없이 비교표만) |
 | `OK` + `ai_explanations`에 저장된 문장 있음 | 저장된 문장을 돌려줍니다. ipgo-ai 0002의 `LLM` → `AI`, `TEMPLATE` → `FIXED`, `NONE` → `TABLE_ONLY`. 실패 사유(`reason_code`)가 있으면 LLM이 실패해 대체한 것이라 `isFallback: true`. 단, LLM을 꺼 둬서 부르지 않은 `LLM_DISABLED`는 실패가 아니라 `isFallback: false` |
-| `OK` + 저장된 문장 없음 | `202 {"status": "GENERATING"}`. 문장 기록이 아직 없는 결과의 응답입니다. 현재 엔진이 LLM 비활성으로 완료한 결과는 `NONE/LLM_DISABLED`를 저장하므로 `TABLE_ONLY`가 됩니다 |
+| `OK` + 설명 작업 `PENDING`/`PROCESSING` 또는 저장된 문장 없음 | `202 {"status": "GENERATING"}`. 생성 중에는 완료 문장을 재조회합니다. 비활성 완료는 `NONE/LLM_DISABLED`로 저장하므로 `TABLE_ONLY`입니다 |
 
 - 고정 문장은 만들어 둔 문장이 아니라서 `generatedAt`이 `null`입니다.
 - 다른 회원 결과 `403`, 없는 결과 `404`입니다.
+
+### 개발 배포의 설명 활성화 승인
+
+Server dev workflow는 수동 실행만 허용하며 `expected_sha`에 승인한40자리 SHA를 넣습니다.
+현재 workflow SHA와 다르면 AWS 인증·이미지 업로드 전에 거부합니다. `engine_enabled=true`이면
+기존 `engine_connection_approved=true`와 GitHub dev 환경 변수 `AWS_AI_ENGINE_BASE_URL`이 필요합니다.
+이 변수는 실제 AI task의 내부 HTTP(S) origin이며 코드/공개 문서에 실제 주소를 기록하지 않습니다.
+경로·쿼리·인증정보·loopback 주소는 거부합니다.
+
+설명 관련 입력 `insight_enabled`, `insight_approved`, `insight_worker_enabled`는 모두 기본 `false`입니다.
+`insight_enabled=true`에는 엔진 활성화와 명시적 비용 승인이 필요하고, 작업기는 설명 활성화 없이
+켤 수 없습니다. 활성화를 승인받은 뒤 작업기를 `false`로 유지하면 새 설명 입력만 대기열에 저장하고
+자동 LLM 호출은 하지 않습니다. 정상 자동 생성은 승인한 범위에서 세 입력을 모두 `true`로 실행합니다.
+이 승인 플래그는 호출 횟수/예산 제한 장치가 아닙니다. 활성화 후 새 계산마다 과금될 수 있습니다.
+
+렌더러는 현재 task의 IAM 역할·DB/JWT Secret 참조·자원·헬스체크·다른 컨테이너 설정을 보존하고
+이미지·API docs·엔진/설명/작업기 플래그·명시한 AI origin만 변경합니다. 이전 설명 활성화 값이 남아
+있어도 `false` 입력으로 덮어씁니다. OpenAI key를 Server 컨테이너에 넣는 설정은 거부합니다.
+AI key는 AI 저장소 workflow의 `llm_enabled/llm_approved`와 Secrets Manager 주입으로 별도 관리합니다.
+
+배포 전 `python3 -m unittest discover -s scripts/testing -p 'test_dev_task.py' -v`로 승인/보존 검사를 합니다.
+이 검사는 AWS 쓰기나 LLM을 호출하지 않습니다. PR CI의 `deploy-contract`도 같은 검사를 실행합니다.
+실제 배포·환경 승인·키 등록·유료 검증은 대상 SHA·영향·복구를 확인한 사용자 승인 범위에서 실행합니다.
+
+### 설명 생성 설정과 검증
+
+기본값 `IPGO_INSIGHT_ENABLED=false`는 유료 호출을 막습니다. 승인 후 `true`로 켜고
+`IPGO_ENGINE_BASE_URL`을 real FastAPI origin으로 설정해야 합니다. API key는 FastAPI에서만 관리합니다.
+`IPGO_INSIGHT_WORKER_ENABLED`는 기본 `true`, `IPGO_INSIGHT_TIMEOUT`은 기본 `15s`(최대30초),
+`IPGO_INSIGHT_POLL_DELAY_MS`는 기본1000ms입니다. 배포 workflow나 실제 환경은 이 변경으로 수정하지 않습니다.
+
+계산 transaction 안에서 V11 `ai_explanations`에 입력을 보존하고, commit 이후 한 번에 한 상품을 처리합니다.
+전용 단일 작업기 스레드를 사용하며 DB lock을 잡은 채 HTTP를 기다리지 않습니다. 요청은 별칭·키 이름·방향·상태만 전달하고 실제 수량·상품명·원가는
+Spring에 남깁니다. FastAPI의 PASSED 초안도 자리 표시자·원시 숫자를 검사한 후 비교표와 같은 값으로 채웁니다.
+DB 저장 정밀도로 수량·위험과 비교 방향을 다시 맞춥니다. 값 불일치, FAILED, 501/422, 시간 초과와 통신 오류는 계산을 실패시키지 않고 계약6장의 기본 문장으로 대체합니다.
+필수 사실이 없으면 `INPUT_UNAVAILABLE/TABLE_ONLY`로 보류하며 위험 null을0이나 표본 부족으로 만들지 않습니다.
+`mock` promptVersion 응답을 AI 성공으로 저장하지 않습니다.
+
+작업은 `PENDING → PROCESSING → DONE`으로 진행합니다. 조건부 claim과 result당 unique 행으로 동시/중복 실행을
+막습니다. 처리 중 중단된 작업은 시간 제한+30초 후 기본 문장으로 종료하며 유료 중복을 피하려고 재호출하지 않습니다.
+자동 재시도·과거 `DISABLED` 행 재생성·CUSTOM 변경 후 설명 재생성은 포함하지 않습니다.
+기존 결과(예: 이미 TABLE_ONLY로 저장된 결과)의 설명을 자동 소급 생성하지 않습니다.
+`generatedAt`은 레코드 저장/최종화 시각이며 `mode=AI`와 함께 판단해야 합니다.
+
+로컬 검사:
+
+```bash
+./gradlew test --tests '*InsightRendererTests' --tests '*InsightGenerationIntegrationTests'
+# 별도 ipgo-ai checkout, 준비된 local image/Gradle cache 필요. 운영 자격증명·외부 LLM 불필요.
+docker build -t ipgo-ai:insight-test /path/to/ipgo-ai
+scripts/testing/verify-insight-contract.sh /path/to/ipgo-ai
+```
+
+두 번째 검사는 내부 Docker network의 임시 PostgreSQL16·실제 FastAPI 라우트/검사기·FakeClient·Spring 저장/K4를
+연결합니다. 유료 LLM·실제 고객 원장·브라우저·운영 배포 검증과 구분합니다. 테스트 자원은 종료 시 제거합니다.
+코드와 검증/복구 경계는 [설명 연동 결정](docs/decisions/0005-insight-generation.md)을 따릅니다.
 
 ## 비밀번호와 개인정보 저장
 
@@ -607,7 +663,7 @@ DB commit이 끝난 뒤에만 결과 메시지를 삭제하며 같은 jobId의 �
 입력이고 QUEUED/RUNNING/DONE일 때만 재사용합니다. 조건·발주가 바뀌었다가 이전 값으로 돌아오거나
 최근 실행이 실패한 경우에는 새 실행을 만듭니다. S2의 `recalculate=true`도 새 실행을 만듭니다.
 완료 결과는 D1/K1·K2로 조회합니다.
-유료 LLM 활성화는 별도이므로 정상 계산의 인사이트는 `TABLE_ONLY`를 명시하고 생성 중으로 무한 대기시키지 않습니다.
+`IPGO_INSIGHT_ENABLED=false`(기본값)에서는 정상 계산의 인사이트가 `TABLE_ONLY`입니다. 별도 승인 후 켜면 새로운 정상 계산의 `insightInput`을 사용해 설명을 생성합니다.
 계산 불가·제외·입고 불필요의 기존 고정 문장은 유지합니다. 위험·정확도의 미구현 null은 성공 수치가 아닙니다.
 
 테스트용 `IPGO_ENGINE_TRANSPORT_ENABLED=false`는 outbox/결과 트랜잭션을 실제 SQS 없이 검사할 때만 씁니다.

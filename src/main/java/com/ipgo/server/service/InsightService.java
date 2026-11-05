@@ -44,7 +44,7 @@ public class InsightService {
 
         if (!CalculationResult.OK.equals(result.getStatus())) return Optional.of(fixed(result));
         List<Insight> stored = jdbc.query("""
-                SELECT mode, reason_code, rendered_text, created_at FROM ai_explanations WHERE result_id = ?
+                SELECT mode, reason_code, rendered_text, created_at FROM ai_explanations WHERE result_id = ? AND status NOT IN ('PENDING', 'PROCESSING')
                 """, (rs, i) -> stored(resultId, rs.getString(1), rs.getString(2), rs.getString(3),
                         rs.getTimestamp(4)), resultId);
         return stored.stream().findFirst();

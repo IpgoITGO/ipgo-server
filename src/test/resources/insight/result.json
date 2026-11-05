@@ -1,0 +1,92 @@
+{
+  "status": "OK",
+  "method": "B",
+  "methodFallback": false,
+  "startStockEstimated": false,
+  "recommendedQty": 100,
+  "horizonDays": 14,
+  "startStockQty": 10.9,
+  "plannedReceiptsInHorizon": 5,
+  "forecastOutboundQty": 95.1,
+  "multiplier": 1.05,
+  "riskStatus": "OK",
+  "riskBasis": "POOLED",
+  "preArrivalRisk": 0.1,
+  "riskSampleSize": 40,
+  "noDateReceiptQty": 0,
+  "scenarios": [
+    {
+      "type": "P80",
+      "qty": 80,
+      "isDuplicate": false,
+      "expectedEndingStock": 20.9,
+      "unmetDemandQty": 0,
+      "postArrivalRisk": 0.064,
+      "dailyProjection": []
+    },
+    {
+      "type": "P100",
+      "qty": 100,
+      "isDuplicate": false,
+      "expectedEndingStock": 40.9,
+      "unmetDemandQty": 0,
+      "postArrivalRisk": 0.063,
+      "dailyProjection": []
+    },
+    {
+      "type": "P120",
+      "qty": 120,
+      "isDuplicate": false,
+      "expectedEndingStock": 60.9,
+      "unmetDemandQty": 0,
+      "postArrivalRisk": 0.01,
+      "dailyProjection": []
+    }
+  ],
+  "insightInput": {
+    "skuLabel": "원래 상품명은 전송하지 않음",
+    "recommended": "P100",
+    "riskStatus": "OK",
+    "placeholders": [
+      "method",
+      "horizon_days",
+      "start_stock",
+      "planned_receipts",
+      "forecast_outbound",
+      "multiplier",
+      "risk_pre",
+      "risk_sample_size",
+      "qty_p80",
+      "ending_p80",
+      "depletion_p80",
+      "unmet_p80",
+      "risk_post_p80",
+      "diff_p80",
+      "qty_p100",
+      "ending_p100",
+      "depletion_p100",
+      "unmet_p100",
+      "risk_post_p100",
+      "qty_p120",
+      "ending_p120",
+      "depletion_p120",
+      "unmet_p120",
+      "risk_post_p120",
+      "diff_p120"
+    ],
+    "directions": {
+      "ending_p80_vs_p100": "낮음",
+      "risk_post_p80_vs_p100": "같음",
+      "ending_p120_vs_p100": "높음",
+      "risk_post_p120_vs_p100": "낮음"
+    },
+    "scenarios": [
+      "P80",
+      "P100",
+      "P120"
+    ],
+    "methodFallback": false,
+    "startStockEstimated": false,
+    "hasNoDateReceipts": false
+  }
+}

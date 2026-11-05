@@ -29,6 +29,12 @@ public class ProductException extends RuntimeException {
     public static ProductException insightDisabled() {
         return new ProductException(HttpStatus.SERVICE_UNAVAILABLE, "INSIGHT_SINGLE_DISABLED", "단건 설명 생성을 승인 후 활성화해야 합니다.");
     }
+    public static ProductException insightBatchDisabled() {
+        return new ProductException(HttpStatus.SERVICE_UNAVAILABLE,"INSIGHT_BATCH_DISABLED","고정 대상 설명 생성을 승인 후 활성화해야 합니다.");
+    }
+    public static ProductException insightBatchStopped() {
+        return new ProductException(HttpStatus.CONFLICT,"INSIGHT_BATCH_STOPPED","이전 시도가 진행 중이거나 실패해 추가 생성을 중단했습니다.");
+    }
     public static ProductException insightResultStale() {
         return new ProductException(HttpStatus.CONFLICT,"INSIGHT_RESULT_STALE","현재 화면의 계산 결과가 바뀌어 설명을 생성하지 않았습니다.");
     }

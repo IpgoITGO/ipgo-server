@@ -47,6 +47,34 @@ class DevDeploymentTests(unittest.TestCase):
         workflow=(ROOT/'.github/workflows/deploy-dev.yml').read_text()
         self.assertIn('SINGLE_RESULT_INSIGHT_ENABLED: ${{ inputs.single_result_insight_enabled }}',workflow)
         self.assertIn('SINGLE_RESULT_INSIGHT_APPROVED: ${{ inputs.single_result_insight_approved }}',workflow)
+    def test_batch_requires_separate_approval_and_excludes_other_modes(self):
+        base=dict(self.env,INSIGHT_ENABLED='false',INSIGHT_WORKER_ENABLED='false',
+                  BATCH_INSIGHT_ENABLED='true',BATCH_INSIGHT_APPROVED='true')
+        self.assertTrue(module.settings(base)['batch'])
+        for change in [dict(BATCH_INSIGHT_APPROVED='false'),dict(INSIGHT_ENABLED='true'),
+                       dict(INSIGHT_WORKER_ENABLED='true'),dict(ENGINE_ENABLED='false'),
+                       dict(SINGLE_RESULT_INSIGHT_ENABLED='true',SINGLE_RESULT_INSIGHT_APPROVED='true')]:
+            with self.subTest(change=change), self.assertRaises(module.InvalidDeployment):
+                module.settings(dict(base,**change))
+
+    def test_batch_default_off_overwrites_previous_enabled_value(self):
+        self.task['containerDefinitions'][0]['environment'].append({'name':'IPGO_INSIGHT_BATCH_ENABLED','value':'true'})
+        values={e['name']:e['value'] for e in self.rendered()['containerDefinitions'][0]['environment']}
+        self.assertEqual(values['IPGO_INSIGHT_BATCH_ENABLED'],'false')
+        env=dict(self.env,INSIGHT_ENABLED='false',INSIGHT_WORKER_ENABLED='false',
+                 BATCH_INSIGHT_ENABLED='true',BATCH_INSIGHT_APPROVED='true')
+        values={e['name']:e['value'] for e in module.render(self.task,IMAGE,env)['containerDefinitions'][0]['environment']}
+        self.assertEqual(values['IPGO_INSIGHT_BATCH_ENABLED'],'true')
+        self.assertEqual(values['IPGO_INSIGHT_SINGLE_RESULT_ENABLED'],'false')
+        self.assertEqual(values['IPGO_INSIGHT_ENABLED'],'false')
+        self.assertEqual(values['IPGO_INSIGHT_WORKER_ENABLED'],'false')
+
+    def test_batch_controls_strict_and_explicit_in_workflow(self):
+        workflow=(ROOT/'.github/workflows/deploy-dev.yml').read_text()
+        for name,field in [('BATCH_INSIGHT_ENABLED','batch_insight_enabled'),('BATCH_INSIGHT_APPROVED','batch_insight_approved')]:
+            self.assertIn(name+': ${{ inputs.'+field+' }}',workflow)
+            with self.assertRaises(module.InvalidDeployment): module.settings(dict(self.env,**{name:'TRUE'}))
+
     def setUp(self):
         self.env = dict(EXPECTED_SHA=SHA, GITHUB_SHA=SHA, AWS_ACCOUNT_ID=ACCOUNT,
                         COMPUTE_MODE='onebox', MAINTENANCE_APPROVED='true', ENGINE_ENABLED='true',

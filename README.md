@@ -711,6 +711,24 @@ AI의 큰 결과는 SQS wire900,000bytes 제한 안에서 gzip/base64 v2로 받�
 가짜 AWS CLI 응답으로 재사용/신규 빌드 판단·권한/통신 오류 차단·digest 변경·workflow 연결을 검사하며
 실제 AWS 배포 성공을 의미하지 않습니다. [ECR BatchGetImage 계약](https://docs.aws.amazon.com/AmazonECR/latest/APIReference/API_BatchGetImage.html).
 
+### 마스터 계정의 고정 후보 5건 일회성 설명 생성
+
+현재 마스터 계정은 SKU8개이며 사용자가 승인한 준비 대상은 상품33~37/결과812~816의5건입니다.
+이미 AI 문장이 있는811, 계산 제외817, 결과 없는 상품39는 제외합니다. 현재 상품 수나 최신 결과를
+자동 검색해 대상을 늘리지 않습니다. 상시 자동 설명/worker는 계속false입니다.
+
+`GET /api/insight-batches/master-current-20261105`로 고정 대상·입력·현재 결과·예산과 gate를 읽습니다.
+활성화와 비용 승인을 받은 후에만 `POST /api/insight-batches/master-current-20261105/results/{id}/generate`를
+빈 본문으로 한 건씩 실행할 수 있습니다. 각 결과당 영속1회, 총 최대5회이며 미사용 행 잠금/예약 commit
+후 HTTP를 보냅니다. 동시·중복·재시작·실패로 시도 횟수를 돌려주지 않습니다. 한 건이 진행 중이거나
+실패/불명확하면 다음 대상도 중단하며 자동 재시도하지 않습니다. 이미 생성된 결과와 입력 부족은 제외합니다.
+
+기본 `IPGO_INSIGHT_BATCH_ENABLED=false`입니다. 개발 배포 입력 `batch_insight_enabled/approved=true`에는
+별도 배포/비용 승인이 필요하며, `single_result_insight_enabled=false`, `insight_enabled/approved/worker_enabled=false`를
+유지해야 합니다. 동시에 켜면 앱/배포 검사가 거부합니다. 활성화만으로 유료 호출을 시작하지 않습니다.
+새 migration이나 AI 서버 변경은 없습니다. 표식 삭제/초기화·다른 결과 생성은 허용하지 않습니다.
+[한도 근거·API·실패 중단·복구](docs/decisions/0007-fixed-insight-batch.md)를 따릅니다.
+
 ### 현재 결과 811의 단건 AI 설명 재생성
 
 전체 자동 생성은 끈 채 현재 화면의 결과811만 명시적으로 최대1회 시도하는 운영 예외입니다.

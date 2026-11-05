@@ -12,6 +12,16 @@ on:
         required: false
         default: false
         type: boolean
+      batch_insight_enabled:
+        description: "Allow explicit fixed master batch 812-816 only, lifetime at most five calls; no background generation"
+        required: false
+        default: false
+        type: boolean
+      batch_insight_approved:
+        description: "Approve the fixed master batch scope and maximum five possible paid attempts for this SHA"
+        required: false
+        default: false
+        type: boolean
       single_result_insight_enabled:
         description: "Allow explicit regeneration of result 811 only, lifetime maximum one attempt; automatic insight stays off"
         required: false
@@ -75,6 +85,8 @@ jobs:
       ENGINE_ENABLED: ${{ inputs.engine_enabled }}
       ENGINE_CONNECTION_APPROVED: ${{ inputs.engine_connection_approved }}
       INSIGHT_ENABLED: ${{ inputs.insight_enabled }}
+      BATCH_INSIGHT_ENABLED: ${{ inputs.batch_insight_enabled }}
+      BATCH_INSIGHT_APPROVED: ${{ inputs.batch_insight_approved }}
       SINGLE_RESULT_INSIGHT_ENABLED: ${{ inputs.single_result_insight_enabled }}
       SINGLE_RESULT_INSIGHT_APPROVED: ${{ inputs.single_result_insight_approved }}
       INSIGHT_APPROVED: ${{ inputs.insight_approved }}

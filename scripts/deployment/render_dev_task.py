@@ -43,7 +43,7 @@ def settings(env):
     require(not insight or (engine and approved), "Insight activation requires engine and cost approval")
     require(not worker or insight, "Insight worker requires insight activation")
     require(not single or (engine and single_approved and not insight and not worker),
-            "Single result 698 requires separate approval and automatic insight/worker disabled")
+            "Single result 811 requires separate approval and automatic insight/worker disabled")
     require(env.get("DESIRED_COUNT") in ("0", "1"), "Unsupported task count")
     base = env.get("ENGINE_BASE_URL", "")
     require(not engine or bool(base), "AWS_AI_ENGINE_BASE_URL is required when engine is enabled")

@@ -711,49 +711,53 @@ AI의 큰 결과는 SQS wire900,000bytes 제한 안에서 gzip/base64 v2로 받�
 가짜 AWS CLI 응답으로 재사용/신규 빌드 판단·권한/통신 오류 차단·digest 변경·workflow 연결을 검사하며
 실제 AWS 배포 성공을 의미하지 않습니다. [ECR BatchGetImage 계약](https://docs.aws.amazon.com/AmazonECR/latest/APIReference/API_BatchGetImage.html).
 
-### 결과 698의 단건 AI 설명 재생성
+### 현재 결과 811의 단건 AI 설명 재생성
 
-전체 자동 생성은 끈 채 기존 결과 698만 명시적으로 최대 1회 시도하는 운영 예외입니다.
-실행은 기본 비활성이며 `IPGO_INSIGHT_SINGLE_RESULT_ENABLED=true`일 때만 허용합니다.
-`IPGO_INSIGHT_ENABLED=false`, `IPGO_INSIGHT_WORKER_ENABLED=false`를 함께 유지해야 합니다.
-두 기능을 동시에 켜면 시작을 거부하며, dev workflow도 단건 활성화·별도 비용 승인과
-engine 연결 승인을 검사합니다. 대상 ID와 호출 한도는 요청·환경 변수로 바꿀 수 없습니다.
+전체 자동 생성은 끈 채 현재 화면의 결과811만 명시적으로 최대1회 시도하는 운영 예외입니다.
+실행은 `IPGO_INSIGHT_SINGLE_RESULT_ENABLED` 기본false이며, dev workflow의 별도 활성화와
+비용 승인이 필요합니다. `IPGO_INSIGHT_ENABLED=false`, `IPGO_INSIGHT_WORKER_ENABLED=false`를
+유지해야 하고 동시 활성화는 앱 시작/배포에서 거부합니다. ID·한도 변경/초기화 요청은 없습니다.
 
-- `GET /api/results/698/insight/regeneration`: 소유권·입력 복원·미사용 한도를 읽기 검사합니다.
-  성공 응답은 `resultId`, `enabled`, `remainingAttempts: 1`만 포함합니다. 비활성 상태에서도
-  사전 확인할 수 있으며 LLM을 호출하거나 시도를 예약하지 않습니다.
-- `POST /api/results/698/insight/regenerate`: Bearer 인증된 결과 소유자만 빈 본문으로 실행합니다.
-  요청 본문에 사실·다른 ID·재시도 옵션을 넣을 수 없습니다. 기존 Bearer/쿠키 인증·CSRF 정책은 바꾸지 않습니다.
-- 정상 완료 후 기존 `GET /api/results/698/insight`가 저장된 `AI` 문장을 반환합니다.
-  이미 `TABLE_ONLY`를 보여주던 화면은 재조회·새로고침으로 확인합니다. 화면의 자동 실행 버튼은 추가하지 않습니다.
+- `GET /api/results/811/insight/regeneration`: 소유권·입력 복원·현재 화면의 결과인지·미사용 한도를
+  읽기 확인하고 `resultId`, `productId`, `enabled`, `remainingAttempts: 1`만 반환합니다.
+  단건 비활성 상태에서도 확인할 수 있고 LLM을 호출하거나 시도를 예약하지 않습니다.
+- `POST /api/results/811/insight/regenerate`: Bearer 인증된 결과 소유자의 빈 요청만 허용합니다.
+  다른ID(698 포함)/소유자403·본문400·비활성503·한도소진/불완전입력/현재결과변경409입니다.
+- 정상 완료 후 기존 `GET /api/results/811/insight`를 다시 읽고 같은 상품 화면을 새로고침합니다.
+  이미 새 계산으로 넘어갔다면 `INSIGHT_RESULT_STALE`로 호출 전에 중단하며 다른ID를 자동 선택하지 않습니다.
+  기존 Bearer/쿠키·CSRF 정책과 화면은 변경하지 않습니다.
 
-DB의 기존 계산·시나리오·입력 스냅샷에서 사실을 복원합니다. 위험 상태나 날짜·계산식 전환에
-필요한 근거가 없거나 서로 맞지 않으면 `409 INSIGHT_INPUT_UNAVAILABLE`로 호출 전에 중단합니다.
-실제 운영 결과 698의 복원 가능 여부는 배포 후 위 사전 확인에서 검증해야 하며, 합성 fixture
-검사 성공을 실제 데이터·모델 성공으로 보지 않습니다.
+698은 이전에 준비했던 미사용 승인 예산의 기준 행이며, 실행 대상이 아닙니다. **698과811을 합쳐
+최대1회**입니다. 두 설명 행을698→811 순서로 잠그고, 양쪽 모두 미사용인지 검사합니다.
+811이 현재 상세 화면 결과인지 ProductDetailService로 확인하고 저장 계산/시나리오/입력을 복원합니다.
+부족하거나 맞지 않으면 아무 표식도 소비하지 않고 중단합니다. 미산출 위험값은 만들지 않습니다.
 
-기존 `ai_explanations` 행의 `output_path`에 `single-result/698/attempt-1`을 원자적으로 기록하고
-독립 transaction을 commit한 뒤 HTTP를 시도합니다. migration은 없습니다. 중복·동시 요청,
-재배포·재시작·타임아웃·저장 실패도 `409 INSIGHT_ATTEMPT_SPENT`이며 한도를 되살리지 않습니다.
-시도 뒤 실패하면 기본 문장으로 마감하고, 중단된 PROCESSING 행의 복구도 문장 마감만 수행합니다.
-이는 외부 처리의 exactly-once 보장이 아닙니다. claim 직후 중단되면 실제 호출은 0회일 수 있습니다.
-표식이 있는 행을 삭제하거나 DISABLED/PENDING으로 되돌려 재무장하면 안 됩니다.
+독립 transaction에서698의 output_path에 `single-budget/698-to-811/attempt-1`,811에는
+`single-result/811/attempt-1`·PROCESSING·검증한 payload를 함께 commit한 뒤811 HTTP만 시도합니다.
+698의 계산값·설명·상태·작성일은 보존하며 예산 표식만 바뀝니다. migration은 없습니다.
+기존698이 이미 사용됐다면811도 거부하고, 새 버전에서811을 사용하면 구버전으로 rollback해도
+698의 output_path가 비어 있지 않아 추가 호출이 거부됩니다. 예산 행이 없다고 새로 만들지 않습니다.
 
-배포와 실제 유료 호출은 사용자에게 별도로 승인받습니다. dev 실행 입력은
-`single_result_insight_enabled=true`, `single_result_insight_approved=true`,
-`insight_enabled=false`, `insight_approved=false`, `insight_worker_enabled=false`입니다.
-사전 확인이 실패하면 POST를 보내지 않습니다. 복구 시에는 전체/단건 활성화를 끄고 표식을
-보존합니다. PROCESSING이 남았다면 단건 복구가 기본 문장으로 마감한 것을 확인한 후
-구버전 task로 되돌립니다. 유료 호출 후 DB 복원으로 표식을 지우는 작업은 별도 승인 대상입니다.
+중복/동시 요청·재시작·호출자 rollback·타임아웃·응답저장 실패는 예산을 환불하지 않습니다.
+단건 복구는811 또는 이미 시작된 구버전698의 만료 PROCESSING을 기본 문장으로 마감할 뿐,
+HTTP·새698 생성·전체 PENDING 처리는 하지 않습니다. claim 뒤 중단되면 실제 호출0회도 가능하며
+exactly-once 생성/전달 보장은 아닙니다. 표식을 삭제하거나 DISABLED/PENDING으로 재무장하면 안 됩니다.
 
-로컬 검사는 `SingleInsightIntegrationTests`와 기존 Insight 검사들로 실행합니다.
-실제 FastAPI 검사기·FakeClient·폐기용 PostgreSQL 검사는 다음 명령을 사용합니다.
-외부 통신이 차단된 Docker network에서만 실행하며 OpenAI 키는 전달하지 않습니다.
+배포/유료 호출은 별도 승인합니다. `single_result_insight_enabled/approved=true`,
+`insight_enabled/approved/worker_enabled=false`로 배포하고, 정상 소유자의 사전GET과 화면811을
+확인한 경우에만 POST를 최대1회 보냅니다. 실패/불명확 응답에도 재호출하지 않습니다.
+복구할 때에는 진행 중 시도의 기본 문장 마감·표식 보존을 확인한 뒤 직전 승인 task로 되돌립니다.
+구버전에는811의 복구 코드가 없어 미마감 상태로 rollback하면 조회가202로 남을 수 있습니다.
+
+로컬 검사는 `SingleInsightIntegrationTests`와 기존 Insight 검사로 실행합니다.
+외부 통신 차단 Docker network의 실제 FastAPI 검사기/FakeClient·폐기용 PostgreSQL 검사는 다음과 같습니다.
+OpenAI 키는 전달하지 않으며 캐시는 컨테이너에서도 경로가 유효한 읽기/쓰기 가능 사본을 준비합니다.
 
 ```bash
-IPGO_INSIGHT_TEST_GRADLE_HOME=/path/to/writable/prepared-gradle-cache \
+IPGO_INSIGHT_TEST_GRADLE_HOME=/path/to/prepared-gradle-cache \
 IPGO_INSIGHT_TEST_AI_IMAGE=local-ai-image \
   ./scripts/testing/verify-insight-contract.sh /path/to/ipgo-ai
 ```
 
-자세한 복원 규칙·한도와 API 오류는 [단건 생성 결정 기록](docs/decisions/0006-single-result-insight.md)을 따릅니다.
+[최초698 설계](docs/decisions/0006-single-result-insight.md)는 이력이며,
+현재 경로/공유 한도/복구는 [811 전환 결정](docs/decisions/0007-single-result-811.md)을 따릅니다.

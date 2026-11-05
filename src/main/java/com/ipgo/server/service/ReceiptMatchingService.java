@@ -108,17 +108,21 @@ public class ReceiptMatchingService {
         result.inventoryUnits().forEach(u -> productByLot.put(new Lot(u.sourceInventoryKey(), u.receivedOn()),
                 products.get(u.skuBarcode()).getId()));
         Map<Day, Long> lots = new HashMap<>();
+        var excluded = new java.util.HashSet<Long>();
+        result.validation().excludedSkus().forEach(e -> excluded.add(products.get(e.skuBarcode()).getId()));
         for (var row : result.unitDailyRecords()) {
             Day day = new Day(productByLot.get(new Lot(row.sourceInventoryKey(), row.receivedOn())), row.stockDate());
             lots.merge(day, row.inboundQty(), Math::addExact);
+            if (row.openingQty() + row.inboundQty() - row.outboundQty() + row.adjustmentQty() != row.closingQty())
+                excluded.add(day.productId());
         }
-        var excluded = new java.util.HashSet<Day>();
-        result.validation().excludedSkus().forEach(e -> excluded.add(new Day(products.get(e.skuBarcode()).getId(), e.date())));
         Map<Day, Observation> observed = new LinkedHashMap<>();
         for (var row : result.productDailyStocks()) {
             Day day = new Day(products.get(row.skuBarcode()).getId(), row.stockDate());
-            boolean valid = row.isValidObservation() && !excluded.contains(day)
-                    && lots.getOrDefault(day, 0L).longValue() == row.inboundQty().longValue();
+            // isValidObservation은 수요 관측(시작 재고>0) 지표다. 첫 입고의 물리적 검산과 분리한다.
+            boolean valid = !excluded.contains(day.productId())
+                    && lots.getOrDefault(day, 0L).longValue() == row.inboundQty().longValue()
+                    && row.openingQty() + row.inboundQty() - row.outboundQty() + row.adjustmentQty() == row.closingQty();
             observed.put(day, new Observation(row.inboundQty(), valid));
         }
         return observed;

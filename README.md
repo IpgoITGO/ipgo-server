@@ -15,7 +15,7 @@ Ipgo 서비스의 API와 서버 동작을 관리하는 저장소입니다.
 | Gradle | 9.8.2, 저장소의 Wrapper 사용 |
 | 기본 의존성 | Spring MVC, Validation, Actuator, OAuth2 Resource Server, JPA, Flyway, PostgreSQL 드라이버, JavaMail, Lombok |
 
-기본 패키지는 `com.ipgo.server`, Gradle group은 `com.ipgo`입니다. 상품 자동 등록·조회·수정과 재고관리단위 구분, 정제 결과의 서버 내부 저장·검증과 U2 조회를 제공합니다. 실제 수불부 정제 요청·AI 결과 수신과 계산 연동은 아직 구현하지 않았습니다.
+기본 패키지는 `com.ipgo.server`, Gradle group은 `com.ipgo`입니다. 상품 자동 등록·조회·수정과 재고관리단위 구분, 정제 결과의 서버 내부 저장·검증과 U2 조회를 제공합니다. 수불부 정제·계산 요청과 결과 수신은 outbox/SQS로 연결하며, 설명·직접 수량 시나리오는 별도의 내부 HTTP 경로를 사용합니다. 현재 계약과 남은 공동 확인은 위 계약 대조 문서를 따릅니다.
 
 ## 프로젝트 구조
 

@@ -21,35 +21,43 @@ JWT 키까지 같아야 하는 것은 아닙니다. 현재 refresh/login 세션�
 
 ## 터미널 실행
 
-아래는 **독립 로컬 DB**용 키 생성입니다. `set -x`를 끄고 값을 출력하거나 명령 인자에 넣지 않습니다.
+Java 21, OpenSSL, Python 3를 준비합니다. DB 환경변수·초기 역할·migration 준비는
+[README의 빌드와 실행](../../README.md#빌드와-실행)을 먼저 확인합니다. 아래 명령은
+저장소 루트에서 실행하며 **독립 로컬 DB**용 키를 생성합니다. `set -x`를 끄고 값을
+출력하거나 명령 인자에 넣지 않습니다.
 
 ```bash
+(
 set +x
-export IPGO_JWT_SECRET="$(openssl rand -base64 32)"
-python3 - <<'PY'
+IPGO_JWT_SECRET="$(openssl rand -base64 32)" || exit 1
+export IPGO_JWT_SECRET
+python3 - <<'PY' || exit 1
 import base64, os
 try:
     raw = base64.b64decode(os.environ.get('IPGO_JWT_SECRET', ''), validate=True)
-    assert len(raw) >= 32
-except (ValueError, AssertionError):
+    if len(raw) < 32:
+        raise ValueError
+except ValueError:
     raise SystemExit('JWT 키 형식 또는 길이가 올바르지 않습니다.')
 print('JWT 키 형식·길이 확인 완료')
 PY
 # 승인된 로컬 DB 설정을 같은 프로세스 환경에 주입한 뒤 실행합니다.
 ./gradlew bootRun
+)
 ```
 
-이 예시는 프로세스 종료 후 키를 보존하지 않습니다. 재시작 로그인 유지가 필요하면 운영체제의 비밀 관리 기능이나 사용자 전용0600 파일을 사용하고 그 위치를 Git에서 제외합니다. 위 생성 명령을 매번 실행하면 키가 바뀝니다.
+괄호 안은 별도 셸입니다. 생성한 키는 앱과 그 하위 프로세스에 전달되며, 별도 셸이 끝나면 원래 터미널 환경에 남지 않습니다. 재시작 로그인 유지가 필요하면 운영체제의 비밀 관리 기능이나 권한이 `0600`인 사용자 전용 파일을 사용하고 그 위치를 Git에서 제외합니다. 위 생성 명령을 매번 실행하면 키가 바뀝니다.
 
 승인받은 기존 키를 입력할 때는 셸 기록에 실제 값을 적지 않습니다.
 
 ```bash
+(
 set +x
-read -r -s -p '승인받은 JWT 키: ' IPGO_JWT_SECRET
+read -r -s -p '승인받은 JWT 키: ' IPGO_JWT_SECRET || exit 1
 printf '\n'
 export IPGO_JWT_SECRET
 ./gradlew bootRun
-unset IPGO_JWT_SECRET
+)
 ```
 
 ## IDE 실행
@@ -60,8 +68,9 @@ IDE가 시작하는 Java/Gradle 프로세스의 환경변수에 DB 설정과 `IP
 
 1. 승인된 로컬 PostgreSQL에 연결됐는지, 필요한 스키마가 준비됐는지 확인합니다. 공유 DB의 migration을 실행해 확인하지 않습니다.
 2. 같은 프로세스에서 위 형식 검사를 실행합니다. Base64 문자열 길이가 아니라 **디코딩 결과32바이트 이상**이어야 합니다.
-3. 앱의 `Started ...`와 실제 `/actuator/health`의 HTTP200/UP을 확인합니다. Gradle의 BUILD SUCCESSFUL만으로 서버 기동을 판단하지 않습니다.
-4. 키 누락·잘못된Base64·짧은키는 기동 오류로 구분하고 값을 로그에 출력하지 않습니다. IDE에서는 다른 실행구성/Gradle daemon에 값이 전달됐는지도 확인합니다.
+3. 브라우저로 로컬 HTTP 인증을 시험할 때만 `IPGO_AUTH_COOKIE_SECURE=false`를 실행 환경에 지정합니다. 배포 환경은 HTTPS와 기본값 `true`를 유지합니다.
+4. 앱의 `Started ...`와 실제 `/actuator/health`의 HTTP200/UP을 확인합니다. Gradle의 BUILD SUCCESSFUL만으로 서버 기동을 판단하지 않습니다.
+5. 키 누락·잘못된Base64·짧은키는 기동 오류로 구분하고 값을 로그에 출력하지 않습니다. IDE에서는 다른 실행구성/Gradle daemon에 값이 전달됐는지도 확인합니다.
 
 읽기 전용 DB 계정은 데이터 조사용입니다. 가입·로그인·업무 저장이 필요한 로컬 앱의 실행 계정으로
 대신 사용하지 않습니다. 공유 DB의 쓰기 권한이나 migration 자격 증명을 기본 로컬 실행에 가져오지 않습니다.

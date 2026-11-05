@@ -14,6 +14,11 @@ SELECT 'CREATE ROLE ipgo_ai_reader LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOR
 WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'ipgo_ai_reader')
 \gexec
 
+-- Raw originals belong to the AI service only; never reuse a shared diagnostic login.
+SELECT 'CREATE ROLE ipgo_ai_service_reader LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOINHERIT'
+WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'ipgo_ai_service_reader')
+\gexec
+
 -- RDS master는 PostgreSQL superuser가 아니므로 SUPERUSER/REPLICATION 속성을
 -- false로 재지정하는 ALTER도 실행할 수 없다. CREATE ROLE의 안전한 기본값을 유지하고,
 -- CREATEROLE 관리자가 재확인할 수 있는 최소 속성만 고정한다.
@@ -21,6 +26,8 @@ ALTER ROLE ipgo_migrator LOGIN NOCREATEDB NOCREATEROLE;
 ALTER ROLE ipgo_server LOGIN NOCREATEDB NOCREATEROLE;
 ALTER ROLE ipgo_ai_reader LOGIN NOCREATEDB NOCREATEROLE;
 ALTER ROLE ipgo_ai_reader SET default_transaction_read_only = on;
+ALTER ROLE ipgo_ai_service_reader LOGIN NOCREATEDB NOCREATEROLE NOINHERIT;
+ALTER ROLE ipgo_ai_service_reader SET default_transaction_read_only = on;
 
 -- PostgreSQL 16의 CREATEROLE 관리자는 새 소유자 역할을 SET ROLE 할 수 있어야
 -- 객체 소유권을 넘길 수 있다. 이전 직전에 SET 권한을 켜고 직후 다시 끈다.

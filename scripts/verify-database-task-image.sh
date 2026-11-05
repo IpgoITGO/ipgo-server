@@ -8,7 +8,7 @@ database_container="ipgo-database-task-pg-${check_id}"
 repository_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 cleanup() {
-  docker rm -f "${database_container}" >/dev/null 2>&1 || true
+  docker rm -fv "${database_container}" >/dev/null 2>&1 || true
   docker network rm "${network_name}" >/dev/null 2>&1 || true
   docker image rm -f "${image_name}" >/dev/null 2>&1 || true
 }
@@ -18,6 +18,7 @@ readonly admin_password="local-admin-${check_id}"
 readonly migrator_password="local-migrator-${check_id}"
 readonly server_password="local-server-${check_id}"
 readonly ai_password="local-ai-${check_id}"
+readonly service_password="local-ai-service-${check_id}"
 
 docker build --file "${repository_root}/Dockerfile.database" \
   --tag "${image_name}" "${repository_root}"
@@ -59,6 +60,7 @@ docker run --rm --network "${network_name}" \
   --env IPGO_MIGRATOR_PASSWORD="${migrator_password}" \
   --env IPGO_SERVER_PASSWORD="${server_password}" \
   --env IPGO_AI_READER_PASSWORD="${ai_password}" \
+  --env IPGO_AI_SERVICE_READER_PASSWORD="${service_password}" \
   "${image_name}" bootstrap
 
 # Bootstrap is intentionally idempotent so an interrupted first run can be retried safely.
@@ -69,7 +71,24 @@ docker run --rm --network "${network_name}" \
   --env IPGO_MIGRATOR_PASSWORD="${migrator_password}" \
   --env IPGO_SERVER_PASSWORD="${server_password}" \
   --env IPGO_AI_READER_PASSWORD="${ai_password}" \
+  --env IPGO_AI_SERVICE_READER_PASSWORD="${service_password}" \
   "${image_name}" bootstrap
+
+# An existing environment upgrades only the dedicated account, never rotates the other three.
+docker exec "${database_container}" psql -U postgres -d ipgo -c "DROP ROLE ipgo_ai_service_reader" >/dev/null
+docker run --rm --network "${network_name}" \
+  "${common_environment[@]}" \
+  --env DB_ADMIN_USERNAME=bootstrap_admin --env DB_ADMIN_PASSWORD="${admin_password}" \
+  --env IPGO_AI_SERVICE_READER_PASSWORD="${service_password}" \
+  "${image_name}" bootstrap-original-reader
+if docker run --rm --network "${network_name}" \
+  "${common_environment[@]}" \
+  --env DB_ADMIN_USERNAME=bootstrap_admin --env DB_ADMIN_PASSWORD="${admin_password}" \
+  --env IPGO_AI_SERVICE_READER_PASSWORD="${service_password}" \
+  "${image_name}" bootstrap-original-reader >/dev/null 2>&1; then
+  echo "existing dedicated reader was unexpectedly overwritten" >&2
+  exit 1
+fi
 
 if docker exec -e PGPASSWORD="${admin_password}" "${database_container}" \
     psql -h 127.0.0.1 -v ON_ERROR_STOP=1 -U bootstrap_admin -d ipgo \
@@ -90,6 +109,7 @@ docker run --rm --network "${network_name}" \
   --env IPGO_SERVER_PASSWORD="${server_password}" \
   --env IPGO_AI_READER_USERNAME=ipgo_ai_reader \
   --env IPGO_AI_READER_PASSWORD="${ai_password}" \
+  --env IPGO_AI_SERVICE_READER_PASSWORD="${service_password}" \
   "${image_name}" verify
 
 echo "Database task image bootstrap, migration, and permissions verified."

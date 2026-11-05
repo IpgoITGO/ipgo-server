@@ -71,6 +71,13 @@ AWS dev 배포 workflow가 개발 컨테이너에서만 켭니다. 문서를 닫
 
 ## 빌드와 실행
 
+수불부 원본의 opt-in PostgreSQL 저장과 AI 조회 계약은 [BE-03 DB 원본 저장](docs/decisions/0003-database-original.md)을
+따릅니다. 신규 업로드에만 DB 저장을 선택하며 기존 local/S3 원본과 기본 동작은 유지합니다.
+총량 기본/최대는 **256MiB**이며 더 큰 설정은 거부합니다. 원본은 **최소30일** 보존하고 자동 삭제하지 않습니다.
+AI 원본은 별도 `ipgo_ai_service_reader`만 조회하며 공유 reader/사람용 계정에는 권한을 추가하지 않습니다.
+`IPGO_UPLOAD_STORAGE`와 `IPGO_UPLOAD_DATABASE_MAX_BYTES`를 실제 환경에서 바꾸기 전에는 migration·보관 정책·
+서버/AI 버전·백업·영향을 확인해야 합니다. 이번 로컬 구현으로 실제 DB나 배포가 변경되지는 않습니다.
+
 AWS 단일 호스트 개발 환경에서는 `AWS_DEV_COMPUTE_MODE=onebox`가 ARM 이미지와
 `ipgo-dev-onebox-server` 서비스를 선택합니다. 기존 DB·JWT·S3 설정과 메모리 제한을 이어받습니다.
 한 호스트의 같은 포트를 사용하므로 이후 코드 배포에는 짧은 서비스 재시작이 필요합니다.
@@ -107,6 +114,7 @@ PostgreSQL을 준비한 뒤 실행 환경에 아래 변수를 설정합니다. �
 | `SPRING_FLYWAY_ENABLED` | runtime과 migration 자격 증명을 분리할 때 runtime은 `false` |
 | `IPGO_JWT_SECRET` | 32바이트 이상의 무작위 키를 Base64로 인코딩한 JWT 서명 키. 모든 서버에서 동일한 키 사용 |
 | `IPGO_AUTH_COOKIE_SECURE` | 기본 `true`. 로컬 HTTP 개발에서만 `false`, 배포에서는 HTTPS와 `true` 사용 |
+| `IPGO_UPLOAD_DATABASE_MAX_BYTES` | DB 원본 전체 상한. 기본/최대 268435456 bytes(256MiB), 양수의 더 작은 검증 한도만 허용 |
 | `IPGO_UPLOAD_DIR` | 원본·보관 정보 저장 폴더. 기본값은 실행 디렉터리의 `./storage/uploads` |
 
 현재 `.env` 파일을 자동으로 읽는 별도 설정은 없습니다. 터미널 또는 IDE의 실행 환경변수로 전달해야 합니다.
@@ -120,7 +128,7 @@ psql -U <관리자> -d <database> -f database/bootstrap/create_roles.sql
 ### AWS DB one-off 작업 이미지
 
 `Dockerfile.database`는 애플리케이션 이미지와 분리된 DB 관리 전용 이미지입니다. `bootstrap`은
-최초 PostgreSQL 역할 생성과 비밀번호 설정, `migrate`는 Flyway V1~V14 적용과 이력 확인,
+최초 PostgreSQL 역할 생성과 비밀번호 설정, `bootstrap-original-reader`는 기존 계정을 바꾸지 않고 새 원본 조회 계정만 생성합니다. `migrate`는 Flyway V1~V15 적용과 이력 확인,
 `verify`는 Spring DML·AI 조회 권한과 금지 권한을 점검합니다. AWS에서는 각 명령을 별도 ECS
 one-off task로 실행하며 상시 서비스에서는 이 이미지를 사용하지 않습니다.
 
@@ -594,7 +602,7 @@ scripts/testing/verify-insight-contract.sh /path/to/ipgo-ai
 
 이미 병합된 migration은 Flyway 이력을 보존하기 위해 수정하지 않습니다. 새 DB에서는 V1~V14를 순서대로 적용합니다. V4는 `warehouses`·`products`·`inventory_units`, V5는 `upload_files`, V6은 `replenishment_settings`, V7은 `planned_receipts`, V8은 `auth_sessions`·`refresh_tokens`, V9는 `calculation_runs`·`calculation_results`, V10은 일별 수불 2개 표, V11은 계산 출처·시나리오·백테스트·AI 인사이트 4개 표를 추가합니다. V12는 PostgreSQL tenant 무결성 trigger, V13은 FastAPI view와 역할별 권한을 적용하고, V14는 `engine_jobs`·입력 hash·정제 조회 view를 추가합니다. V15의 DB 원본 저장 전환(Server #77·AI #60)은 보류 상태입니다. 전체 관계와 변경 규칙은 [Database ERD v1](docs/database/erd-v1.md)에 있습니다. Hibernate는 스키마를 자동 수정하지 않고 검증만 수행합니다.
 
-초기 PostgreSQL은 administrator가 `database/bootstrap/create_roles.sql`을 먼저 실행한 뒤 `ipgo_migrator`로 Flyway를 적용합니다. bootstrap SQL은 `ipgo_migrator`·`ipgo_server`·`ipgo_ai_reader` 역할만 만들고 비밀번호는 설정하지 않습니다. 비밀번호는 repository·shell history·Terraform state에 남기지 않고 승인된 Secrets Manager 절차로 설정합니다. Spring runtime은 `ipgo_server`, FastAPI는 `ipgo_ai_reader`를 사용하며 runtime에서는 `SPRING_FLYWAY_ENABLED=false`로 migration 자격 증명을 분리합니다.
+초기 PostgreSQL은 administrator가 `database/bootstrap/create_roles.sql`을 먼저 실행한 뒤 `ipgo_migrator`로 Flyway를 적용합니다. 새 DB의 bootstrap SQL은 `ipgo_migrator`·`ipgo_server`·`ipgo_ai_reader`·`ipgo_ai_service_reader` 역할을 만들고 비밀번호는 설정하지 않습니다. 비밀번호는 repository·shell history·Terraform state에 남기지 않고 승인된 Secrets Manager 절차로 설정합니다. Spring runtime은 `ipgo_server`, FastAPI는 `ipgo_ai_reader`를 사용하며 runtime에서는 `SPRING_FLYWAY_ENABLED=false`로 migration 자격 증명을 분리합니다.
 
 V2는 첫 단계에서 기존 `v1:` 암호문을 검사합니다. 남아 있으면 칼럼 변경·삭제 전에 실패하여 서버 시작을 중단합니다. 자동 복호화나 데이터 삭제는 수행하지 않습니다.
 

@@ -56,5 +56,6 @@ ipgo:
     storage: ${IPGO_UPLOAD_STORAGE:local}
     directory: ${IPGO_UPLOAD_DIR:./storage/uploads}
     bucket: ${IPGO_UPLOAD_BUCKET:}
+    database-max-bytes: ${IPGO_UPLOAD_DATABASE_MAX_BYTES:268435456}
   mail:
     from: ${IPGO_MAIL_FROM:}

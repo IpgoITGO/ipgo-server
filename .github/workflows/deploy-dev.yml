@@ -13,12 +13,12 @@ on:
         default: false
         type: boolean
       single_result_insight_enabled:
-        description: "Allow explicit regeneration of result 698 only, lifetime maximum one attempt; automatic insight stays off"
+        description: "Allow explicit regeneration of result 811 only, lifetime maximum one attempt; automatic insight stays off"
         required: false
         default: false
         type: boolean
       single_result_insight_approved:
-        description: "Approve the single result 698 attempt and its possible LLM cost for this SHA"
+        description: "Approve the single result 811 attempt and its possible LLM cost for this SHA"
         required: false
         default: false
         type: boolean

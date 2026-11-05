@@ -40,8 +40,9 @@ for insight_attempt in {1..30}; do
 done
 if ! "$insight_ready"; then echo 'Disposable test services did not become ready' >&2; exit 1; fi
 docker run --rm --network "$insight_prefix" \
+  --user "$(id -u):$(id -g)" -e GRADLE_USER_HOME=/gradle-cache \
   -e IPGO_TEST_DB_URL=jdbc:postgresql://ipgo-insight-test-db:5432/insight_test \
   -e IPGO_TEST_DB_USERNAME=insight_test -e IPGO_TEST_DB_PASSWORD= -e IPGO_INSIGHT_LOCAL_FASTAPI=true \
-  -v "$insight_repo_dir:/workspace" -v "${HOME}/.gradle:/root/.gradle" -w /workspace \
+  -v "$insight_repo_dir:/workspace" -v "${IPGO_INSIGHT_TEST_GRADLE_HOME:-${HOME}/.gradle}:/gradle-cache" -w /workspace \
   eclipse-temurin:21-jdk-jammy ./gradlew --offline --no-daemon --max-workers=2 test \
-    --tests '*InsightGenerationIntegrationTests' --rerun-tasks
+    --tests '*InsightGenerationIntegrationTests' --tests '*SingleInsightIntegrationTests' --rerun-tasks

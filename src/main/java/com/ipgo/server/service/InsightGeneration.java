@@ -76,25 +76,30 @@ public class InsightGeneration {
         // Unknown outcome after a crash is terminal. Retrying could double charge the same request.
         for (Long id : jdbc.queryForList("SELECT result_id FROM ai_explanations WHERE status = 'PROCESSING' AND created_at < ? ORDER BY result_id FETCH FIRST 5 ROWS ONLY",
                 Long.class, Timestamp.from(Instant.now().minus(timeout).minusSeconds(30)))) {
-            JsonNode p = payload(id);
-            finish(id, p, null, "LLM_TIMEOUT");
+            expireClaimed(id);
         }
         List<Long> due = jdbc.queryForList("SELECT result_id FROM ai_explanations WHERE status = 'PENDING' ORDER BY result_id FETCH FIRST 1 ROWS ONLY", Long.class);
         for (Long id : due) {
             Boolean claimed = tx.execute(s -> jdbc.update("UPDATE ai_explanations SET status = 'PROCESSING', created_at = CURRENT_TIMESTAMP WHERE result_id = ? AND status = 'PENDING'", id) == 1);
-            if (!Boolean.TRUE.equals(claimed)) continue;
-            JsonNode p = payload(id);
-            JsonNode response = null;
-            String reason = null;
-            try {
-                response = client.generate(id, p.path("input"));
-                validateResponse(response);
-                if ("FAILED".equals(response.path("validation").asText())) reason = response.path("failReason").asText();
-            } catch (InsightEngineClient.Failure e) { reason = e.reason(); }
-            catch (RuntimeException e) { reason = "VALIDATION_FAILED"; response = null; }
-            finish(id, p, response, reason);
+            if (Boolean.TRUE.equals(claimed)) processClaimed(id);
         }
     }
+
+    // Called only after a durable claim. The single-result path does not enable the global queue.
+    void processClaimed(long id) {
+        JsonNode p = payload(id);
+        JsonNode response = null;
+        String reason = null;
+        try {
+            response = client.generate(id, p.path("input"));
+            validateResponse(response);
+            if ("FAILED".equals(response.path("validation").asText())) reason = response.path("failReason").asText();
+        } catch (InsightEngineClient.Failure e) { reason = e.reason(); }
+        catch (RuntimeException e) { reason = "VALIDATION_FAILED"; response = null; }
+        finish(id, p, response, reason);
+    }
+
+    void expireClaimed(long id) { finish(id, payload(id), null, "LLM_TIMEOUT"); }
 
     private JsonNode payload(long id) {
         return EngineJobs.readDatabaseJson(mapper, jdbc.queryForObject("SELECT request_payload FROM ai_explanations WHERE result_id = ?", String.class, id));

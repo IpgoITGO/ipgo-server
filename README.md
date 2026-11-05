@@ -708,3 +708,50 @@ AI의 큰 결과는 SQS wire900,000bytes 제한 안에서 gzip/base64 v2로 받�
 격리 검사: `python3 -m unittest discover -s scripts/testing -p 'test_ecr_image.py' -v`.
 가짜 AWS CLI 응답으로 재사용/신규 빌드 판단·권한/통신 오류 차단·digest 변경·workflow 연결을 검사하며
 실제 AWS 배포 성공을 의미하지 않습니다. [ECR BatchGetImage 계약](https://docs.aws.amazon.com/AmazonECR/latest/APIReference/API_BatchGetImage.html).
+
+### 결과 698의 단건 AI 설명 재생성
+
+전체 자동 생성은 끈 채 기존 결과 698만 명시적으로 최대 1회 시도하는 운영 예외입니다.
+실행은 기본 비활성이며 `IPGO_INSIGHT_SINGLE_RESULT_ENABLED=true`일 때만 허용합니다.
+`IPGO_INSIGHT_ENABLED=false`, `IPGO_INSIGHT_WORKER_ENABLED=false`를 함께 유지해야 합니다.
+두 기능을 동시에 켜면 시작을 거부하며, dev workflow도 단건 활성화·별도 비용 승인과
+engine 연결 승인을 검사합니다. 대상 ID와 호출 한도는 요청·환경 변수로 바꿀 수 없습니다.
+
+- `GET /api/results/698/insight/regeneration`: 소유권·입력 복원·미사용 한도를 읽기 검사합니다.
+  성공 응답은 `resultId`, `enabled`, `remainingAttempts: 1`만 포함합니다. 비활성 상태에서도
+  사전 확인할 수 있으며 LLM을 호출하거나 시도를 예약하지 않습니다.
+- `POST /api/results/698/insight/regenerate`: Bearer 인증된 결과 소유자만 빈 본문으로 실행합니다.
+  요청 본문에 사실·다른 ID·재시도 옵션을 넣을 수 없습니다. 기존 Bearer/쿠키 인증·CSRF 정책은 바꾸지 않습니다.
+- 정상 완료 후 기존 `GET /api/results/698/insight`가 저장된 `AI` 문장을 반환합니다.
+  이미 `TABLE_ONLY`를 보여주던 화면은 재조회·새로고침으로 확인합니다. 화면의 자동 실행 버튼은 추가하지 않습니다.
+
+DB의 기존 계산·시나리오·입력 스냅샷에서 사실을 복원합니다. 위험 상태나 날짜·계산식 전환에
+필요한 근거가 없거나 서로 맞지 않으면 `409 INSIGHT_INPUT_UNAVAILABLE`로 호출 전에 중단합니다.
+실제 운영 결과 698의 복원 가능 여부는 배포 후 위 사전 확인에서 검증해야 하며, 합성 fixture
+검사 성공을 실제 데이터·모델 성공으로 보지 않습니다.
+
+기존 `ai_explanations` 행의 `output_path`에 `single-result/698/attempt-1`을 원자적으로 기록하고
+독립 transaction을 commit한 뒤 HTTP를 시도합니다. migration은 없습니다. 중복·동시 요청,
+재배포·재시작·타임아웃·저장 실패도 `409 INSIGHT_ATTEMPT_SPENT`이며 한도를 되살리지 않습니다.
+시도 뒤 실패하면 기본 문장으로 마감하고, 중단된 PROCESSING 행의 복구도 문장 마감만 수행합니다.
+이는 외부 처리의 exactly-once 보장이 아닙니다. claim 직후 중단되면 실제 호출은 0회일 수 있습니다.
+표식이 있는 행을 삭제하거나 DISABLED/PENDING으로 되돌려 재무장하면 안 됩니다.
+
+배포와 실제 유료 호출은 사용자에게 별도로 승인받습니다. dev 실행 입력은
+`single_result_insight_enabled=true`, `single_result_insight_approved=true`,
+`insight_enabled=false`, `insight_approved=false`, `insight_worker_enabled=false`입니다.
+사전 확인이 실패하면 POST를 보내지 않습니다. 복구 시에는 전체/단건 활성화를 끄고 표식을
+보존합니다. PROCESSING이 남았다면 단건 복구가 기본 문장으로 마감한 것을 확인한 후
+구버전 task로 되돌립니다. 유료 호출 후 DB 복원으로 표식을 지우는 작업은 별도 승인 대상입니다.
+
+로컬 검사는 `SingleInsightIntegrationTests`와 기존 Insight 검사들로 실행합니다.
+실제 FastAPI 검사기·FakeClient·폐기용 PostgreSQL 검사는 다음 명령을 사용합니다.
+외부 통신이 차단된 Docker network에서만 실행하며 OpenAI 키는 전달하지 않습니다.
+
+```bash
+IPGO_INSIGHT_TEST_GRADLE_HOME=/path/to/writable/prepared-gradle-cache \
+IPGO_INSIGHT_TEST_AI_IMAGE=local-ai-image \
+  ./scripts/testing/verify-insight-contract.sh /path/to/ipgo-ai
+```
+
+자세한 복원 규칙·한도와 API 오류는 [단건 생성 결정 기록](docs/decisions/0006-single-result-insight.md)을 따릅니다.

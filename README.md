@@ -112,12 +112,15 @@ PostgreSQL을 준비한 뒤 실행 환경에 아래 변수를 설정합니다. �
 | `SPRING_DATASOURCE_USERNAME` | DB 사용자 이름 |
 | `SPRING_DATASOURCE_PASSWORD` | DB 비밀번호 |
 | `SPRING_FLYWAY_ENABLED` | runtime과 migration 자격 증명을 분리할 때 runtime은 `false` |
-| `IPGO_JWT_SECRET` | 32바이트 이상의 무작위 키를 Base64로 인코딩한 JWT 서명 키. 모든 서버에서 동일한 키 사용 |
+| `IPGO_JWT_SECRET` | 32바이트 이상의 무작위 키를 Base64로 인코딩한 JWT 서명 키. 같은 환경에서 토큰을 발급·검증하는 서버끼리 공유하며 독립 로컬 DB는 로컬 전용 키 사용 |
 | `IPGO_AUTH_COOKIE_SECURE` | 기본 `true`. 로컬 HTTP 개발에서만 `false`, 배포에서는 HTTPS와 `true` 사용 |
 | `IPGO_UPLOAD_DATABASE_MAX_BYTES` | DB 원본 전체 상한. 기본/최대 268435456 bytes(256MiB), 양수의 더 작은 검증 한도만 허용 |
 | `IPGO_UPLOAD_DIR` | 원본·보관 정보 저장 폴더. 기본값은 실행 디렉터리의 `./storage/uploads` |
 
 현재 `.env` 파일을 자동으로 읽는 별도 설정은 없습니다. 터미널 또는 IDE의 실행 환경변수로 전달해야 합니다.
+
+JWT 키 누락으로 DB 초기화 뒤 서버가 종료되면 [로컬 JWT 설정·접근 절차](docs/development/local-jwt.md)를 따릅니다.
+독립된 로컬 DB에는 로컬 전용 키를 사용하고, 공유 개발 환경의 키 접근은 승인된 담당 경로로 요청합니다.
 
 새로 만든 빈 PostgreSQL로 실행할 때는 서버를 켜기 전에 DB 사용자(role)를 먼저 만들어야 합니다. 없으면 V13 migration이 `ipgo database roles are missing`으로 실패하고 서버가 시작 직후 종료됩니다(`bootRun`이 `BUILD SUCCESSFUL`로 바로 끝남). 관리자 계정으로 한 번만 실행합니다.
 

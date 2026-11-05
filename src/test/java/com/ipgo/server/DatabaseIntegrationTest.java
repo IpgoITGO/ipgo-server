@@ -6,6 +6,14 @@ import org.springframework.test.context.DynamicPropertySource;
 
 @SpringBootTest
 public abstract class DatabaseIntegrationTest {
+    @org.springframework.beans.factory.annotation.Autowired
+    private org.springframework.jdbc.core.JdbcTemplate matchingSchemaJdbc;
+
+    @org.junit.jupiter.api.BeforeEach
+    void receiptMatchingSchema() {
+        com.ipgo.server.support.UploadTestDatabase.receiptMatchingSchema(matchingSchemaJdbc);
+    }
+
     private static final String JWT_SECRET;
     static {
         byte[] key = new byte[32];

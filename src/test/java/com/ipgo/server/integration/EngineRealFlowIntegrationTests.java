@@ -49,8 +49,8 @@ class EngineRealFlowIntegrationTests {
         if ("true".equals(System.getenv("IPGO_ENGINE_LOCAL_POSTGRES"))) {
             // This opt-in is deliberately pinned to the disposable Docker network name.
             r.add("spring.datasource.url", () -> "jdbc:postgresql://ipgo-engine-e2e-118-test-db:5432/engine_test");
-            r.add("spring.datasource.username", () -> "engine_test");
-            r.add("spring.datasource.password", () -> "");
+            r.add("spring.datasource.username", () -> System.getenv().getOrDefault("IPGO_TEST_DB_USERNAME", "engine_test"));
+            r.add("spring.datasource.password", () -> System.getenv().getOrDefault("IPGO_TEST_DB_PASSWORD", ""));
         } else {
             r.add("spring.datasource.url", () -> "jdbc:h2:mem:engine-flow;MODE=PostgreSQL;DB_CLOSE_DELAY=-1");
         }
@@ -61,13 +61,15 @@ class EngineRealFlowIntegrationTests {
         r.add("ipgo.upload.directory", () -> root.toString());
     }
     @BeforeEach void schemaAndCleanup() {
-        jdbc.execute("""
-            CREATE TABLE IF NOT EXISTS engine_jobs (job_id VARCHAR(100) PRIMARY KEY, job_type VARCHAR(20) NOT NULL,
+        UploadTestDatabase.receiptMatchingSchema(jdbc);
+        if (jdbc.queryForObject("SELECT COUNT(*) FROM information_schema.tables WHERE LOWER(table_name) = 'engine_jobs'", Integer.class) == 0) jdbc.execute("""
+            CREATE TABLE engine_jobs (job_id VARCHAR(100) PRIMARY KEY, job_type VARCHAR(20) NOT NULL,
               target_id BIGINT NOT NULL, warehouse_id BIGINT NOT NULL, payload JSONB NOT NULL, status VARCHAR(20) NOT NULL,
               attempts INTEGER NOT NULL DEFAULT 0, next_attempt_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
               created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP, completed_at TIMESTAMP WITH TIME ZONE)
             """);
-        jdbc.execute("ALTER TABLE calculation_runs ADD COLUMN IF NOT EXISTS input_hash VARCHAR(64)");
+        if (jdbc.queryForObject("SELECT COUNT(*) FROM information_schema.columns WHERE LOWER(table_name) = 'calculation_runs' AND LOWER(column_name) = 'input_hash'", Integer.class) == 0)
+            jdbc.execute("ALTER TABLE calculation_runs ADD COLUMN input_hash VARCHAR(64)");
         jdbc.update("DELETE FROM engine_jobs");
         UploadTestDatabase.clear(jdbc);
     }
@@ -94,6 +96,15 @@ class EngineRealFlowIntegrationTests {
     private String failure(UploadFile u) {
         return mapper.writeValueAsString(Map.of("contractVersion", "1", "jobId", u.getJobId(),
                 "jobType", "CLEAN", "status", "FAILED", "error", Map.of("code", "INVALID_SOURCE")));
+    }
+    private void faultDdl(String sql) throws java.sql.SQLException {
+        if ("true".equals(System.getenv("IPGO_ENGINE_LOCAL_POSTGRES"))
+                && "ipgo_server".equals(System.getenv("IPGO_TEST_DB_USERNAME"))) {
+            // 최소 권한 서버 검사의 격리 Docker 고정 별칭에만 DDL 장애 fixture를 설치한다. 앱은 ipgo_server 권한을 유지한다.
+            try (var connection = java.sql.DriverManager.getConnection(
+                    "jdbc:postgresql://ipgo-engine-e2e-118-test-db:5432/engine_test", "ipgo_migrator", "");
+                    var statement = connection.createStatement()) { statement.execute(sql); }
+        } else jdbc.execute(sql);
     }
     private int count(String table) { return jdbc.queryForObject("SELECT COUNT(*) FROM " + table, Integer.class); }
 
@@ -167,7 +178,7 @@ class EngineRealFlowIntegrationTests {
     @Test void resultStorageFailureCanRetryTheSameMessageWithoutPartialOrDuplicateRows() throws Exception {
         var f = exclusionRun();
         String response = calculationSuccess(f.jobId(), List.of(validCalculation(f.normal())));
-        jdbc.execute("ALTER TABLE scenario_results ADD CONSTRAINT ck_test_result_retry CHECK (scenario_qty < 0)");
+        faultDdl("ALTER TABLE scenario_results ADD CONSTRAINT ck_test_result_retry CHECK (scenario_qty < 0)");
         try {
             assertThatThrownBy(() -> results.accept(response))
                     .isInstanceOf(org.springframework.dao.DataAccessException.class);
@@ -176,7 +187,7 @@ class EngineRealFlowIntegrationTests {
             assertThat(jobs.find(f.jobId()).status()).isEqualTo("PENDING");
             assertThat(calculationStatus.status(f.owner(), f.runId()).status()).isEqualTo("QUEUED");
         } finally {
-            jdbc.execute("ALTER TABLE scenario_results DROP CONSTRAINT ck_test_result_retry");
+            faultDdl("ALTER TABLE scenario_results DROP CONSTRAINT ck_test_result_retry");
         }
         results.accept(response);
         results.accept(response);
@@ -359,6 +370,24 @@ class EngineRealFlowIntegrationTests {
         assertThat(uploads.findById(second.getId()).orElseThrow().getStatus()).isEqualTo("FAILED");
         assertThat(count("products")).isZero();
     }
+    @Test void inboundMatchingCommitsBeforeCalculationSnapshotAndRemovesFutureReceipt() throws Exception {
+        long owner = user(); var u = upload(owner);
+        jdbc.update("UPDATE warehouses SET default_lead_time_days=5,default_review_cycle_days=7,default_order_unit_qty=1 WHERE id=?", u.getWarehouseId());
+        jdbc.update("INSERT INTO products(user_id,sku_barcode,sku_name) VALUES (?,'SKU-A','Test')", owner);
+        long product = jdbc.queryForObject("SELECT id FROM products WHERE user_id=?", Long.class, owner);
+        jdbc.update("INSERT INTO planned_receipts(product_id,warehouse_id,expected_on,quantity,status,created_at,updated_at) VALUES (?,?,?,5,'PENDING',?,CURRENT_TIMESTAMP)",
+                product, u.getWarehouseId(), DAY.plusDays(4), java.time.OffsetDateTime.parse("2026-08-31T00:00:00Z"));
+        var original = clean(u.getId());
+        var inbound = new CleaningResult(DAY, DAY, DAY, original.products(), original.inventoryUnits(),
+                List.of(new CleaningResult.UnitDay(u.getId(), "LOT-1", DAY, DAY, 0L, 5L, 0L, 0L, 5L, "test", 1)),
+                List.of(new CleaningResult.ProductDay(u.getId(), "SKU-A", DAY, 0L, 5L, 0L, 0L, 5L, true, null)), original.validation(), 7);
+        results.accept(success(u, inbound));
+        assertThat(jdbc.queryForObject("SELECT status FROM planned_receipts WHERE product_id=?", String.class, product)).isEqualTo("RECEIVED");
+        var calculate = jdbc.queryForObject("SELECT job_id FROM calculation_runs WHERE warehouse_id=?", String.class, u.getWarehouseId());
+        assertThat(jobs.find(calculate).payload().path("plannedReceipts").isEmpty()).isTrue();
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM receipt_matching_allocations", Integer.class)).isEqualTo(1);
+    }
+
     @Test void cleanEnqueuesCalculationAndWriterCommitsOnlyValidCompleteResults() throws Exception {
         long owner = user(); var u = upload(owner);
         jdbc.update("UPDATE warehouses SET default_lead_time_days=5, default_review_cycle_days=7, default_order_unit_qty=1 WHERE id=?", u.getWarehouseId());
@@ -510,7 +539,7 @@ class EngineRealFlowIntegrationTests {
     @Test void cleanAndCalculationEnqueueRollbackTogetherOnOutboxFailure() throws Exception {
         long owner = user(); var u = upload(owner);
         jdbc.update("UPDATE warehouses SET default_lead_time_days=5, default_review_cycle_days=7, default_order_unit_qty=1 WHERE id=?", u.getWarehouseId());
-        jdbc.execute("ALTER TABLE engine_jobs ADD CONSTRAINT test_deny_calculate CHECK (job_type <> 'CALCULATE')");
+        faultDdl("ALTER TABLE engine_jobs ADD CONSTRAINT test_deny_calculate CHECK (job_type <> 'CALCULATE')");
         try {
             assertThatThrownBy(() -> results.accept(success(u, clean(u.getId())))).isInstanceOf(RuntimeException.class);
             assertThat(count("products")).isZero();
@@ -519,7 +548,7 @@ class EngineRealFlowIntegrationTests {
             assertThat(jobs.find(u.getJobId()).status()).isEqualTo("PENDING");
             assertThat(uploads.findById(u.getId()).orElseThrow().getStatus()).isEqualTo("PROCESSING");
         } finally {
-            jdbc.execute("ALTER TABLE engine_jobs DROP CONSTRAINT test_deny_calculate");
+            faultDdl("ALTER TABLE engine_jobs DROP CONSTRAINT test_deny_calculate");
         }
     }
 

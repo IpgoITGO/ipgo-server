@@ -24,7 +24,8 @@ class PlannedReceiptRunTests {
         var warehouse = mock(Warehouse.class);
         when(warehouse.getId()).thenReturn(9L);
         when(warehouse.getUserId()).thenReturn(7L);
-        when(warehouses.lockDefault(7)).thenReturn(warehouse);
+        when(receipts.warehouseId(1L)).thenReturn(Optional.of(9L));
+        when(warehouseRepository.findByIdForUpdate(9L)).thenReturn(Optional.of(warehouse));
         when(warehouseRepository.findById(9L)).thenReturn(Optional.of(warehouse));
         var receipt = mock(PlannedReceipt.class);
         when(receipt.getWarehouseId()).thenReturn(9L);

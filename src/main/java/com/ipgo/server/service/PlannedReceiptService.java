@@ -61,7 +61,7 @@ public class PlannedReceiptService {
 
     @Transactional
     public Changed update(long userId, long receiptId, PlannedReceiptUpdateRequest request) {
-        var warehouse = warehouses.lockDefault(userId);
+        var warehouse = lockReceiptWarehouse(userId, receiptId);
         PlannedReceipt receipt = ownedReceipt(userId, receiptId);
         receipt.update(request.quantity(), request.expectedOn());
         Long runId = calculations.request(userId, warehouse.getId(), "RECEIPTS", false);
@@ -70,7 +70,7 @@ public class PlannedReceiptService {
 
     @Transactional
     public Long cancel(long userId, long receiptId) {
-        var warehouse = warehouses.lockDefault(userId);
+        var warehouse = lockReceiptWarehouse(userId, receiptId);
         ownedReceipt(userId, receiptId).cancel();
         return calculations.request(userId, warehouse.getId(), "RECEIPTS", false);
     }
@@ -82,6 +82,14 @@ public class PlannedReceiptService {
         Product product = products.findById(productId).orElseThrow(ProductException::notFound);
         if (!product.getUserId().equals(userId)) throw ProductException.forbidden();
         return product;
+    }
+
+    private Warehouse lockReceiptWarehouse(long userId, long receiptId) {
+        // 발주를 먼저 entity로 읽으면 잠금 대기 중 RECEIVED가 된 상태를 놓칠 수 있다.
+        long warehouseId = receipts.warehouseId(receiptId).orElseThrow(ProductException::notFound);
+        Warehouse warehouse = warehouseRepository.findByIdForUpdate(warehouseId).orElseThrow(ProductException::notFound);
+        if (!warehouse.getUserId().equals(userId)) throw ProductException.forbidden();
+        return warehouse;
     }
 
     // 취소한 발주는 없는 것으로 본다.

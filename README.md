@@ -134,7 +134,7 @@ psql -U <관리자> -d <database> -f database/bootstrap/create_roles.sql
 ### AWS DB one-off 작업 이미지
 
 `Dockerfile.database`는 애플리케이션 이미지와 분리된 DB 관리 전용 이미지입니다. `bootstrap`은
-최초 PostgreSQL 역할 생성과 비밀번호 설정, `bootstrap-original-reader`는 기존 계정을 바꾸지 않고 새 원본 조회 계정만 생성합니다. `migrate`는 Flyway V1~V15 적용과 이력 확인,
+최초 PostgreSQL 역할 생성과 비밀번호 설정, `bootstrap-original-reader`는 기존 계정을 바꾸지 않고 새 원본 조회 계정만 생성합니다. `migrate`는 Flyway V1~V16 적용과 이력 확인,
 `verify`는 Spring DML·AI 조회 권한과 금지 권한을 점검합니다. AWS에서는 각 명령을 별도 ECS
 one-off task로 실행하며 상시 서비스에서는 이 이미지를 사용하지 않습니다.
 
@@ -381,7 +381,8 @@ Bearer 인증이 없으면 401, 다른 회원 자료면 403, 없는 업로드면
 
 ```json
 {"uploadId":12,"status":"PROCESSING","periodStart":"2026-09-01","periodEnd":"2026-09-30",
- "asOfDate":null,"runId":null,"validation":null,"matchedReceipts":[],"error":null}
+ "asOfDate":null,"runId":null,"validation":null,"matchedReceipts":[],"error":null,
+ "receiptMatching":{"status":"NOT_EVALUATED","issues":[]}}
 ```
 
 DONE이면 `asOfDate`와 `validation`의 `checkedSkuCount`, `targetSkuCount`, `excludedSkus`가 채워집니다.
@@ -395,7 +396,9 @@ FAILED이면 `error.code`와 안전한 `error.message`를 반환합니다. 처�
 `IPGO_ENGINE_ENABLED=true`이면 새 업로드의 `CLEAN` 작업을 outbox에 저장해 SQS로 처리합니다.
 정제 결과 저장 뒤 계산 선행 조건이 충족되면 계산을 요청하고 U2의 `runId`로 상태를 조회합니다.
 엔진이 꺼져 있거나 계산 조건이 준비되지 않으면 `runId`는 null일 수 있습니다.
-입고 주기 제안·발주 입고 매칭의 별도 완료 조건은
+발주 자동 매칭은 V16의 사건·배정·판정 기록을 사용합니다. 같은 창고·상품·날짜의 유효 입고로 예정일순 전량 충족한 발주만 완료하고, 다른 날의 부분 입고는 합산하지 않습니다. 실제 배정은 `matchedReceipts`, 정정·부족·등록 당일 등의 확인 사유는 `receiptMatching`으로 반환합니다. 완료 발주 수정·취소는 `409 RECEIPT_RECEIVED`입니다. [정책·응답·적용과 복구](docs/decisions/0010-receipt-matching.md)를 따르며 운영 V16 적용은 별도 승인입니다.
+
+입고 주기 제안의 별도 완료 조건은
 [#26 저장 경계와 남은 계약](docs/decisions/0002-upload-cleaning-boundary.md), 현재 연결은
 [실제 정제·계산 연결](docs/decisions/0003-engine-job-connection.md)을 확인합니다.
 
@@ -458,7 +461,7 @@ S2·S3 모두 Bearer JWT가 필요하며 CSRF는 요구하지 않습니다. 기�
 | `PATCH /api/planned-receipts/{receiptId}` (R3) | `quantity`·`expectedOn` 중 보낸 칸만 수정. `NO_DATE`에 도착일을 넣으면 `PENDING` |
 | `DELETE /api/planned-receipts/{receiptId}` (R3) | 취소. `204`. 행은 지우지 않고 `CANCELLED`로 남기며, 이후 수정·취소는 `404` |
 
-R2·R3은 Bearer JWT가 필요하고, 다른 회원의 상품·발주는 `403`, 없는 상품·발주는 `404`입니다. 입고 자동 매칭 정책의 남은 범위는 #26에서 추적합니다. 등록·수정·취소 후 입력이 달라지면 계산을 요청합니다. 날짜 없는 발주도 설명용 입력에 포함하므로 새 계산 번호가 생길 수 있지만 미래 입고량에서는 제외합니다.
+R2·R3은 Bearer JWT가 필요하고, 다른 회원의 상품·발주는 `403`, 없는 상품·발주는 `404`입니다. 입고 자동 매칭과 확인 사유는 [#90 결정](docs/decisions/0010-receipt-matching.md)을 따릅니다. 입고 완료 발주의 수정·취소는 `409 RECEIPT_RECEIVED`로 거절합니다. 등록·수정·취소 후 입력이 달라지면 계산을 요청합니다. 날짜 없는 발주도 설명용 입력에 포함하므로 새 계산 번호가 생길 수 있지만 미래 입고량에서는 제외합니다.
 
 ### 계산 상태 (C2)
 
@@ -625,7 +628,7 @@ scripts/testing/verify-insight-contract.sh /path/to/ipgo-ai
 
 ## Database 변경과 복구
 
-이미 병합된 migration은 Flyway 이력을 보존하기 위해 수정하지 않습니다. 새 DB에서는 V1~V14를 순서대로 적용합니다. V4는 `warehouses`·`products`·`inventory_units`, V5는 `upload_files`, V6은 `replenishment_settings`, V7은 `planned_receipts`, V8은 `auth_sessions`·`refresh_tokens`, V9는 `calculation_runs`·`calculation_results`, V10은 일별 수불 2개 표, V11은 계산 출처·시나리오·백테스트·AI 인사이트 4개 표를 추가합니다. V12는 PostgreSQL tenant 무결성 trigger, V13은 FastAPI view와 역할별 권한을 적용하고, V14는 `engine_jobs`·입력 hash·정제 조회 view를 추가합니다. V15의 DB 원본 저장 전환(Server #77·AI #60)은 보류 상태입니다. 전체 관계와 변경 규칙은 [Database ERD v1](docs/database/erd-v1.md)에 있습니다. Hibernate는 스키마를 자동 수정하지 않고 검증만 수행합니다.
+이미 병합된 migration은 Flyway 이력을 보존하기 위해 수정하지 않습니다. 새 DB에서는 승인한 범위의 migration을 순서대로 적용합니다. #90 구현은 V16까지 필요하며 운영 적용은 별도 승인입니다. V4는 `warehouses`·`products`·`inventory_units`, V5는 `upload_files`, V6은 `replenishment_settings`, V7은 `planned_receipts`, V8은 `auth_sessions`·`refresh_tokens`, V9는 `calculation_runs`·`calculation_results`, V10은 일별 수불 2개 표, V11은 계산 출처·시나리오·백테스트·AI 인사이트 4개 표를 추가합니다. V12는 PostgreSQL tenant 무결성 trigger, V13은 FastAPI view와 역할별 권한을 적용하고, V14는 `engine_jobs`·입력 hash·정제 조회 view를 추가합니다. V15의 DB 원본 저장 전환(Server #77·AI #60)은 보류 상태입니다. V16은 입고 사건·배정·업로드 판정 기록을 추가하며 기존 원본 저장 모드를 바꾸지 않습니다. V16을 위해 전체 migration 경로를 실행하기 전 V15의 보류/실제 DB 이력을 함께 확인해야 합니다. 전체 관계와 변경 규칙은 [Database ERD v1](docs/database/erd-v1.md)에 있습니다. Hibernate는 스키마를 자동 수정하지 않고 검증만 수행합니다.
 
 초기 PostgreSQL은 administrator가 `database/bootstrap/create_roles.sql`을 먼저 실행한 뒤 `ipgo_migrator`로 Flyway를 적용합니다. 새 DB의 bootstrap SQL은 `ipgo_migrator`·`ipgo_server`·`ipgo_ai_reader`·`ipgo_ai_service_reader` 역할을 만들고 비밀번호는 설정하지 않습니다. 비밀번호는 repository·shell history·Terraform state에 남기지 않고 승인된 Secrets Manager 절차로 설정합니다. Spring runtime은 `ipgo_server`, FastAPI는 `ipgo_ai_reader`를 사용하며 runtime에서는 `SPRING_FLYWAY_ENABLED=false`로 migration 자격 증명을 분리합니다.
 
@@ -699,7 +702,7 @@ DB commit이 끝난 뒤에만 결과 메시지를 삭제하며 같은 jobId의 �
 날짜 없는(`NO_DATE`) 발주는 계산 요청의 `noDateReceipts: [{productId, quantity}]`로 따로 보냅니다(#86). 엔진은 수량 계산에 쓰지 않고, AI 인사이트가 "도착 예정일 없는 발주 N개는 계산에 넣지 않음"을 알려 줄 때만 씁니다. 날짜 없는 발주를 추가·취소하면 입력이 달라져 새 계산을 만듭니다.
 선택한 자료에서 검산 제외된 활성 상품은 이번 계산에서도 제외하며 원래 제외 사유를 보존합니다.
 비활성 상품이 과거 업로드의 검산 제외 목록에 남아 있어도 새 계산 snapshot에는 포함하지 않아 정상 상품의 결과 저장을 막지 않습니다.
-업로드 검증 리포트와 과거 실행은 그대로 보존하며, 미확정 입고 매칭 정책은 새로 추측하지 않습니다.
+업로드 검증 리포트와 과거 실행은 그대로 보존하며, 입고 매칭은 [#90 확정 구현 기준](docs/decisions/0010-receipt-matching.md)을 따릅니다.
 
 업로드 결과의 `runId`와 저장 응답의 `runId`로 C2 계산 상태를 확인합니다. 가장 최근 실행이 같은
 입력이고 QUEUED/RUNNING/DONE일 때만 재사용합니다. 조건·발주가 바뀌었다가 이전 값으로 돌아오거나

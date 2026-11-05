@@ -31,16 +31,18 @@ public class UploadRecordService {
     private final UploadFileRepository uploads;
     private final WarehouseRepository warehouseRepository;
     private final EngineJobs engineJobs;
+    private final ReceiptMatchingService matching;
     private final org.springframework.jdbc.core.JdbcTemplate jdbc;
 
     public UploadRecordService(UploadStorage storage, WarehouseService warehouses, UploadFileRepository uploads,
-            WarehouseRepository warehouseRepository, EngineJobs engineJobs, org.springframework.jdbc.core.JdbcTemplate jdbc) {
+            WarehouseRepository warehouseRepository, EngineJobs engineJobs, org.springframework.jdbc.core.JdbcTemplate jdbc, ReceiptMatchingService matching) {
         this.storage = storage;
         this.warehouses = warehouses;
         this.uploads = uploads;
         this.warehouseRepository = warehouseRepository;
         this.engineJobs = engineJobs;
         this.jdbc = jdbc;
+        this.matching = matching;
     }
 
     @Transactional
@@ -103,8 +105,9 @@ public class UploadRecordService {
         }
         UploadResult result = UploadResult.from(upload);
         var runIds = jdbc.queryForList("SELECT run_id FROM run_source_files WHERE upload_file_id = ? ORDER BY run_id DESC FETCH FIRST 1 ROWS ONLY", Long.class, uploadId);
+        var matchReport = matching.report(uploadId);
         return new UploadResult(result.uploadId(), result.status(), result.periodStart(), result.periodEnd(),
-                result.asOfDate(), runIds.isEmpty() ? null : runIds.getFirst(), result.validation(), result.matchedReceipts(), result.error());
+                result.asOfDate(), runIds.isEmpty() ? null : runIds.getFirst(), result.validation(), matchReport.matchedReceipts(), result.error(), matchReport.receiptMatching());
     }
 
     // reason이 SAME_PERIOD면 화면이 덮어쓰기 확인을 띄우고, SAME_FILE이면 덮어쓰기 없이 안내만 한다.

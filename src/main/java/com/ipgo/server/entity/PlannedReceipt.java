@@ -14,7 +14,7 @@ import lombok.Getter;
 import lombok.NoArgsConstructor;
 
 // 기존 발주 물량. 도착 예정일이 있으면 PENDING, 없으면 NO_DATE로 시작한다.
-// RECEIVED(수불부 입고 확인)와 OVERDUE(기준일이 지났는데 입고 없음)는 정제 연동 뒤 판정한다.
+// RECEIVED는 정제 입고 매칭으로만 전환한다. OVERDUE 판정은 #91 범위다.
 @Entity
 @Table(name = "planned_receipts")
 @Getter
@@ -64,6 +64,7 @@ public class PlannedReceipt {
 
     // 값이 null인 칸은 바꾸지 않는다. 도착일을 새로 넣으면 계산에 반영된다.
     public void update(Long quantity, LocalDate expectedOn) {
+        requireMutable();
         if (quantity != null) this.quantity = quantity;
         if (expectedOn != null) {
             this.expectedOn = expectedOn;
@@ -73,8 +74,26 @@ public class PlannedReceipt {
     }
 
     public void cancel() {
+        requireMutable();
         this.status = CANCELLED;
         this.updatedAt = Instant.now();
+    }
+
+    public boolean isReceived() { return "RECEIVED".equals(status); }
+
+    public boolean isMatchable() {
+        return expectedOn != null && (PENDING.equals(status) || "OVERDUE".equals(status));
+    }
+
+    public void receive(LocalDate date) {
+        if (!isMatchable()) throw new IllegalStateException("Receipt is not matchable");
+        this.status = "RECEIVED";
+        this.receivedOn = java.util.Objects.requireNonNull(date);
+        this.updatedAt = Instant.now();
+    }
+
+    private void requireMutable() {
+        if (isReceived()) throw com.ipgo.server.exception.ProductException.receiptReceived();
     }
 
     public boolean isCancelled() {

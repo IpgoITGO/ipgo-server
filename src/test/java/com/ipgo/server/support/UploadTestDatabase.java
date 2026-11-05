@@ -11,7 +11,19 @@ public final class UploadTestDatabase {
         return jdbc.queryForObject("SELECT id FROM users WHERE email = ?", Long.class, email);
     }
 
+    public static void receiptMatchingSchema(JdbcTemplate jdbc) {
+        // 기존 harness의 V11 뒤에 portable 정본 V16을 적용한다. V12~15는 별도 PG 전용 검사 대상이다.
+        if (jdbc.queryForObject("SELECT COUNT(*) FROM information_schema.tables WHERE LOWER(table_name) = 'receipt_matching_events'", Integer.class) == 0) {
+            new org.springframework.jdbc.datasource.init.ResourceDatabasePopulator(
+                    new org.springframework.core.io.ClassPathResource("db/migration/V16__create_receipt_matching.sql"))
+                    .execute(java.util.Objects.requireNonNull(jdbc.getDataSource()));
+        }
+    }
+
     public static void clear(JdbcTemplate jdbc) {
+        jdbc.update("DELETE FROM receipt_matching_reports");
+        jdbc.update("DELETE FROM receipt_matching_allocations");
+        jdbc.update("DELETE FROM receipt_matching_events");
         jdbc.update("DELETE FROM ai_explanations");
         jdbc.update("DELETE FROM backtest_metrics");
         jdbc.update("DELETE FROM scenario_results");

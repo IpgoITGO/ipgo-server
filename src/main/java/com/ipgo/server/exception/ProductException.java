@@ -15,6 +15,10 @@ public class ProductException extends RuntimeException {
     public HttpStatus status() { return status; }
     public String code() { return code; }
 
+    public static ProductException receiptReceived() {
+        return new ProductException(HttpStatus.CONFLICT, "RECEIPT_RECEIVED", "입고 완료한 발주는 수정하거나 취소할 수 없어요. 입고 기록을 확인해 주세요.");
+    }
+
     public static ProductException notFound() {
         return new ProductException(HttpStatus.NOT_FOUND, "NOT_FOUND", "대상을 찾을 수 없습니다.");
     }

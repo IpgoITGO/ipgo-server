@@ -1,0 +1,84 @@
+# 수불 입고와 기존 발주 자동 매칭 (#90)
+
+- 결정: 2026-11-05 사용자에게 제시한 네 정책에 대한 후속 진행 지시를 기준으로 로컬 구현.
+- 기준 코드: dev `8098799689921b878c68a41d185fba4e88de25b1`.
+- 이 문서는 저장소의 과거 미확정 제안을 대체하는 이번 구현 기준이다. 팀원 동의·운영 반영을 완료했다고 표시하지 않는다.
+
+## 정책과 경계
+
+1. 입고 사건은 **창고·상품·수불 발생일(stockDate)** 하나다. 같은 날의 LOT별 inboundQty 합계를 상품 일별 수불과 대조하고, 유효 관측이며 검산 제외되지 않은 날만 사용한다. LOT 최초 입고일(receivedOn), 기초재고, 조정량은 사건 날짜나 입고량을 대신하지 않는다.
+2. 도착 예정일 → 등록 시각 → ID 순으로 발주를 정렬한다. 한 날짜의 잔량으로 전량 충족하는 발주만 RECEIVED로 바꾼다. 첫 부족 발주에서 그 날짜의 배정을 멈춘다. 잔량은 다음 날짜로 이월하지 않고, 서로 다른 날의 부분 입고도 합산하지 않는다. 100/50 발주에 160이면 둘 다 완료, 120이면 첫 발주만 완료, 60이면 둘 다 유지한다.
+3. 업무 시간대는 Asia/Seoul이다. 입고일은 발주 등록일의 다음 날 이후여야 한다. 등록 당일은 선후를 모르므로 확인 대상으로 남긴다. 예정일 전 조기 입고는 허용한다. NO_DATE/CANCELLED/RECEIVED는 대상에서 제외하며, PENDING 및 날짜가 있는 OVERDUE만 연결한다. OVERDUE 자동 판정 자체는 #91이다.
+4. 같은 사건은 uploadFileId와 독립적으로 식별한다. 동일 수량·유효성의 재업로드는 새 배정을 하지 않는다. 미배정 사건만 수량/유효성 변경 시 다시 평가한다. 이미 배정한 사건의 수량/유효성이 바뀌거나 상품/날짜가 사라지면 기존 완료·배정을 보존하고 SOURCE_CHANGED로 표시한다. 원래 값으로 돌아와도 확인 필요는 유지한다. 자동 취소·정정 복구·수동 확정 API는 만들지 않는다.
+
+새 revision이 월 자료 끝을 줄이거나 상품을 누락해도 해당 월의 기존 사건을 모두 대조한다. 최신 revision보다 늦게 도착한 과거 결과는 정제 이력만 저장하고 매칭하지 않는다. 새 revision의 처리 중/실패만으로 과거 배정을 취소하지 않는다. 과거 데이터를 일괄 재처리하지 않으며 새로 정제 완료하는 업로드부터 동작한다.
+
+## 저장과 동시성
+
+V16은 기존 데이터 변경 없이 다음 세 테이블과 범위 FK용 UNIQUE 제약을 추가한다.
+
+- receipt_matching_events: 논리적 입고 사건, 기준 수량/유효성, 근거 업로드, 정정 확인 필요 여부.
+- receipt_matching_allocations: 발주별 전량 배정. receipt_id를 기본키로 두어 같은 발주를 두 사건에 배정하지 않는다. 사건·발주의 창고/상품이 같아야 하며 사건의 상품/창고 소유자도 FK로 일치시킨다.
+- receipt_matching_reports: 업로드별 matchedReceipts와 확인 사유의 불변 snapshot. 이름이 바뀌거나 후속 revision이 처리돼도 과거 응답을 다시 만들지 않는다.
+
+정제의 기존 창고→업로드 잠금을 재사용한다. 상품·수불·배정·발주 완료·판정 보고서가 한 transaction이고, 기존 EngineResults는 그 뒤 계산 snapshot을 만든다. 발주 완료는 미래 예정 입고량에서 제외된다. 저장 실패면 모두 rollback하며 ACK는 commit 뒤에만 한다. 발주 수정·취소는 발주의 실제 창고 ID만 먼저 읽고 그 창고를 잠근 뒤 최신 발주 entity를 조회한다. 기본 창고와 다르더라도 올바른 경계로 직렬화하며, 완료 발주는 409 RECEIPT_RECEIVED로 거절한다.
+
+## U2와 호환성
+
+기존 matchedReceipts 항목(receiptId/skuName/quantity/receivedOn/status)에 실제 배정을 반환한다. receivedOn은 해당 사건의 stockDate다. 같은 입고의 후속 revision에도 기존 배정을 연결한다.
+
+추가 필드 receiptMatching은 {status, issues:[{productId,stockDate,reason}]}이다.
+
+| status | 의미 |
+|---|---|
+| NOT_EVALUATED | 처리 중·실패·기존 업로드 등 판정 기록 없음 |
+| SUPERSEDED | 더 최신 revision이 있어 입고 매칭 생략 |
+| EVALUATED | 자동 판정 완료, 현재 보고서의 확인 사유 없음 |
+| REVIEW_REQUIRED | 아래 사유로 확인 필요. 정제 자체는 DONE일 수 있음 |
+
+| reason | 의미 |
+|---|---|
+| SOURCE_CHANGED | 이미 배정한 원본의 수량/유효성/존재가 달라짐. 자동 재배정하지 않음 |
+| INVALID_OBSERVATION | 관측 무효·검산 제외·LOT와 상품 입고 합계 불일치 |
+| REGISTRATION_DAY | 등록 당일 입고여서 자동 판정 제외 |
+| NO_EXPECTED_DATE | 관련 발주에 예정일이 없어 자동 판정 제외 |
+| INSUFFICIENT_QUANTITY | 선순위 발주 전량을 충족하지 못함 |
+| PREVIOUSLY_EVALUATED | 동일 원본은 이미 평가됨. 발주 수정만으로 남은 수량을 새로 배정하지 않음 |
+
+API 필드 추가와 실제 matchedReceipts 채움은 기존 클라이언트 형식을 유지한다. 신규 확인 사유의 화면 표현·수동 조정 UX는 이번 서버 구현에 포함하지 않는다. 확인 필요는 계산 실패나 입고 미발생을 뜻하지 않는다. 과거 U2 snapshot은 당시 판정이며 현재 revision의 보고서를 함께 확인한다.
+
+## 적용과 복구
+
+- **운영 적용은 별도 승인**이다. V16 적용 전에는 이 코드를 배포하지 않는다. 현재 배포의 Flyway OFF나 V15/DB 원본 전환 보류는 변경하지 않았다. 이번 V16은 원본 저장 모드를 바꾸지 않는다.
+- database-task의 target/완료 확인은16으로 동반 갱신했다. 실행 시 V15도 포함되므로 운영 이력/승인 범위를 대조해야 한다. 새 UNIQUE 제약 생성은 기존 테이블 잠금을 수반하므로 운영창에서 검토한다.
+- 적용 전 DB snapshot과 기존 발주 상태를 보존해야 한다. 코드 rollback만으로 이미 완료한 발주가 PENDING으로 돌아가지는 않는다. 구버전은 RECEIVED 수정/취소 보호가 없으므로 배정 발생 후 무검토 구버전 복귀는 금지한다. 쓰기/정제 처리를 중지하고 보호 코드를 유지하는 복구 또는 승인된 배정별 복구를 선택한다.
+- 원본·배정·이전 revision을 삭제하지 않는다. 공유DB migration/운영 배포/과거 자료 재처리는 이번 실행에서 수행하지 않는다.
+
+## 검증 출처
+
+로컬 합성 fixture의 날짜/수량을 사용하는 검증이다. H2와 폐기용 PostgreSQL 실행 결과는 작업 상태 문서에 별도로 기록한다. 테스트 DB의 직접 날짜 설정은 경계 검증용이며 실제 업무/운영 관측이 아니다. 실제 SQS·고객 자료·브라우저 효과는 이 검사로 검증했다고 표시하지 않는다.
+
+
+재현 명령(미리 준비한 Java21/PostgreSQL16/Flyway 이미지·Gradle cache 사용):
+
+```bash
+IPGO_MATCHING_TEST_GRADLE_HOME=/path/to/prepared-gradle-cache \
+  bash scripts/testing/verify-receipt-matching.sh
+```
+
+이 검사는 외부 통신이 없는 임시 Docker network에 전체 V1~V16을 적용하고 서버 역할로 통합 검사를 실행한 뒤 생성한 DB/network만 제거한다. 기존 서비스·운영 자격증명·호스트 포트는 사용하지 않는다.
+
+
+### 2026-11-05 로컬 검증 결과
+
+- Java21 전체 H2: 392건 중388통과·4생략, 실패/오류0. 생략은 실제 FastAPI/AI fixture를 별도 opt-in으로 요구하는 기존4건이다. 실행 JAR 생성과 매칭 class/V16 포함을 확인했다.
+- 테스트 도구의 마지막 호환 보완 뒤 EngineRealFlow19건·PlannedReceiptRun2건을 H2에서 재검증해21건 모두 통과했다. 위 전체 검사와 겹치므로 고유 사례를 추가 합산하지 않는다.
+- 폐기용 PostgreSQL16.11 전체 V1~V16에서 서버 역할로 관련 통합63건 통과·실패/오류/생략0. 새 매칭19건, 정제·발주·U2·계산 snapshot 연결의 기존/보강 검사를 포함한다. 실제 SQS 장애·고객 업무 흐름 검증은 아니다.
+- PostgreSQL 전체 migration/소유자·창고·상품 범위 FK/배정 중복 거부/AI 접근 차단 검사 통과. DB 작업 이미지의 V1~V16 적용·이력·런타임 권한 검사도 통과했다.
+- 배포 스크립트 단위43건과 shell 문법·git diff 검사 통과. 외부 배포나 CI 실행 결과로 표시하지 않는다.
+
+최초 실패도 보존했다. 첫 H262건 중18건은 별도 엔진 harness의 V16 초기화 누락,1건은 미입고 발주가 남아 있는데 EVALUATED를 기대한 assertion 오류였다. PG 초기 시도는 서버 역할로 Flyway 이력을 읽으려 해 startup 실패했고, 미리 migration을 적용한 검사의 앱 Flyway만 껐다. 다음 시도의 DDL 장애 주입2건은 서버 역할에 소유자 권한이 없어 실패해, 고정된 폐기용 DB에서 fixture 설치/제거에만 migrator를 사용했다. 기존 owner-role harness는 원래 경로를 유지한다.
+
+병렬 JVM의 공유 Gradle journal 잠금 timeout은 의존성 cache를 분리해 해결했다. 별도 관찰 프로세스143 중단 뒤 같은 실행 컨테이너의 로그를 재수집했으며 컨테이너 exit0/docker wait0와 최종 XML63건을 대조했다. 관찰 중단을 앱 실패나 새 성공 실행으로 바꾸지 않는다. 생성한 임시 DB/network는 제거했다.
+
+공유DB 적용·실서비스 신규 실행·프론트 확인 사유 UI·수동 정정 API·GitHub 공유/이슈 종료는 미실행이다. 기존 V15/DB 원본 전환 보류와 운영 승인 경계는 유지한다.

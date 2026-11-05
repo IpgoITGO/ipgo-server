@@ -1,5 +1,7 @@
 # #26 정제 결과 저장·U2 조회 1차 구현
 
+> 아래는 2026-10-30 당시 기록이다. #90의 이번 입고 매칭 구현 기준은 [0010](0010-receipt-matching.md)을 따른다. 기존 미확정 제안과 당시 검증 한계는 이력으로 보존한다.
+
 - 상태: 서버 내부 저장 경계 구현, 서비스 간 전송 계약은 미확정
 - 확인일: 2026-10-30
 - 관련: [IPGO-80](https://ehwiya.atlassian.net/browse/IPGO-80), [IPGO-69](https://ehwiya.atlassian.net/browse/IPGO-69), [server #26](https://github.com/IpgoITGO/ipgo-server/issues/26)

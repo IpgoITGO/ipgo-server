@@ -92,7 +92,7 @@ migration_count="$(docker exec "${database_container}" \
 table_count="$(docker exec "${database_container}" \
   psql -U ipgo_migrator -d ipgo -Atc \
   "SELECT COUNT(*) FROM pg_tables WHERE schemaname = 'public' AND tablename <> 'flyway_schema_history'")"
-if [[ "${migration_count}" != "15" || "${table_count}" != "20" ]]; then
+if [[ "${migration_count}" != "16" || "${table_count}" != "23" ]]; then
   echo "unexpected schema: migrations=${migration_count}, tables=${table_count}" >&2
   exit 1
 fi
@@ -155,5 +155,21 @@ expect_denied ipgo_server "UPDATE products SET user_id = 2 WHERE id = 100"
 
 docker exec "${database_container}" psql -v ON_ERROR_STOP=1 -U ipgo_server -d ipgo \
   -c "UPDATE products SET sku_name = 'updated by server' WHERE id = 100" >/dev/null
+
+# V16: 실제 서버 역할의 쓰기, 중복 발주 배정 거부, 소유자/창고/상품 범위 FK, AI 접근 차단.
+docker exec -i "${database_container}" psql -v ON_ERROR_STOP=1 -U ipgo_server -d ipgo >/dev/null <<'SQL'
+INSERT INTO receipt_matching_events(id,user_id,warehouse_id,product_id,stock_date,quantity,valid_observation,source_upload_file_id)
+VALUES (9000,1,10,100,DATE '2026-10-01',5,TRUE,2000);
+INSERT INTO receipt_matching_allocations(receipt_id,event_id,warehouse_id,product_id,quantity,sku_name)
+SELECT MIN(id),9000,10,100,5,'owner product' FROM planned_receipts;
+INSERT INTO receipt_matching_reports(upload_file_id,report) VALUES (2000,'{}'::jsonb);
+SQL
+expect_denied ipgo_server "INSERT INTO receipt_matching_events(user_id,warehouse_id,product_id,stock_date,quantity,valid_observation,source_upload_file_id) VALUES (2,10,100,DATE '2026-10-02',5,TRUE,2000)"
+expect_denied ipgo_server "INSERT INTO receipt_matching_events(user_id,warehouse_id,product_id,stock_date,quantity,valid_observation,source_upload_file_id) VALUES (1,20,100,DATE '2026-10-02',5,TRUE,2000)"
+expect_denied ipgo_server "INSERT INTO receipt_matching_allocations(receipt_id,event_id,warehouse_id,product_id,quantity,sku_name) SELECT MIN(id),9000,10,100,5,'duplicate' FROM planned_receipts"
+expect_denied ipgo_server "UPDATE receipt_matching_allocations SET warehouse_id=20 WHERE event_id=9000"
+expect_denied ipgo_ai_reader "SELECT * FROM receipt_matching_events"
+expect_denied ipgo_ai_reader "SELECT * FROM receipt_matching_allocations"
+expect_denied ipgo_ai_service_reader "SELECT * FROM receipt_matching_reports"
 
 echo "PostgreSQL migrations, tenant integrity, and database roles verified."

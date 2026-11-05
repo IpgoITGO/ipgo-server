@@ -43,10 +43,11 @@ public class UploadCleaningService {
     private final ProductRegistrationService registration;
     private final JdbcTemplate jdbc;
     private final Validator validator;
+    private final ReceiptMatchingService matching;
 
     public UploadCleaningService(UploadFileRepository uploads, WarehouseRepository warehouses,
             ProductRepository products, InventoryUnitRepository units, ProductRegistrationService registration,
-            JdbcTemplate jdbc, Validator validator) {
+            JdbcTemplate jdbc, Validator validator, ReceiptMatchingService matching) {
         this.uploads = uploads;
         this.warehouses = warehouses;
         this.products = products;
@@ -54,6 +55,7 @@ public class UploadCleaningService {
         this.registration = registration;
         this.jdbc = jdbc;
         this.validator = validator;
+        this.matching = matching;
     }
 
     @Transactional
@@ -121,6 +123,7 @@ public class UploadCleaningService {
         upload.complete(result.periodEnd(), new UploadProcessingReport(result.asOfDate(),
                 new UploadProcessingReport.Validation(result.validation().checkedSkuCount(),
                         result.validation().targetSkuCount(), excluded), result.estimatedReviewCycleDays(), null));
+        matching.match(upload, userId, result, productMap);
         return Outcome.APPLIED;
     }
 

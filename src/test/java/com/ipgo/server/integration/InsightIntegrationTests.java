@@ -63,7 +63,8 @@ class InsightIntegrationTests extends DatabaseIntegrationTest {
                 .andExpect(jsonPath("mode").value("FIXED"))
                 .andExpect(jsonPath("isFallback").value(false))
                 .andExpect(jsonPath("text").value("이 상품은 권장 입고량을 계산하지 못했습니다. 사유: 판매한 날(유효 관측일)이 7일보다 적어요."))
-                .andExpect(jsonPath("generatedAt").doesNotExist());
+                .andExpect(jsonPath("generatedAt").doesNotExist())
+                .andExpect(jsonPath("failReason").doesNotExist());
         insight(userId, excluded).andExpect(jsonPath("text")
                 .value("이 상품은 재고 기록 검산이 맞지 않아 이번 계산에서 제외했습니다. 사유: 재고 숫자가 맞지 않아요."));
         insight(userId, reupload).andExpect(jsonPath("text")
@@ -107,10 +108,12 @@ class InsightIntegrationTests extends DatabaseIntegrationTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("mode").value("AI"))
                 .andExpect(jsonPath("isFallback").value(false))
+                .andExpect(jsonPath("failReason").doesNotExist())
                 .andExpect(jsonPath("text").value("200개를 넣으면 다음 입고 때 40개가 남습니다."))
                 .andExpect(jsonPath("generatedAt").value(endsWith("+09:00")));
         insight(userId, fallback).andExpect(jsonPath("mode").value("FIXED"))
-                .andExpect(jsonPath("isFallback").value(true));
+                .andExpect(jsonPath("isFallback").value(true))
+                .andExpect(jsonPath("failReason").value("LLM_TIMEOUT"));
         insight(userId, notCalled).andExpect(jsonPath("mode").value("FIXED"))
                 .andExpect(jsonPath("isFallback").value(false));
         insight(userId, tableOnly).andExpect(jsonPath("mode").value("TABLE_ONLY"))
@@ -122,6 +125,41 @@ class InsightIntegrationTests extends DatabaseIntegrationTest {
                 .andExpect(jsonPath("text").doesNotExist());
         insight(userId, generating).andExpect(status().isAccepted())
                 .andExpect(jsonPath("status").value("GENERATING"));
+    }
+
+    @Test
+    void exposesOnlySafeFailureCodesAndPreservesInternalDiagnosis() throws Exception {
+        long userId = newUser();
+        for (String code : List.of("LLM_ERROR", "LLM_TIMEOUT", "VALIDATION_FAILED", "VALUE_MISMATCH",
+                "LLM_NOT_CONFIGURED", "INVALID_INPUT", "INPUT_UNAVAILABLE")) {
+            long id = result(userId, "OK", null);
+            explanation(id, "TEMPLATE", code, "기본 문장입니다.");
+            insight(userId, id).andExpect(status().isOk())
+                    .andExpect(jsonPath("isFallback").value(true))
+                    .andExpect(jsonPath("failReason").value(code));
+        }
+        long unknown = result(userId, "OK", null);
+        explanation(unknown, "NONE", "INTERNAL_TRANSPORT_DETAIL", null);
+        insight(userId, unknown).andExpect(status().isOk())
+                .andExpect(jsonPath("mode").value("TABLE_ONLY"))
+                .andExpect(jsonPath("isFallback").value(true))
+                .andExpect(jsonPath("failReason").value("LLM_ERROR"));
+        org.assertj.core.api.Assertions.assertThat(jdbc.queryForObject(
+                "SELECT reason_code FROM ai_explanations WHERE result_id=?", String.class, unknown))
+                .isEqualTo("INTERNAL_TRANSPORT_DETAIL");
+    }
+
+    @Test
+    void doesNotExposeFailureReasonForDisabledOrSuccessfulExplanation() throws Exception {
+        long userId = newUser();
+        long disabled = result(userId, "OK", null);
+        explanation(disabled, "NONE", "LLM_DISABLED", null);
+        insight(userId, disabled).andExpect(jsonPath("isFallback").value(false))
+                .andExpect(jsonPath("failReason").doesNotExist());
+        long successful = result(userId, "OK", null);
+        explanation(successful, "LLM", "INTERNAL_TRANSPORT_DETAIL", "정상 문장입니다.");
+        insight(userId, successful).andExpect(jsonPath("mode").value("AI"))
+                .andExpect(jsonPath("failReason").doesNotExist());
     }
 
     @Test

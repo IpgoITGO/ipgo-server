@@ -15,7 +15,7 @@ AI/Client 담당자의 새 승인으로 기록하지 않는다. API 명세서4�
 | 수명 | 새 계산은 새 결과/설명 행을 만들며 이전 결과를 소급 수정하지 않음 | 자동 TTL·과거 DISABLED 일괄 재생성 없음. 보관 정책 일반화를 뜻하지 않음 |
 | 값 대입·대조 | Spring이 표시값·자리 표시자·비교 방향을 검사하고 값을 대입. FastAPI는 초안의 형식/필수 이름/숫자 노출을 검사 | 입력에는 placeholder 이름 목록만 전달. 화면 값 dict를 LLM에 전송하지 않음 |
 | 내부 응답 | FastAPI는 validation/draft/failReason/promptVersion/latencyMs/costUsd 반환 | mode/templateVersion/failDetail을 반환하지 않음. Spring reason_code 및 versions의 template=spring-1/prompt에 저장. 상세 원문을 공개 오류에 싣지 않음 |
-| 공개 K4 | GET은 저장된 설명 조회이며 생성 호출 endpoint가 아님 | resultId/mode/isFallback/text/generatedAt. mode는 AI/FIXED/TABLE_ONLY, DB LLM/TEMPLATE/NONE과 대응. text는 단일 문자열 또는 null |
+| 공개 K4 | GET은 저장된 설명 조회이며 생성 호출 endpoint가 아님 | resultId/mode/isFallback/text/generatedAt 및 이번 PR에서 추가하는 failReason. mode는 AI/FIXED/TABLE_ONLY, DB LLM/TEMPLATE/NONE과 대응. text는 단일 문자열 또는 null |
 | NO_DATE | noDateReceipts로 전달하며 입고수량 합산에서 제외 | 설명의 사실/boolean에만 사용. 예정일을 임의로 오늘로 바꾸지 않음 |
 | 호출 대상 | 정상 OK이고 생성 입력이 준비된 결과만 승인 gate 범위에서 호출 | 계산불가/불필요/EXCLUDED/REUPLOAD_REQUIRED는 Spring의 고정 문장 또는 표시 생략. 미산출 위험을0/표본부족으로 조작하지 않음 |
 | 기본 시나리오 | GET /api/results/{resultId}/scenarios | 기본 P80/P100/P120와 저장 CUSTOM. 권장0이면 기본 비율 목록이 비어 있을 수 있음 |
@@ -53,13 +53,13 @@ Server25 종료 전에는 공동 확인과 API 명세서 반영을 확인해야 
 ## 2026-11-05 서버 인수 검토와 공동 확인 잔여
 
 검토 기준은 기존 Spring 책임 합의, Server b66bc8a 구현, Client의 응답 변환과 AI44의 U1~U6이다.
-현행 계약을 유지하는 안을 검토했으며 새로운 API 필드·런타임 변경은 추가하지 않았다.
+현행 계약을 유지하는 안을 검토했으며 사용자 후속 결정으로 이번 PR에서 공개 failReason을 추가한다. 기존 배포 b66bc8a에는 이 필드가 없으며 병합·배포·실환경 확인은 별도다.
 새 계약을 구현한 것처럼 기록하지 않고 기존 구현·실측과 문서 반영 여부를 나눠 판단한다.
 
 | 항목 | 서버 인수 검토 결과 | 남은 공동 작업 |
 |---|---|---|
 | U1 상태 이름 | 공개 AI/FIXED/TABLE_ONLY, 내부 저장 LLM/TEMPLATE/NONE 유지. 기존 Server25 답변과 동일하고 Client 변환기가 두 이름을 수용 | AI44의 최종 표기와 Client의 과거 호환 주석 정리 |
-| U2 실패 사유 | 내부 reason_code에 LLM_TIMEOUT/LLM_ERROR/LLM_NOT_CONFIGURED/INVALID_INPUT/VALIDATION_FAILED/VALUE_MISMATCH 등을 저장. 공개 K4에는 failReason/reasonCode 없음. isFallback으로 대체 여부만 전달 | AI44는 실패 사유별 화면 문구를 기대한다. 내부 사유 유지·공개 여부와 시험 기대를 공동 확정해야 하며 현재 화면에서 개별 사유가 보인다고 주장하지 않음 |
+| U2 실패 사유 | 내부 reason_code에 LLM_TIMEOUT/LLM_ERROR/LLM_NOT_CONFIGURED/INVALID_INPUT/VALIDATION_FAILED/VALUE_MISMATCH 등을 저장. 사용자 결정으로 안전한 failReason을 공개하고 내부 reason_code 원문은 보존 | 이번 PR 구현·명세 반영 및 실제 배포 후 화면 검증. reasonCode/raw 오류는 공개하지 않음 |
 | U3 결과 상태 | EXCLUDED/REUPLOAD_REQUIRED/계산불가/입고불필요에서 FastAPI 설명 호출 없음. Spring 기본 문장 또는 text=null | AI44의 상태별 시험표와 현재 상품 상세의 영역 표시 기준 대조 |
 | U4 문장 형태 | 공개 text 단일 문자열/null, 내부 draft 단일 문자열. Client는 text를 줄 단위 sentences로 변환하므로 공개 배열 추가는 불필요한 안으로 검토 | 배열 선호 의견과 다른 현행 단일text 계약을 AI44·명세서에서 일치시켜야 함 |
 | U5 시험 날짜 | 과거 미정 일정을 임의 확정하지 않음. 기존 실제 Server→AI 생성/저장/화면 근거와 모의 실패 검사를 구분 | AI44 전체 실패 시나리오의 새 시험 일정·권한 범위는 별도 조율. #96 예약에 추가하지 않음 |
@@ -67,8 +67,19 @@ Server25 종료 전에는 공동 확인과 API 명세서 반영을 확인해야 
 
 원래 Server25의 여덟 결정 항목은 위 본문에서 저장/수명·치환 책임·내부 응답/저장·NO_DATE·호출 범위·
 시나리오 endpoint/연결·공개 오류/빈 상태·명세 수정 담당으로 대응한다. 인수로 해소된 것은 서버 검토자 부재이며,
-U2의 공개 오류 정책과 공동 문서 반영 완료를 대신하지 않는다.
+실제 배포의 새 failReason 검증과 공동 문서 반영 완료를 대신하지 않는다.
 
 종료 판정: Server PR124와 Client PR229는 미병합이다. 결정 기록의 공유와 실제 연동 근거는 연결했지만,
 API 명세서4장의 기준 브랜치 반영 및 위 공동 확인은 아직 충족되지 않아 Server25는 open을 유지한다.
 #96의 고정 dev 검증을 위해 이번 작업에서 병합·배포하지 않는다.
+
+### 공개 실패 코드 추가 결정
+
+2026-11-05 사용자가 “K4에 안전한 실패 코드 failReason 추가”를 선택했다. 내부 DB에만 저장하는 대안보다
+AI44와 기존 Client의 실패 안내를 연결할 수 있다는 이유로 선택했다. Server DTO에 nullable failReason을 추가하며
+Client는 기존 failText/문장 변환을 사용한다. schema·migration·LLM 호출 정책은 바꾸지 않는다.
+
+공개 허용 목록은 LLM_ERROR, LLM_TIMEOUT, VALIDATION_FAILED, VALUE_MISMATCH, LLM_NOT_CONFIGURED,
+INVALID_INPUT, INPUT_UNAVAILABLE다. 실패 대체인데 알 수 없는 내부 코드는 LLM_ERROR로 축약한다.
+정상 AI·LLM_DISABLED·상태별 고정 문장은 null이며 생성 중202 응답 형태도 유지한다.
+원래 DB 사유, 원문 예외, URL, upstream 응답을 새 필드로 전달하지 않는다. 새 필드의 실환경 효과는 배포 후 확인 대상이다.

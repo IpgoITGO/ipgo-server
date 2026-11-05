@@ -542,6 +542,7 @@ CUSTOM 설명 재생성·실제 LLM 활성화는 포함하지 않습니다. 운�
 
 - 고정 문장은 만들어 둔 문장이 아니라서 `generatedAt`이 `null`입니다.
 - 다른 회원 결과 `403`, 없는 결과 `404`입니다.
+- `failReason`은 실패 대체일 때 `LLM_ERROR`, `LLM_TIMEOUT`, `VALIDATION_FAILED`, `VALUE_MISMATCH`, `LLM_NOT_CONFIGURED`, `INVALID_INPUT`, `INPUT_UNAVAILABLE` 중 하나입니다. 알 수 없는 내부 사유는 `LLM_ERROR`로 반환하고, 정상·비활성·계산 상태별 고정 문장은 `null`입니다. DB의 원래 `reason_code`는 변경하지 않으며 원문 오류·내부 주소는 반환하지 않습니다.
 
 ### 개발 배포의 설명 활성화 승인
 

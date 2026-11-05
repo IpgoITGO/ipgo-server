@@ -1,5 +1,6 @@
 # Ipgo Server
 
+현재 설명·시나리오의 구현과 기존 합의·검토 잔여는 [계약 대조](docs/decisions/0009-current-insight-scenario-contract.md)에 정리합니다.
 정제·계산 실패/재시도/동시성의 기존 근거와 검증 잔여는 [검증 대조](docs/verification/engine-failures-and-concurrency.md)에 기록합니다.
 
 Ipgo 서비스의 API와 서버 동작을 관리하는 저장소입니다.
@@ -15,7 +16,7 @@ Ipgo 서비스의 API와 서버 동작을 관리하는 저장소입니다.
 | Gradle | 9.8.2, 저장소의 Wrapper 사용 |
 | 기본 의존성 | Spring MVC, Validation, Actuator, OAuth2 Resource Server, JPA, Flyway, PostgreSQL 드라이버, JavaMail, Lombok |
 
-기본 패키지는 `com.ipgo.server`, Gradle group은 `com.ipgo`입니다. 상품 자동 등록·조회·수정과 재고관리단위 구분, 정제 결과의 서버 내부 저장·검증과 U2 조회를 제공합니다. 실제 수불부 정제 요청·AI 결과 수신과 계산 연동은 아직 구현하지 않았습니다.
+기본 패키지는 `com.ipgo.server`, Gradle group은 `com.ipgo`입니다. 상품 자동 등록·조회·수정과 재고관리단위 구분, 정제 결과의 서버 내부 저장·검증과 U2 조회를 제공합니다. 수불부 정제·계산 요청과 결과 수신은 outbox/SQS로 연결하며, 설명·직접 수량 시나리오는 별도의 내부 HTTP 경로를 사용합니다. 현재 계약과 남은 공동 확인은 위 계약 대조 문서를 따릅니다.
 
 ## 프로젝트 구조
 
@@ -114,12 +115,15 @@ PostgreSQL을 준비한 뒤 실행 환경에 아래 변수를 설정합니다. �
 | `SPRING_DATASOURCE_USERNAME` | DB 사용자 이름 |
 | `SPRING_DATASOURCE_PASSWORD` | DB 비밀번호 |
 | `SPRING_FLYWAY_ENABLED` | runtime과 migration 자격 증명을 분리할 때 runtime은 `false` |
-| `IPGO_JWT_SECRET` | 32바이트 이상의 무작위 키를 Base64로 인코딩한 JWT 서명 키. 모든 서버에서 동일한 키 사용 |
+| `IPGO_JWT_SECRET` | 32바이트 이상의 무작위 키를 Base64로 인코딩한 JWT 서명 키. 같은 환경에서 토큰을 발급·검증하는 서버끼리 공유하며 독립 로컬 DB는 로컬 전용 키 사용 |
 | `IPGO_AUTH_COOKIE_SECURE` | 기본 `true`. 로컬 HTTP 개발에서만 `false`, 배포에서는 HTTPS와 `true` 사용 |
 | `IPGO_UPLOAD_DATABASE_MAX_BYTES` | DB 원본 전체 상한. 기본/최대 268435456 bytes(256MiB), 양수의 더 작은 검증 한도만 허용 |
 | `IPGO_UPLOAD_DIR` | 원본·보관 정보 저장 폴더. 기본값은 실행 디렉터리의 `./storage/uploads` |
 
 현재 `.env` 파일을 자동으로 읽는 별도 설정은 없습니다. 터미널 또는 IDE의 실행 환경변수로 전달해야 합니다.
+
+JWT 키 누락으로 DB 초기화 뒤 서버가 종료되면 [로컬 JWT 설정·접근 절차](docs/development/local-jwt.md)를 따릅니다.
+독립된 로컬 DB에는 로컬 전용 키를 사용하고, 공유 개발 환경의 키 접근은 승인된 담당 경로로 요청합니다.
 
 새로 만든 빈 PostgreSQL로 실행할 때는 서버를 켜기 전에 DB 사용자(role)를 먼저 만들어야 합니다. 없으면 V13 migration이 `ipgo database roles are missing`으로 실패하고 서버가 시작 직후 종료됩니다(`bootRun`이 `BUILD SUCCESSFUL`로 바로 끝남). 관리자 계정으로 한 번만 실행합니다.
 
@@ -542,6 +546,7 @@ CUSTOM 설명 재생성·실제 LLM 활성화는 포함하지 않습니다. 운�
 
 - 고정 문장은 만들어 둔 문장이 아니라서 `generatedAt`이 `null`입니다.
 - 다른 회원 결과 `403`, 없는 결과 `404`입니다.
+- `failReason`은 실패 대체일 때 `LLM_ERROR`, `LLM_TIMEOUT`, `VALIDATION_FAILED`, `VALUE_MISMATCH`, `LLM_NOT_CONFIGURED`, `INVALID_INPUT`, `INPUT_UNAVAILABLE` 중 하나입니다. 알 수 없는 내부 사유는 `LLM_ERROR`로 반환하고, 정상·비활성·계산 상태별 고정 문장은 `null`입니다. DB의 원래 `reason_code`는 변경하지 않으며 원문 오류·내부 주소는 반환하지 않습니다.
 
 ### 개발 배포의 설명 활성화 승인
 

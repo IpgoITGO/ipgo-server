@@ -11,7 +11,7 @@ COPY src/main/resources/db/migration /flyway/sql
 COPY scripts/database-task.sh /opt/ipgo/bin/database-task
 
 RUN chmod 0555 /opt/ipgo/bin/database-task \
-    && chmod -R a-w /opt/ipgo/database /flyway/sql
+    && chmod -R a+rX,a-w /opt/ipgo/database /flyway/sql
 
 USER 10001:10001
 ENTRYPOINT ["/opt/ipgo/bin/database-task"]

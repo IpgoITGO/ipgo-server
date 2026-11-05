@@ -68,6 +68,7 @@ public class EngineJobs {
 
     // 계산은 보통 몇 초, 커도 1분 안에 끝나므로 5분마다 다시 보내고 15분이면 멈춘 것으로 보고 FAILED로 끝낸다(#106).
     // 화면이 2시간씩 기다리지 않게 하려는 것이다. 정제(CLEAN)는 기존처럼 20분 · 2시간을 유지한다.
+    // CASE 안의 매개변수는 PostgreSQL이 타입을 알 수 없어 text로 보므로 반드시 CAST한다. 빠지면 tick 전체가 멈춘다.
     static final long CALCULATE_RESEND_SECONDS = 300, CALCULATE_EXPIRE_SECONDS = 900;
     static final long RESEND_SECONDS = 1200, EXPIRE_SECONDS = 7200;
 
@@ -75,7 +76,7 @@ public class EngineJobs {
         Instant now = Instant.now();
         jdbc.update("""
                 UPDATE engine_jobs SET status = 'SENT',
-                    next_attempt_at = CASE WHEN job_type = 'CALCULATE' THEN ? ELSE ? END
+                    next_attempt_at = CASE WHEN job_type = 'CALCULATE' THEN CAST(? AS TIMESTAMP WITH TIME ZONE) ELSE CAST(? AS TIMESTAMP WITH TIME ZONE) END
                 WHERE job_id = ? AND status IN ('PENDING','SENT')
                 """, Timestamp.from(now.plusSeconds(CALCULATE_RESEND_SECONDS)), Timestamp.from(now.plusSeconds(RESEND_SECONDS)), id);
     }
@@ -84,7 +85,7 @@ public class EngineJobs {
         Instant now = Instant.now();
         return jdbc.queryForList("""
                 SELECT job_id FROM engine_jobs WHERE status IN ('PENDING','SENT')
-                AND created_at < CASE WHEN job_type = 'CALCULATE' THEN ? ELSE ? END
+                AND created_at < CASE WHEN job_type = 'CALCULATE' THEN CAST(? AS TIMESTAMP WITH TIME ZONE) ELSE CAST(? AS TIMESTAMP WITH TIME ZONE) END
                 ORDER BY created_at FETCH FIRST 5 ROWS ONLY
                 """, String.class, Timestamp.from(now.minusSeconds(CALCULATE_EXPIRE_SECONDS)),
                 Timestamp.from(now.minusSeconds(EXPIRE_SECONDS)));

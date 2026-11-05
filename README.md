@@ -71,6 +71,11 @@ AWS dev 배포 workflow가 개발 컨테이너에서만 켭니다. 문서를 닫
 
 ## 빌드와 실행
 
+수불부 원본의 opt-in PostgreSQL 저장과 AI 조회 계약은 [BE-03 DB 원본 저장](docs/decisions/0003-database-original.md)을
+따릅니다. 별도 `bytea` 테이블·V15·조회 전용 view와 총량 제한을 추가했으며 기존 local/S3 기본 동작은 유지합니다.
+`IPGO_UPLOAD_STORAGE`와 `IPGO_UPLOAD_DATABASE_MAX_BYTES`를 실제 환경에서 바꾸기 전에는 migration·보관 정책·
+서버/AI 버전·백업·영향을 확인해야 합니다. 이번 로컬 구현으로 실제 DB나 배포가 변경되지는 않습니다.
+
 AWS 단일 호스트 개발 환경에서는 `AWS_DEV_COMPUTE_MODE=onebox`가 ARM 이미지와
 `ipgo-dev-onebox-server` 서비스를 선택합니다. 기존 DB·JWT·S3 설정과 메모리 제한을 이어받습니다.
 한 호스트의 같은 포트를 사용하므로 이후 코드 배포에는 짧은 서비스 재시작이 필요합니다.
@@ -120,7 +125,7 @@ psql -U <관리자> -d <database> -f database/bootstrap/create_roles.sql
 ### AWS DB one-off 작업 이미지
 
 `Dockerfile.database`는 애플리케이션 이미지와 분리된 DB 관리 전용 이미지입니다. `bootstrap`은
-최초 PostgreSQL 역할 생성과 비밀번호 설정, `migrate`는 Flyway V1~V14 적용과 이력 확인,
+최초 PostgreSQL 역할 생성과 비밀번호 설정, `migrate`는 Flyway V1~V15 적용과 이력 확인,
 `verify`는 Spring DML·AI 조회 권한과 금지 권한을 점검합니다. AWS에서는 각 명령을 별도 ECS
 one-off task로 실행하며 상시 서비스에서는 이 이미지를 사용하지 않습니다.
 

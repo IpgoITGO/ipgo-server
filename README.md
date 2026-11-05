@@ -470,6 +470,13 @@ R2·R3은 Bearer JWT가 필요하고, 다른 회원의 상품·발주는 `403`, 
 - 다른 회원의 계산은 `403`, 없는 계산은 `404`입니다.
 - 계산이 15분 넘게 끝나지 않으면 `FAILED`가 되고 `errorMessage`는 "계산이 오래 걸려 멈췄어요. 다시 계산해 주세요."입니다(#106).
 
+엔진 폴링의 만료 조회와 재전송 시각 저장은 JDBC 날짜 인자를 `TIMESTAMP WITH TIME ZONE`으로
+명시합니다(#102). PostgreSQL이 `CASE`의 인자를 text로 추론해 정제·계산 발송을 함께 중단하는
+오류를 방지합니다. 계산의 재전송 5분·만료 15분, 정제의 재전송 20분·만료 2시간 정책은 유지합니다.
+`EngineJobsJdbcTests`는 기본 H2와, `IPGO_ENGINE_JDBC_POSTGRES=true`일 때 폐기용 PostgreSQL
+`ipgo-engine-jdbc-102-db:5432/engine_test`에서 실제 JDBC 바인딩·만료 전후·재전송·종료 상태를 검사합니다.
+테스트는 연결별 임시 테이블과 합성 데이터만 사용하며 운영 DB 주소를 받지 않습니다.
+
 `POST /api/calculation-runs/{runId}/cancel`(C3)은 기다리는 계산을 멈춥니다(#106).
 
 - `QUEUED`·`RUNNING`이면 `FAILED`로 바꾸고 C2와 같은 모양으로 `200`을 돌려줍니다. `errorMessage`는 "계산을 멈췄어요. 이전 결과는 그대로예요."입니다. 따로 `CANCELED` 상태는 만들지 않습니다.

@@ -8,13 +8,19 @@ import java.util.List;
 // D1 입고 필요 목록. 계산 결과가 없으면 asOfDate · runId는 null이고 목록은 비어 있다.
 public record ReplenishmentNeeds(LocalDate asOfDate, LocalDate today, Long daysSinceAsOf, String resultStatus,
         Long runId, OffsetDateTime resultComputedAt, OffsetDateTime lastFailedRunAt, Long latestUploadId,
-        Summary summary, List<Item> items, List<NotCalculable> notCalculable, List<Excluded> excluded) {
+        Summary summary, List<Item> items, List<NotNeededItem> notNeededItems, List<NotCalculable> notCalculable,
+        List<Excluded> excluded) {
 
     public record Summary(int needCount, int notNeededCount, int notCalculableCount, int excludedCount) {
     }
 
     public record Item(Long productId, Long resultId, String skuBarcode, String skuName, Long recommendedQty,
             Long recommendedAmount, LocalDate expectedShortageOn, Integer leadTimeDays, BigDecimal preArrivalRisk) {
+    }
+
+    // "아직 괜찮아요" 상품. 예상 소진일이 가까운 순이고, 커버 기간 안에 소진되지 않으면 expectedShortageOn이 null이다.
+    public record NotNeededItem(Long productId, Long resultId, String skuBarcode, String skuName,
+            LocalDate expectedShortageOn, Integer leadTimeDays) {
     }
 
     public record NotCalculable(Long productId, String skuName, String reason) {

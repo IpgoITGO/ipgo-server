@@ -46,6 +46,10 @@ public class ProductException extends RuntimeException {
         return new ProductException(HttpStatus.CONFLICT, "SCENARIO_CHANGED", "다른 요청이 비교 수량을 바꿨어요. 확인 후 다시 입력해 주세요.");
     }
 
+    public static ProductException calculationFinished() {
+        return new ProductException(HttpStatus.CONFLICT, "CALCULATION_FINISHED", "이미 끝난 계산이라 멈출 수 없어요.");
+    }
+
     public static ProductException engineUnavailable() {
         return new ProductException(HttpStatus.SERVICE_UNAVAILABLE, "ENGINE_UNAVAILABLE", "시나리오 계산 연결을 준비 중이에요. 잠시 후 다시 시도해 주세요.");
     }

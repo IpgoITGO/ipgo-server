@@ -25,10 +25,12 @@ import java.util.Optional;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 
+import jakarta.persistence.EntityManager;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-// C2 계산 상태 (BE-16). 계산을 시작하고 저장하는 쪽은 #27에서 만들고, 여기서는 읽기만 한다.
+// C2 계산 상태 (BE-16)와 C3 계산 멈추기 (#106). 계산을 시작하고 저장하는 쪽은 EngineCalculationService · EngineResultWriter다.
 @Service
 public class CalculationRunService {
     private final CalculationRunRepository runs;
@@ -37,16 +39,22 @@ public class CalculationRunService {
     private final ProductRepository products;
     private final ReplenishmentSettingRepository settings;
     private final Clock clock;
+    private final JdbcTemplate jdbc;
+    private final EntityManager entities;
+
+    public static final String CANCELED_MESSAGE = "계산을 멈췄어요. 이전 결과는 그대로예요.";
 
     public CalculationRunService(CalculationRunRepository runs, CalculationResultRepository results,
             WarehouseRepository warehouses, ProductRepository products, ReplenishmentSettingRepository settings,
-            Clock clock) {
+            Clock clock, JdbcTemplate jdbc, EntityManager entities) {
         this.runs = runs;
         this.results = results;
         this.warehouses = warehouses;
         this.products = products;
         this.settings = settings;
         this.clock = clock;
+        this.jdbc = jdbc;
+        this.entities = entities;
     }
 
     @Transactional(readOnly = true)
@@ -54,7 +62,32 @@ public class CalculationRunService {
         CalculationRun run = runs.findById(runId).orElseThrow(ProductException::notFound);
         Warehouse warehouse = warehouses.findById(run.getWarehouseId()).orElseThrow(ProductException::notFound);
         if (!warehouse.getUserId().equals(userId)) throw ProductException.forbidden();
+        return toStatus(run, warehouse);
+    }
 
+    // C3 계산 멈추기 (#106). 엔진 결과 처리와 같은 순서(창고 → 작업 → 계산)로 잠가서 결과 저장과 겹치지 않게 한다.
+    // 엔진 작업도 FAILED로 끝내므로 다시 보내지 않고, 뒤늦게 온 결과는 EngineResults가 끝난 작업으로 보고 버린다.
+    @Transactional
+    public CalculationRunStatus cancel(long userId, long runId) {
+        CalculationRun run = runs.findById(runId).orElseThrow(ProductException::notFound);
+        Warehouse warehouse = warehouses.findByIdForUpdate(run.getWarehouseId()).orElseThrow(ProductException::notFound);
+        if (!warehouse.getUserId().equals(userId)) throw ProductException.forbidden();
+        String jobId = jdbc.queryForObject("SELECT job_id FROM calculation_runs WHERE id = ?", String.class, runId);
+        if (jobId != null) jdbc.queryForList("SELECT job_id FROM engine_jobs WHERE job_id = ? FOR UPDATE", String.class, jobId);
+        int changed = jdbc.update("""
+                UPDATE calculation_runs SET status = 'FAILED', error_message = ?, completed_at = CURRENT_TIMESTAMP
+                WHERE id = ? AND status IN ('QUEUED','RUNNING')
+                """, CANCELED_MESSAGE, runId);
+        if (changed == 0) throw ProductException.calculationFinished();
+        if (jobId != null) jdbc.update("""
+                UPDATE engine_jobs SET status = 'FAILED', completed_at = CURRENT_TIMESTAMP
+                WHERE job_id = ? AND status IN ('PENDING','SENT')
+                """, jobId);
+        entities.refresh(run);
+        return toStatus(run, warehouse);
+    }
+
+    private CalculationRunStatus toStatus(CalculationRun run, Warehouse warehouse) {
         boolean done = CalculationRun.DONE.equals(run.getStatus());
         return new CalculationRunStatus(run.getId(), run.getStatus(), run.getAsOfDate(), run.getEngineVersion(), "B-1.00".equals(run.getPolicyVersion())
                         ? new CalculationRunStatus.Policy("B", new java.math.BigDecimal("1.00")) : null,

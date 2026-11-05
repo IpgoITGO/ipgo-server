@@ -24,6 +24,7 @@ import org.springframework.test.web.servlet.ResultActions;
 import static org.hamcrest.Matchers.endsWith;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.jwt;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -114,6 +115,34 @@ class CalculationRunIntegrationTests extends DatabaseIntegrationTest {
 
         runStatus(other, run).andExpect(status().isForbidden()).andExpect(jsonPath("code").value("FORBIDDEN"));
         runStatus(owner, Long.MAX_VALUE).andExpect(status().isNotFound());
+    }
+
+    @Test
+    void cancelsWaitingRunButNotFinishedOrOthers() throws Exception {
+        long owner = newUser();
+        long other = newUser();
+        long warehouse = warehouseOf(owner);
+        long done = run(warehouse, "DONE", null);
+        long queued = run(warehouse, "QUEUED", null);
+
+        cancel(other, queued).andExpect(status().isForbidden()).andExpect(jsonPath("code").value("FORBIDDEN"));
+        cancel(owner, Long.MAX_VALUE).andExpect(status().isNotFound());
+        cancel(owner, done).andExpect(status().isConflict()).andExpect(jsonPath("code").value("CALCULATION_FINISHED"));
+
+        cancel(owner, queued)
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("runId").value(queued))
+                .andExpect(jsonPath("status").value("FAILED"))
+                .andExpect(jsonPath("errorMessage").value("계산을 멈췄어요. 이전 결과는 그대로예요."))
+                .andExpect(jsonPath("completedAt").value(endsWith("+09:00")));
+        runStatus(owner, queued).andExpect(jsonPath("status").value("FAILED"));
+        cancel(owner, queued).andExpect(status().isConflict());
+        // The earlier DONE run stays the dashboard result.
+        mvc.perform(get("/api/dashboard/replenishment-needs").with(as(owner))).andExpect(jsonPath("runId").value(done));
+    }
+
+    private ResultActions cancel(long userId, long runId) throws Exception {
+        return mvc.perform(post("/api/calculation-runs/" + runId + "/cancel").with(as(userId)));
     }
 
     private long run(long warehouseId, String status, String errorMessage) {

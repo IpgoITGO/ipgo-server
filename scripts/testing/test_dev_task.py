@@ -19,6 +19,34 @@ IMAGE = f'{ACCOUNT}.dkr.ecr.ap-northeast-2.amazonaws.com/ipgo-dev/server:{SHA}-a
 
 
 class DevDeploymentTests(unittest.TestCase):
+    def test_single_result_is_disabled_when_new_inputs_are_absent(self):
+        self.assertFalse(module.settings(self.env)['single'])
+        self.task['containerDefinitions'][0]['environment'].append({'name':'IPGO_INSIGHT_SINGLE_RESULT_ENABLED','value':'true'})
+        values={e['name']:e['value'] for e in self.rendered()['containerDefinitions'][0]['environment']}
+        self.assertEqual(values['IPGO_INSIGHT_SINGLE_RESULT_ENABLED'],'false')
+
+    def test_single_result_can_be_approved_without_enabling_global_generation(self):
+        self.env.update(INSIGHT_ENABLED='false',INSIGHT_APPROVED='false',INSIGHT_WORKER_ENABLED='false',
+                        SINGLE_RESULT_INSIGHT_ENABLED='true',SINGLE_RESULT_INSIGHT_APPROVED='true')
+        values={e['name']:e['value'] for e in self.rendered()['containerDefinitions'][0]['environment']}
+        self.assertEqual(values['IPGO_INSIGHT_SINGLE_RESULT_ENABLED'],'true')
+        self.assertEqual(values['IPGO_INSIGHT_ENABLED'],'false')
+        self.assertEqual(values['IPGO_INSIGHT_WORKER_ENABLED'],'false')
+
+    def test_single_result_rejects_missing_approval_global_worker_or_engine_off(self):
+        base=dict(self.env,INSIGHT_ENABLED='false',INSIGHT_WORKER_ENABLED='false',
+                  SINGLE_RESULT_INSIGHT_ENABLED='true',SINGLE_RESULT_INSIGHT_APPROVED='true')
+        for change in [dict(SINGLE_RESULT_INSIGHT_APPROVED='false'),dict(INSIGHT_ENABLED='true'),
+                       dict(INSIGHT_WORKER_ENABLED='true'),dict(ENGINE_ENABLED='false')]:
+            with self.subTest(change=change), self.assertRaises(module.InvalidDeployment):
+                module.settings(dict(base,**change))
+
+    def test_single_result_controls_are_strict_and_explicit_in_workflow(self):
+        for name in ['SINGLE_RESULT_INSIGHT_ENABLED','SINGLE_RESULT_INSIGHT_APPROVED']:
+            with self.assertRaises(module.InvalidDeployment): module.settings(dict(self.env,**{name:'TRUE'}))
+        workflow=(ROOT/'.github/workflows/deploy-dev.yml').read_text()
+        self.assertIn('SINGLE_RESULT_INSIGHT_ENABLED: ${{ inputs.single_result_insight_enabled }}',workflow)
+        self.assertIn('SINGLE_RESULT_INSIGHT_APPROVED: ${{ inputs.single_result_insight_approved }}',workflow)
     def setUp(self):
         self.env = dict(EXPECTED_SHA=SHA, GITHUB_SHA=SHA, AWS_ACCOUNT_ID=ACCOUNT,
                         COMPUTE_MODE='onebox', MAINTENANCE_APPROVED='true', ENGINE_ENABLED='true',

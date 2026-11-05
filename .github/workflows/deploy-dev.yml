@@ -12,6 +12,16 @@ on:
         required: false
         default: false
         type: boolean
+      single_result_insight_enabled:
+        description: "Allow explicit regeneration of result 698 only, lifetime maximum one attempt; automatic insight stays off"
+        required: false
+        default: false
+        type: boolean
+      single_result_insight_approved:
+        description: "Approve the single result 698 attempt and its possible LLM cost for this SHA"
+        required: false
+        default: false
+        type: boolean
       insight_approved:
         description: "Approve paid insight generation for this exact SHA and reviewed scope"
         required: false
@@ -65,6 +75,8 @@ jobs:
       ENGINE_ENABLED: ${{ inputs.engine_enabled }}
       ENGINE_CONNECTION_APPROVED: ${{ inputs.engine_connection_approved }}
       INSIGHT_ENABLED: ${{ inputs.insight_enabled }}
+      SINGLE_RESULT_INSIGHT_ENABLED: ${{ inputs.single_result_insight_enabled }}
+      SINGLE_RESULT_INSIGHT_APPROVED: ${{ inputs.single_result_insight_approved }}
       INSIGHT_APPROVED: ${{ inputs.insight_approved }}
       INSIGHT_WORKER_ENABLED: ${{ inputs.insight_worker_enabled }}
       DESIRED_COUNT: ${{ inputs.desired_count }}

@@ -26,6 +26,15 @@ public class ProductException extends RuntimeException {
     public static ProductException invalidInput() {
         return new ProductException(HttpStatus.BAD_REQUEST, "INVALID_INPUT", "입력값의 형식과 길이를 확인해주세요.");
     }
+    public static ProductException insightDisabled() {
+        return new ProductException(HttpStatus.SERVICE_UNAVAILABLE, "INSIGHT_SINGLE_DISABLED", "단건 설명 생성을 승인 후 활성화해야 합니다.");
+    }
+    public static ProductException insightSpent() {
+        return new ProductException(HttpStatus.CONFLICT, "INSIGHT_ATTEMPT_SPENT", "이 결과의 단건 생성 시도는 이미 사용했습니다. 저장된 설명을 조회해주세요.");
+    }
+    public static ProductException insightInputUnavailable() {
+        return new ProductException(HttpStatus.CONFLICT, "INSIGHT_INPUT_UNAVAILABLE", "저장된 계산 사실이 부족하거나 맞지 않아 설명을 생성하지 않았습니다.");
+    }
     public static ProductException scenarioConflict() {
         return new ProductException(HttpStatus.CONFLICT, "SCENARIO_STALE", "계산 결과나 자료가 바뀌었어요. 최신 결과를 확인해 주세요.");
     }

@@ -28,6 +28,26 @@ public class InsightRenderer {
 
     public Prepared prepare(JsonNode r, String asOf) { return prepare(r, asOf, true); }
     Prepared prepareStored(JsonNode r, String asOf) { return prepare(r, asOf, false); }
+    /** Historical inputs come exclusively from persisted calculation facts, never an HTTP body. */
+    Prepared prepareHistorical(JsonNode facts, String asOf) {
+        var r = (tools.jackson.databind.node.ObjectNode) facts.deepCopy();
+        var source = r.putObject("insightInput");
+        source.put("recommended", "P100");
+        for (String key : List.of("riskStatus", "methodFallback", "startStockEstimated")) source.set(key, r.get(key));
+        source.put("hasNoDateReceipts", number(r, "noDateReceiptQty").signum() > 0);
+        source.putObject("directions");
+        var scenarios = source.putArray("scenarios");
+        for (String type : List.of("P80", "P100", "P120")) {
+            for (JsonNode s : r.path("scenarios"))
+                if (type.equals(s.path("type").asText()) && !s.path("isDuplicate").asBoolean()) scenarios.add(type);
+        }
+        source.putArray("placeholders").add("method");
+        var p = prepareStored(r, asOf);
+        var names = p.values().keySet().stream().filter(k -> !Set.of("formula_desc", "risk_basis").contains(k)
+                && !k.startsWith("label_") && !k.startsWith("action_") && !k.startsWith("dir_")).sorted().toList();
+        ((tools.jackson.databind.node.ObjectNode) p.input()).set("placeholders", mapper.valueToTree(names));
+        return p;
+    }
     private Prepared prepare(JsonNode r, String asOf, boolean verifyDirections) {
         require("OK".equals(r.path("status").asText()));
         JsonNode source = r.path("insightInput");

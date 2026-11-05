@@ -119,6 +119,9 @@ PostgreSQL을 준비한 뒤 실행 환경에 아래 변수를 설정합니다. �
 
 현재 `.env` 파일을 자동으로 읽는 별도 설정은 없습니다. 터미널 또는 IDE의 실행 환경변수로 전달해야 합니다.
 
+JWT 키 누락으로 DB 초기화 뒤 서버가 종료되면 [로컬 JWT 설정·접근 절차](docs/development/local-jwt.md)를 따릅니다.
+독립된 로컬 DB에는 로컬 전용 키를 사용하고, 공유 개발 환경의 키 접근은 승인된 담당 경로로 요청합니다.
+
 새로 만든 빈 PostgreSQL로 실행할 때는 서버를 켜기 전에 DB 사용자(role)를 먼저 만들어야 합니다. 없으면 V13 migration이 `ipgo database roles are missing`으로 실패하고 서버가 시작 직후 종료됩니다(`bootRun`이 `BUILD SUCCESSFUL`로 바로 끝남). 관리자 계정으로 한 번만 실행합니다.
 
 ```bash

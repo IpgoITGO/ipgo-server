@@ -164,6 +164,53 @@ class EngineRealFlowIntegrationTests {
         assertThat(uploads.findById(f.upload().getId()).orElseThrow().getValidationReport().validation().excludedSkus()).hasSize(2);
     }
 
+    @Test void cancelStopsResendAndIgnoresLateResult() throws Exception {
+        var f = exclusionRun();
+        assertThatThrownBy(() -> calculationStatus.cancel(user(), f.runId()))
+                .isInstanceOfSatisfying(com.ipgo.server.exception.ProductException.class,
+                        e -> assertThat(e.code()).isEqualTo("FORBIDDEN"));
+        var canceled = calculationStatus.cancel(f.owner(), f.runId());
+        assertThat(canceled.status()).isEqualTo("FAILED");
+        assertThat(canceled.errorMessage()).isEqualTo(com.ipgo.server.service.CalculationRunService.CANCELED_MESSAGE);
+        assertThat(canceled.completedAt()).isNotNull();
+        // The outbox job ends too, so the dispatcher never resends it.
+        assertThat(jobs.find(f.jobId()).status()).isEqualTo("FAILED");
+        assertThat(jobs.due()).noneMatch(j -> j.id().equals(f.jobId()));
+        assertThat(jobs.expired()).doesNotContain(f.jobId());
+        // A late engine success for the canceled job is acknowledged but stores nothing.
+        results.accept(calculationSuccess(f.jobId(), List.of(validCalculation(f.normal()))));
+        assertThat(count("calculation_results")).isZero();
+        assertThat(count("scenario_results")).isZero();
+        assertThat(calculationStatus.status(f.owner(), f.runId()).status()).isEqualTo("FAILED");
+        assertThatThrownBy(() -> calculationStatus.cancel(f.owner(), f.runId()))
+                .isInstanceOfSatisfying(com.ipgo.server.exception.ProductException.class,
+                        e -> assertThat(e.code()).isEqualTo("CALCULATION_FINISHED"));
+        // The next request starts a fresh run instead of reusing the canceled one.
+        assertThat(calculations.request(f.owner(), f.upload().getWarehouseId(), "SETTINGS", false)).isNotEqualTo(f.runId());
+    }
+
+    @Test void calculationResendsAfterFiveMinutesAndExpiresAfterFifteenButCleanKeepsLongerWindow() throws Exception {
+        var f = exclusionRun();
+        var cleaning = upload(user());
+        assertThat(jobs.claim(f.jobId())).isTrue(); jobs.sent(f.jobId());
+        assertThat(jobs.claim(cleaning.getJobId())).isTrue(); jobs.sent(cleaning.getJobId());
+        var now = java.time.Instant.now();
+        var calcNext = jdbc.queryForObject("SELECT next_attempt_at FROM engine_jobs WHERE job_id=?", java.sql.Timestamp.class, f.jobId()).toInstant();
+        var cleanNext = jdbc.queryForObject("SELECT next_attempt_at FROM engine_jobs WHERE job_id=?", java.sql.Timestamp.class, cleaning.getJobId()).toInstant();
+        assertThat(calcNext).isBetween(now.plusSeconds(240), now.plusSeconds(360));
+        assertThat(cleanNext).isBetween(now.plusSeconds(1140), now.plusSeconds(1260));
+
+        var sixteenMinutesAgo = java.sql.Timestamp.from(now.minusSeconds(16 * 60));
+        jdbc.update("UPDATE engine_jobs SET created_at=? WHERE job_id IN (?,?)", sixteenMinutesAgo, f.jobId(), cleaning.getJobId());
+        assertThat(jobs.expired()).contains(f.jobId()).doesNotContain(cleaning.getJobId());
+        results.expire(f.jobId());
+        var expired = calculationStatus.status(f.owner(), f.runId());
+        assertThat(expired.status()).isEqualTo("FAILED");
+        assertThat(expired.errorMessage()).isEqualTo(com.ipgo.server.service.EngineResultWriter.TIMEOUT_MESSAGE);
+        assertThat(jobs.find(f.jobId()).status()).isEqualTo("FAILED");
+        assertThat(jobs.find(cleaning.getJobId()).status()).isEqualTo("SENT");
+    }
+
     @Test void outOfSelectionAndOtherOwnerResultsStillRollback() throws Exception {
         var f = exclusionRun();
         long other = user();

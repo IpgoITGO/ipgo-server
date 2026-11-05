@@ -60,11 +60,16 @@ public class EngineResultWriter {
                 version, mapper.writeValueAsString(snapshot), job.targetId());
     }
 
-    public void fail(EngineJobs.Job job) {
+    public static final String FAILED_MESSAGE = "계산을 완료하지 못했습니다. 입력과 서버 상태를 확인하고 다시 시도해 주세요.";
+    public static final String TIMEOUT_MESSAGE = "계산이 오래 걸려 멈췄어요. 다시 계산해 주세요.";
+
+    public void fail(EngineJobs.Job job) { fail(job, FAILED_MESSAGE); }
+
+    public void fail(EngineJobs.Job job, String message) {
         jdbc.update("""
                 UPDATE calculation_runs SET status = 'FAILED', error_message = ?, completed_at = CURRENT_TIMESTAMP
                 WHERE id = ? AND job_id = ? AND status IN ('QUEUED','RUNNING')
-                """, "계산을 완료하지 못했습니다. 입력과 서버 상태를 확인하고 다시 시도해 주세요.", job.targetId(), job.id());
+                """, message, job.targetId(), job.id());
     }
 
     private void save(EngineJobs.Job job, long productId, JsonNode input, JsonNode r) {

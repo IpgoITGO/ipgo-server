@@ -65,7 +65,7 @@ public class EngineResults {
         EngineJobs.Job job = lock(id);
         if (Set.of("DONE","FAILED").contains(job.status())) return;
         if ("CLEAN".equals(job.type())) cleaning.fail(job.targetId(), job.id(), UploadCleaningService.Failure.ENGINE_UNAVAILABLE);
-        else writer.fail(job);
+        else writer.fail(job, EngineResultWriter.TIMEOUT_MESSAGE);
         jobs.finished(id, false);
     }
 

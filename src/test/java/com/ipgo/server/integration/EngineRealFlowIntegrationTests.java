@@ -97,6 +97,89 @@ class EngineRealFlowIntegrationTests {
     }
     private int count(String table) { return jdbc.queryForObject("SELECT COUNT(*) FROM " + table, Integer.class); }
 
+    private record ExclusionRun(long owner, UploadFile upload, long normal, long excluded, long inactive,
+                                long runId, String jobId) { }
+
+    private ExclusionRun exclusionRun() throws Exception {
+        long owner = user(); var u = upload(owner);
+        var barcodes = List.of("SKU-A", "ACTIVE-EXCLUDED", "INACTIVE-EXCLUDED");
+        var cleaned = new CleaningResult(DAY, DAY, DAY,
+                barcodes.stream().map(b -> new CleaningResult.CleanProduct(b, b, 100L, true)).toList(),
+                barcodes.stream().map(b -> new CleaningResult.Unit(b, b, DAY)).toList(),
+                barcodes.stream().map(b -> new CleaningResult.UnitDay(u.getId(), b, DAY, DAY,
+                        10L, 0L, 2L, 0L, 8L, "재고변동", 5)).toList(),
+                barcodes.stream().map(b -> new CleaningResult.ProductDay(u.getId(), b, DAY,
+                        10L, 0L, 2L, 0L, 8L, "SKU-A".equals(b), null)).toList(),
+                new CleaningResult.Validation(3, 1, List.of(
+                        new CleaningResult.ExcludedSku("ACTIVE-EXCLUDED", "ACTIVE-EXCLUDED", DAY, "활성 상품 검산 불일치"),
+                        new CleaningResult.ExcludedSku("INACTIVE-EXCLUDED", "INACTIVE-EXCLUDED", DAY, "비활성 상품 검산 불일치"))), 7);
+        results.accept(success(u, cleaned));
+        var ids = jdbc.queryForList("SELECT id FROM products WHERE user_id=? ORDER BY sku_barcode", Long.class, owner);
+        long excluded = ids.get(0), inactive = ids.get(1), normal = ids.get(2);
+        jdbc.update("UPDATE products SET is_active=FALSE WHERE id=?", inactive);
+        jdbc.update("UPDATE warehouses SET default_lead_time_days=5,default_review_cycle_days=7,default_order_unit_qty=1 WHERE id=?", u.getWarehouseId());
+        long run = calculations.request(owner, u.getWarehouseId(), "SETTINGS", false);
+        String job = jdbc.queryForObject("SELECT job_id FROM calculation_runs WHERE id=?", String.class, run);
+        return new ExclusionRun(owner, u, normal, excluded, inactive, run, job);
+    }
+
+    private Map<String,Object> validCalculation(long product) {
+        var scenarios = List.of("P80", "P100", "P120").stream().map(type -> Map.of(
+                "type", type, "qty", 25, "expectedEndingStock", 0, "unmetDemandQty", 0,
+                "isDuplicate", false, "dailyProjection", List.of())).toList();
+        return Map.of("productId", product, "status", "OK", "recommendedQty", 25,
+                "recommendedAmount", 2500, "horizonDays", 12, "scenarios", scenarios);
+    }
+
+    private String calculationSuccess(String job, List<Map<String,Object>> calculated) {
+        return mapper.writeValueAsString(Map.of("contractVersion", "1", "jobId", job,
+                "jobType", "CALCULATE", "status", "SUCCEEDED",
+                "result", Map.of("engineVersion", "test", "results", calculated)));
+    }
+
+    @Test void inactiveValidationExclusionDoesNotBlockActiveResults() throws Exception {
+        var f = exclusionRun();
+        assertThat(jobs.find(f.jobId()).payload().path("productIds").toString()).isEqualTo("["+f.normal()+"]");
+        String response = calculationSuccess(f.jobId(), List.of(validCalculation(f.normal())));
+        // Before #105 this throws after writing the normal result and rolls the whole transaction back.
+        results.accept(response);
+        results.accept(response);
+        assertThat(jobs.find(f.jobId()).status()).isEqualTo("DONE");
+        assertThat(calculationStatus.status(f.owner(), f.runId()).status()).isEqualTo("DONE");
+        assertThat(count("calculation_results")).isEqualTo(2);
+        assertThat(count("scenario_results")).isEqualTo(3);
+        assertThat(jdbc.queryForObject("SELECT status FROM calculation_results WHERE run_id=? AND product_id=?",
+                String.class, f.runId(), f.normal())).isEqualTo("OK");
+        var excluded = jdbc.queryForMap("SELECT status,reason FROM calculation_results WHERE run_id=? AND product_id=?",
+                f.runId(), f.excluded());
+        assertThat(excluded.get("status")).isEqualTo("EXCLUDED");
+        assertThat(excluded.get("reason")).isEqualTo("활성 상품 검산 불일치");
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM calculation_results WHERE product_id=?", Integer.class, f.inactive())).isZero();
+        var snapshot = mapper.readTree(jdbc.queryForObject(
+                "SELECT selection_snapshot FROM calculation_runs WHERE id=?", String.class, f.runId()));
+        if (snapshot.isString()) snapshot = mapper.readTree(snapshot.asText());
+        assertThat(snapshot.path("excluded").size()).isEqualTo(1);
+        assertThat(snapshot.path("excluded").path(""+f.excluded()).asText()).isEqualTo("활성 상품 검산 불일치");
+        assertThat(snapshot.path("productIds").toString()).doesNotContain(""+f.inactive());
+        assertThat(uploads.findById(f.upload().getId()).orElseThrow().getValidationReport().validation().excludedSkus()).hasSize(2);
+    }
+
+    @Test void outOfSelectionAndOtherOwnerResultsStillRollback() throws Exception {
+        var f = exclusionRun();
+        long other = user();
+        jdbc.update("INSERT INTO products(user_id,sku_barcode,sku_name,unit_cost,is_active) VALUES (?,?,?,100,TRUE)", other, "OTHER", "Other");
+        long foreign = jdbc.queryForObject("SELECT id FROM products WHERE user_id=?", Long.class, other);
+        for (long outside : List.of(f.inactive(), foreign)) {
+            String response = calculationSuccess(f.jobId(), List.of(validCalculation(f.normal()), validCalculation(outside)));
+            assertThatThrownBy(() -> results.accept(response)).isInstanceOf(IllegalArgumentException.class);
+            assertThat(count("calculation_results")).isZero();
+            assertThat(count("scenario_results")).isZero();
+            assertThat(count("ai_explanations")).isZero();
+            assertThat(calculationStatus.status(f.owner(), f.runId()).status()).isEqualTo("QUEUED");
+            assertThat(jobs.find(f.jobId()).status()).isEqualTo("PENDING");
+        }
+    }
+
     @Test void uploadAndOutboxCommitOrRollbackTogether() throws Exception {
         long owner = user(); var multipart = file();
         tx.executeWithoutResult(s -> { records.upload(owner, multipart, true); s.setRollbackOnly(); });

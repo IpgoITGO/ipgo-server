@@ -20,6 +20,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
@@ -80,13 +81,16 @@ public class EngineCalculationService {
                         "unitCost", product.getUnitCost().longValueExact()));
             }
         }
+        var ids = active.stream().map(p -> p.getId()).toList();
+        var selectedIds = Set.copyOf(ids);
         Map<String, String> excluded = new LinkedHashMap<>();
         // Use the selected latest file's validation, never an overwritten revision.
         for (UploadFile source : sources) {
             if (source.getValidationReport() != null && source.getValidationReport().validation() != null)
-                source.getValidationReport().validation().excludedSkus().forEach(e -> excluded.put("" + e.productId(), e.reason()));
+                source.getValidationReport().validation().excludedSkus().stream()
+                        .filter(e -> selectedIds.contains(e.productId()))
+                        .forEach(e -> excluded.put("" + e.productId(), e.reason()));
         }
-        var ids = active.stream().map(p -> p.getId()).toList();
         var activeReceipts = receipts.findActive(warehouseId);
         List<Map<String, Object>> planned = activeReceipts.stream()
                 .filter(r -> r.isReflected() && ids.contains(r.getProductId()) && r.getExpectedOn() != null)

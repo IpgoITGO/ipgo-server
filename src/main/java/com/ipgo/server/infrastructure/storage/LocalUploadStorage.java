@@ -49,7 +49,7 @@ public class LocalUploadStorage implements UploadStorage {
     @Override
     public void precheck(MultipartFile file) {
         validateName(file.getOriginalFilename());
-        if (file.isEmpty()) throw invalid("빈 파일은 업로드할 수 없습니다.");
+        if (file.isEmpty()) throw UploadException.invalidFormat(file.getOriginalFilename(), "빈 파일은 업로드할 수 없습니다.");
         if (file.getSize() > maxBytes) throw tooLarge();
     }
 
@@ -83,7 +83,7 @@ public class LocalUploadStorage implements UploadStorage {
             Path original = pending.resolve("original.xlsx");
             MessageDigest digest = sha256();
             long size = copy(file, original, digest);
-            XlsxValidator.validate(original);
+            XlsxValidator.validate(original, name);
             UUID id = UUID.randomUUID();
             StoredUpload result = new StoredUpload(id, name, size, HexFormat.of().formatHex(digest.digest()),
                     Instant.now(), "STORED");
@@ -115,7 +115,7 @@ public class LocalUploadStorage implements UploadStorage {
                 output.write(buffer, 0, read);
             }
         }
-        if (total == 0) throw invalid("빈 파일은 업로드할 수 없습니다.");
+        if (total == 0) throw UploadException.invalidFormat(file.getOriginalFilename(), "빈 파일은 업로드할 수 없습니다.");
         return total;
     }
 

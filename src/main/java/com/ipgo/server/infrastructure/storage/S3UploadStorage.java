@@ -48,7 +48,7 @@ public class S3UploadStorage implements UploadStorage {
     @Override
     public void precheck(MultipartFile file) {
         validateName(file.getOriginalFilename());
-        if (file.isEmpty()) throw invalid("빈 파일은 업로드할 수 없습니다.");
+        if (file.isEmpty()) throw UploadException.invalidFormat(file.getOriginalFilename(), "빈 파일은 업로드할 수 없습니다.");
         if (file.getSize() > maxBytes) throw tooLarge();
     }
 
@@ -73,7 +73,7 @@ public class S3UploadStorage implements UploadStorage {
             temporary = Files.createTempFile("ipgo-upload-", ".xlsx");
             MessageDigest digest = sha256();
             long size = copy(file, temporary, digest);
-            XlsxValidator.validate(temporary);
+            XlsxValidator.validate(temporary, file.getOriginalFilename());
             String hash = HexFormat.of().formatHex(digest.digest());
             String key = userId + "/" + id + "/original.xlsx";
             PutObjectRequest request = PutObjectRequest.builder()
@@ -110,7 +110,7 @@ public class S3UploadStorage implements UploadStorage {
                 output.write(buffer, 0, read);
             }
         }
-        if (total == 0) throw invalid("빈 파일은 업로드할 수 없습니다.");
+        if (total == 0) throw UploadException.invalidFormat(file.getOriginalFilename(), "빈 파일은 업로드할 수 없습니다.");
         return total;
     }
 

@@ -78,8 +78,15 @@ class ReplenishmentIntegrationTests extends DatabaseIntegrationTest {
                 .andExpect(status().isBadRequest()).andExpect(jsonPath("details.field").value("orderUnitQty"));
         putJson(userId, DEFAULTS, "{\"leadTimeDays\": 0, \"reviewCycleDays\": 29, \"orderUnitQty\": 1}")
                 .andExpect(status().isBadRequest()).andExpect(jsonPath("details.field").value("leadTimeDays"));
+        // 소수 · 글자처럼 형식이 틀린 값도 어느 칸인지 알려준다 (#99).
         putJson(userId, DEFAULTS, "{\"leadTimeDays\": 5, \"reviewCycleDays\": 1.5, \"orderUnitQty\": 1}")
-                .andExpect(status().isBadRequest()).andExpect(jsonPath("code").value("INVALID_INPUT"));
+                .andExpect(status().isBadRequest()).andExpect(jsonPath("code").value("INVALID_INPUT"))
+                .andExpect(jsonPath("details.field").value("reviewCycleDays"));
+        putJson(userId, DEFAULTS, "{\"leadTimeDays\": \"five\", \"reviewCycleDays\": 29, \"orderUnitQty\": 1}")
+                .andExpect(status().isBadRequest()).andExpect(jsonPath("details.field").value("leadTimeDays"));
+        putJson(userId, DEFAULTS, "{\"leadTimeDays\": 5,")
+                .andExpect(status().isBadRequest()).andExpect(jsonPath("code").value("INVALID_INPUT"))
+                .andExpect(jsonPath("details").doesNotExist());
         mvc.perform(put(DEFAULTS).contentType(MediaType.APPLICATION_JSON)
                         .content("{\"leadTimeDays\": 5, \"reviewCycleDays\": 29, \"orderUnitQty\": 1}"))
                 .andExpect(status().isUnauthorized());

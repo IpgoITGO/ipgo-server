@@ -203,7 +203,7 @@ IPGO_TEST_DB_USERNAME=ipgo IPGO_TEST_DB_PASSWORD=<임시 비밀번호> ./gradlew
 - 정책 위반 시 `400 INVALID_INPUT`, `details.field=password`와 비밀번호 규칙을 설명하는 `message`를 반환합니다. 프론트도 동일한 길이·문자·복잡도 검증을 적용해야 합니다. 비밀번호 정책 변경은 신규 가입에만 적용하며 기존 회원의 비밀번호 해시는 유지합니다.
 - 로그인 요청은 기존 form-urlencoded를 유지하지만 성공 응답은 204에서 **200 + JWT**로 변경합니다. JSON 로그인은 지원하지 않습니다. 화면 표시 정보는 Bearer 토큰으로 `/api/auth/me`에서 받습니다.
 
-회원가입은 자동 로그인을 수행하지 않습니다. 이메일은 소문자로 정규화하며 최대 254자입니다. 로그인 실패는 계정 존재 여부와 관계없이 같은 401 응답을 반환합니다. 중복 이메일은 409, 입력 오류는 400, CSRF 누락·오류는 403입니다. 오류 본문은 `code`, `message`를 포함하며 민감한 입력값을 담지 않습니다. 입력 필드 검증 실패는 `details.field`에 필드 이름 하나를 추가합니다. JSON 자체가 깨진 경우에는 필드를 특정하지 않습니다.
+회원가입은 자동 로그인을 수행하지 않습니다. 이메일은 소문자로 정규화하며 최대 254자입니다. 로그인 실패는 계정 존재 여부와 관계없이 같은 401 응답을 반환합니다. 중복 이메일은 409, 입력 오류는 400, CSRF 누락·오류는 403입니다. 오류 본문은 `code`, `message`를 포함하며 민감한 입력값을 담지 않습니다. 입력 필드 검증 실패는 `details.field`에 필드 이름 하나를 추가합니다. 숫자 칸에 소수 · 글자를 보내는 등 값의 형식이 틀린 경우와 쿼리 값(예: 날짜 `from`) 형식 오류도 그 칸 이름을 넣습니다. JSON 자체가 깨진 경우에는 필드를 특정하지 않습니다.
 
 ### JWT·리프레시·로그아웃 계약 (#28)
 
@@ -339,7 +339,8 @@ if (!response.ok) throw new Error(result.message ?? '업로드에 실패했습�
 | 파일 형식 | `.xlsx`만 허용. `.xls`, `.xlsm`, CSV, 암호로 잠긴 파일은 지원하지 않음 |
 | 크기 | 파일 10MiB, multipart 전체 요청 11MiB. 초과 시 `413 FILE_TOO_LARGE` |
 | 파일명 | 경로 구분자·제어 문자·콜론 포함, 빈 이름, 255자 초과는 `400 INVALID_INPUT` |
-| 빈 파일·누락·손상 | `400 INVALID_INPUT`. `.xlsx`가 아닌 확장자는 `400 UPLOAD_INVALID_FORMAT`(`details`에 `fileName`·`reason`) |
+| 빈 파일·손상 | `400 UPLOAD_INVALID_FORMAT`(`details`에 `fileName`·`reason`). `.xlsx`가 아닌 확장자도 같은 코드입니다. 화면은 이 코드로 "거절된 파일" 안내를 띄웁니다 |
+| 파일 칸 누락 | `400 INVALID_INPUT` |
 | 저장 실패 | `500 UPLOAD_STORAGE_ERROR`. 내부 경로와 파일 내용은 응답하지 않음 |
 | 인증 | 유효한 Bearer JWT 필요. 미인증·만료·폐기된 로그인은 401. CSRF 불필요 |
 | 자료 기간 | 파일명의 연·월로 정함 (`2026-09.xlsx`, `수불부_202609.xlsx`, `2026년 9월.xlsx` → 9/1~9/30). 못 읽거나 연·월이 여러 개면 `400 UPLOAD_INVALID_FORMAT`, `details`에 `fileName`·`reason` |

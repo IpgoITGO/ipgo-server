@@ -20,7 +20,15 @@ final class XlsxValidator {
 
     private XlsxValidator() { }
 
-    static void validate(Path path) throws IOException {
+    static void validate(Path path, String fileName) throws IOException {
+        try {
+            check(path);
+        } catch (UploadException exception) {
+            throw UploadException.invalidFormat(fileName, exception.getMessage());
+        }
+    }
+
+    private static void check(Path path) throws IOException {
         try (ZipFile zip = new ZipFile(path.toFile())) {
             var names = new HashSet<String>();
             var entries = zip.entries();

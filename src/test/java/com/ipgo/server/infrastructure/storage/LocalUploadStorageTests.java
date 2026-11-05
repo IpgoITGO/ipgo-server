@@ -83,7 +83,12 @@ class LocalUploadStorageTests {
                 UploadTestFiles.zip(wrongType, 0), UploadTestFiles.zip(brokenRelationships, 0),
                 UploadTestFiles.zip(UploadTestFiles.parts(), 101)}) {
             assertThatThrownBy(() -> storage().store(12, file("stock.xlsx", bytes)))
-                    .isInstanceOf(UploadException.class);
+                    .isInstanceOfSatisfying(UploadException.class, error -> {
+                        // 화면이 "거절된 파일" 팝업으로 안내하도록 형식 오류 코드와 파일명을 준다 (#99).
+                        assertThat(error.code()).isEqualTo("UPLOAD_INVALID_FORMAT");
+                        assertThat(error.details()).isEqualTo(Map.of("fileName", "stock.xlsx",
+                                "reason", "지원하는 .xlsx 형식이 아니거나 파일이 손상되었습니다."));
+                    });
         }
         assertNoFiles();
     }

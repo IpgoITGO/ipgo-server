@@ -13,6 +13,7 @@ import org.springframework.web.server.ResponseStatusException;
 import org.springframework.web.multipart.MaxUploadSizeExceededException;
 import org.springframework.web.multipart.MultipartException;
 import org.springframework.web.multipart.support.MissingServletRequestPartException;
+import tools.jackson.core.JacksonException;
 
 @RestControllerAdvice
 public class ApiExceptionHandler {
@@ -59,9 +60,23 @@ public class ApiExceptionHandler {
                 field == null ? null : new ApiError.FieldDetails(field)));
     }
 
+    // 숫자 칸에 소수 · 글자를 보내거나 쿼리 값 형식이 틀리면 그 칸 이름을 알려준다. JSON 자체가 깨지면 칸을 알 수 없다.
     @ExceptionHandler({HttpMessageNotReadableException.class, MethodArgumentTypeMismatchException.class})
     ResponseEntity<ApiError> invalidRequest(Exception exception) {
-        return ResponseEntity.badRequest().body(new ApiError("INVALID_INPUT", "입력값의 형식과 길이를 확인해주세요."));
+        String field = exception instanceof MethodArgumentTypeMismatchException mismatch ? mismatch.getName()
+                : jsonField(exception);
+        return ResponseEntity.badRequest().body(new ApiError("INVALID_INPUT", "입력값의 형식과 길이를 확인해주세요.",
+                field == null ? null : new ApiError.FieldDetails(field)));
+    }
+
+    private static String jsonField(Throwable exception) {
+        for (Throwable cause = exception; cause != null; cause = cause.getCause()) {
+            if (cause instanceof JacksonException jackson) {
+                return jackson.getPath().stream().map(JacksonException.Reference::getPropertyName)
+                        .filter(name -> name != null).reduce((first, last) -> last).orElse(null);
+            }
+        }
+        return null;
     }
 
     @ExceptionHandler(ResponseStatusException.class)

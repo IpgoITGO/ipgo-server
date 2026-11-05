@@ -34,6 +34,11 @@ springdoc:
   show-actuator: false
 
 ipgo:
+  insight:
+    enabled: ${IPGO_INSIGHT_ENABLED:false}
+    worker-enabled: ${IPGO_INSIGHT_WORKER_ENABLED:true}
+    timeout: ${IPGO_INSIGHT_TIMEOUT:15s}
+    poll-delay-ms: ${IPGO_INSIGHT_POLL_DELAY_MS:1000}
   engine:
     enabled: ${IPGO_ENGINE_ENABLED:false}
     base-url: ${IPGO_ENGINE_BASE_URL:}

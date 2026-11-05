@@ -41,7 +41,7 @@ expect_denied() {
 run_bootstrap() {
   require_variables \
     DB_HOST DB_NAME DB_ADMIN_USERNAME DB_ADMIN_PASSWORD \
-    IPGO_MIGRATOR_PASSWORD IPGO_SERVER_PASSWORD IPGO_AI_READER_PASSWORD
+    IPGO_MIGRATOR_PASSWORD IPGO_SERVER_PASSWORD IPGO_AI_READER_PASSWORD IPGO_AI_SERVICE_READER_PASSWORD
 
   export PGPASSWORD="${DB_ADMIN_PASSWORD}"
   psql_base "${DB_ADMIN_USERNAME}" --file="${bootstrap_sql}"
@@ -49,12 +49,12 @@ run_bootstrap() {
   psql_base "${DB_ADMIN_USERNAME}" --tuples-only --no-align --command="
     SELECT COUNT(*)
     FROM pg_roles
-    WHERE rolname IN ('ipgo_migrator', 'ipgo_server', 'ipgo_ai_reader')
+    WHERE rolname IN ('ipgo_migrator', 'ipgo_server', 'ipgo_ai_reader', 'ipgo_ai_service_reader')
       AND rolcanlogin
       AND NOT rolsuper
       AND NOT rolcreatedb
       AND NOT rolcreaterole;
-  " | grep -qx '3'
+  " | grep -qx '4'
   unset PGPASSWORD
   echo "Database roles bootstrapped."
 }
@@ -88,11 +88,20 @@ run_migrate() {
   echo "Flyway V1-V15 migration verified."
 }
 
+run_bootstrap_original_reader() {
+  require_variables DB_HOST DB_NAME DB_ADMIN_USERNAME DB_ADMIN_PASSWORD IPGO_AI_SERVICE_READER_PASSWORD
+  export PGPASSWORD="${DB_ADMIN_PASSWORD}"
+  psql_base "${DB_ADMIN_USERNAME}" --file=/opt/ipgo/database/bootstrap/create_original_reader.sql
+  unset PGPASSWORD
+  echo "AI original reader created without changing existing credentials."
+}
+
 run_verify() {
   require_variables \
     DB_HOST DB_NAME \
     IPGO_SERVER_USERNAME IPGO_SERVER_PASSWORD \
-    IPGO_AI_READER_USERNAME IPGO_AI_READER_PASSWORD
+    IPGO_AI_READER_USERNAME IPGO_AI_READER_PASSWORD \
+    IPGO_AI_SERVICE_READER_PASSWORD
 
   PGPASSWORD="${IPGO_SERVER_PASSWORD}" psql_base "${IPGO_SERVER_USERNAME}" >/dev/null <<'SQL'
 BEGIN;
@@ -116,8 +125,6 @@ SQL
   PGPASSWORD="${IPGO_AI_READER_PASSWORD}" psql_base "${IPGO_AI_READER_USERNAME}" \
     --command="SELECT upload_file_id,user_id,warehouse_id FROM ai_cleaning_sources_v1 LIMIT 0; SELECT user_id,sku_barcode FROM ai_cleaning_products_v1 LIMIT 0; SELECT upload_file_id,closing_qty FROM ai_cleaning_previous_units_v1 LIMIT 0;" >/dev/null
   expect_denied "${IPGO_AI_READER_USERNAME}" "${IPGO_AI_READER_PASSWORD}" "SELECT * FROM engine_jobs"
-  PGPASSWORD="${IPGO_AI_READER_PASSWORD}" psql_base "${IPGO_AI_READER_USERNAME}" \
-    --command="SELECT upload_file_id,user_id,warehouse_id,size_bytes FROM ai_upload_originals_v1 LIMIT 0;" >/dev/null
   expect_denied "${IPGO_AI_READER_USERNAME}" "${IPGO_AI_READER_PASSWORD}" "SELECT * FROM upload_originals"
   expect_denied "${IPGO_SERVER_USERNAME}" "${IPGO_SERVER_PASSWORD}" "DELETE FROM upload_originals WHERE false"
 
@@ -138,10 +145,19 @@ SQL
   expect_denied "${IPGO_AI_READER_USERNAME}" "${IPGO_AI_READER_PASSWORD}" \
     "CREATE TABLE denied_by_ai_task (id BIGINT)"
 
+  PGPASSWORD="${IPGO_AI_SERVICE_READER_PASSWORD}" psql_base ipgo_ai_service_reader \
+    --command="SELECT upload_file_id FROM ai_upload_originals_v1 LIMIT 0;" >/dev/null
+  expect_denied "${IPGO_AI_READER_USERNAME}" "${IPGO_AI_READER_PASSWORD}" "SELECT * FROM ai_upload_originals_v1"
+  expect_denied ipgo_ai_service_reader "${IPGO_AI_SERVICE_READER_PASSWORD}" "SELECT * FROM upload_originals"
+  expect_denied ipgo_ai_service_reader "${IPGO_AI_SERVICE_READER_PASSWORD}" "UPDATE upload_files SET status='FAILED' WHERE false"
+
   echo "Runtime database permissions verified."
 }
 
 case "${1:-}" in
+  bootstrap-original-reader)
+    run_bootstrap_original_reader
+    ;;
   bootstrap)
     run_bootstrap
     ;;
@@ -152,7 +168,7 @@ case "${1:-}" in
     run_verify
     ;;
   *)
-    echo "usage: database-task {bootstrap|migrate|verify}" >&2
+    echo "usage: database-task {bootstrap|bootstrap-original-reader|migrate|verify}" >&2
     exit 2
     ;;
 esac

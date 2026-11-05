@@ -125,9 +125,14 @@ VALUES (2001,10,'2026-11.xlsx','db/1/test',repeat('b',64),1,DATE '2026-11-01',DA
 INSERT INTO upload_originals(upload_file_id,content,content_type,size_bytes)
 VALUES (2001,decode('616263','hex'),'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',3);
 SQL
-docker exec "${database_container}" psql -v ON_ERROR_STOP=1 -U ipgo_ai_reader -d ipgo \
+docker exec "${database_container}" psql -v ON_ERROR_STOP=1 -U ipgo_ai_service_reader -d ipgo \
   -c "SELECT upload_file_id,user_id,warehouse_id,size_bytes,content FROM ai_upload_originals_v1" >/dev/null
 expect_denied ipgo_ai_reader "SELECT * FROM upload_originals"
+expect_denied ipgo_ai_reader "SELECT * FROM ai_upload_originals_v1"
+expect_denied ipgo_ai_service_reader "SELECT * FROM upload_originals"
+expect_denied ipgo_ai_service_reader "UPDATE upload_files SET status='FAILED' WHERE false"
+expect_denied postgres "DELETE FROM upload_originals WHERE upload_file_id=2001"
+expect_denied postgres "TRUNCATE upload_originals"
 expect_denied ipgo_server "UPDATE upload_originals SET size_bytes=3 WHERE upload_file_id=2001"
 expect_denied ipgo_server "DELETE FROM upload_originals WHERE upload_file_id=2001"
 expect_denied ipgo_server "INSERT INTO upload_originals VALUES (2000,decode('61','hex'),'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',2,CURRENT_TIMESTAMP)"

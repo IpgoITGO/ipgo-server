@@ -27,6 +27,7 @@ import org.springframework.web.multipart.MultipartFile;
 @Service
 @ConditionalOnProperty(name = "ipgo.upload.storage", havingValue = "database")
 public class DatabaseUploadStorage implements UploadStorage {
+    static final long POLICY_MAX_BYTES = 256L * 1024 * 1024;
     static final String CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
     private final JdbcTemplate jdbc;
     private final int maxBytes;
@@ -34,10 +35,10 @@ public class DatabaseUploadStorage implements UploadStorage {
 
     public DatabaseUploadStorage(JdbcTemplate jdbc,
             @Value("${spring.servlet.multipart.max-file-size}") DataSize maxSize,
-            @Value("${ipgo.upload.database-max-bytes:0}") long totalMaxBytes) {
+            @Value("${ipgo.upload.database-max-bytes:268435456}") long totalMaxBytes) {
         this.jdbc = jdbc;
         this.maxBytes = (int) Math.min(maxSize.toBytes(), 10 * 1024 * 1024);
-        if (maxBytes <= 0 || totalMaxBytes <= 0) {
+        if (maxBytes <= 0 || totalMaxBytes <= 0 || totalMaxBytes > POLICY_MAX_BYTES) {
             throw new IllegalArgumentException("DB 원본 저장에는 파일 제한과 총 보관량 설정이 필요합니다.");
         }
         this.totalMaxBytes = totalMaxBytes;
@@ -81,7 +82,7 @@ public class DatabaseUploadStorage implements UploadStorage {
         try {
             temporary = Files.createTempFile("ipgo-xlsx-check-", ".xlsx");
             Files.write(temporary, bytes);
-            XlsxValidator.validate(temporary);
+            XlsxValidator.validate(temporary, file.getOriginalFilename());
             return new StoredUpload(UUID.randomUUID(), file.getOriginalFilename(), bytes.length,
                     hash(bytes), Instant.now(), "STORED");
         } catch (IOException failure) {

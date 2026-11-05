@@ -16,6 +16,10 @@ class DatabaseUploadStorageTests {
         var jdbc = mock(JdbcTemplate.class);
         assertThatThrownBy(() -> new DatabaseUploadStorage(jdbc, DataSize.ofMegabytes(10), 0))
                 .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> new DatabaseUploadStorage(jdbc, DataSize.ofMegabytes(10), 268_435_457L))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatCode(() -> new DatabaseUploadStorage(jdbc, DataSize.ofMegabytes(10), 268_435_456L))
+                .doesNotThrowAnyException();
         var storage = new DatabaseUploadStorage(jdbc, DataSize.ofMegabytes(10), 100_000);
         byte[] content = UploadTestFiles.workbook();
         var file = new MockMultipartFile("file", "2026-10.xlsx", "application/octet-stream", content);

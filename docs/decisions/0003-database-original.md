@@ -1,85 +1,76 @@
 # 0003. BE-03 PostgreSQL 원본 저장 (#76 / IPGO-121)
 
-상태: 로컬 구현·격리 검증 대상. 실제 개발 DB migration·배포·기존 파일 이전은 미실행이다.
-서버 dev `011863a8`, AI dev `1d6b772e` 기준으로 같은 계약을 구현한다.
+상태: 2026-11-05 승인 정책의 로컬 보완·검증. 운영 V15 적용·배포·기존 원본 이전은 미실행이다.
+통합 기준은 Server dev e92487f와 AI dev 297cef4다. 과거 검증과 이번 검증은 별도로 기록한다.
 
-## 저장과 트랜잭션
+## 승인한 범위와 저장 정책
 
-새 `database` 저장 모드는 명시적으로 선택한다. 기존 기본 `local`과 `s3`는 유지한다.
-`IPGO_UPLOAD_STORAGE`, `IPGO_UPLOAD_DATABASE_MAX_BYTES`가 활성화와 총 보관량 설정 이름이다.
-DB 모드에서 총 보관량이 없거나 양수가 아니면 시작을 중단한다. 실제 환경 값은 별도 승인 대상으로 둔다.
+- 신규 업로드만 명시적으로 선택한 `database` 모드에서 DB에 저장한다. 기본 `local`과 기존 `s3`는 유지한다.
+- 전체 회원·창고·성공/실패·모든 revision의 DB 원본 합계 상한은 **256MiB (268435456 bytes)**다.
+  `IPGO_UPLOAD_DATABASE_MAX_BYTES` 기본값은 이 값이며 더 작은 검증 한도는 허용하고, 0 이하·256MiB 초과 설정은 기동을 거부한다.
+- 파일별 기존 XLSX·10MiB 상한을 유지한다. 한도 초과는 HTTP507이며 자동 삭제로 공간을 만들지 않는다.
+- 원본마다 `created_at`, `retain_until`을 기록해 **최소 30일** 보존한다. CHECK와 UPDATE/DELETE/TRUNCATE trigger로
+  보존 기간의 일반 변경·삭제를 차단한다. 앱에는 원본 UPDATE/DELETE/TRUNCATE 권한이 없다.
+- 30일 뒤에도 자동 삭제하지 않는다. 운영자의 별도 승인된 정리에서만 삭제할 수 있다. 미래 정리 도구·스케줄은 추가하지 않았다.
+- 기존 S3/local 원본·경로·revision은 `EXTERNAL`로 보존한다. 이전·삭제·재업로드·대기 작업 재등록을 하지 않는다.
 
-V15는 기존 `upload_files`에 `storage_kind`를 추가하고 기존 기록을 `EXTERNAL`로 유지한다.
-`upload_originals`는 `upload_file_id`를 PK/FK로 하는 별도 테이블이다. `content`는 `bytea`,
-`content_type`은 XLSX 고정 MIME, `size_bytes`는 실제 바이트 수이며 생성 시각을 함께 보관한다.
-빈 원본·10 MiB 초과·길이 불일치는 DB 제약으로 거절한다. FK는 원본을 가진 upload 삭제를 제한한다.
-Spring에는 SELECT/INSERT만 부여하고 원본 UPDATE/DELETE는 허용하지 않는다.
+V15는 미적용 migration이며 `storage_kind`, 별도 `upload_originals(bytea)`와 `ai_upload_originals_v1`을 추가한다.
+현재 배포된 V1~V14 migration은 수정하지 않는다. 이 SQL을 로컬 폐기용 DB에서 검사하는 것은 운영 적용과 다르다.
+raw bytes 합계는 실제 DB/TOAST/WAL/백업 소비량과 다르므로 256MiB를 운영 자원 수용 성능으로 해석하지 않는다.
 
-기존 형식·압축/XML·파일명·기간·해시·중복/revision 검사를 그대로 거친다. XLSX 검증용 임시 파일은
-검사 후 지우며 지속 보관할 로컬 원본은 만들지 않는다. 실제 스트림도 최대 크기보다 1바이트만 더 읽어
-신고 크기가 작은 잘못된 입력을 거절한다. 검증과 저장 사이의 SHA-256 일치도 확인한다.
+## 무결성·동시성
 
-업로드 트랜잭션에서 upload row 생성 → storage marker 변경·원본 INSERT → 활성 엔진 job INSERT를 수행한다.
-어느 단계가 실패해도 함께 rollback한다. 엔진 비활성 시 원본·업로드만 저장하며 기존 건을 자동 재등록하지 않는다.
-총량은 모든 회원·창고의 보존 원본 크기 합계다. `pg_advisory_xact_lock(7601, 1)`로 DB 모드 저장을
-직렬화한 뒤 합계와 새 크기를 비교한다. 초과 시 HTTP507 `UPLOAD_STORAGE_FULL`이며 부분 기록을 남기지 않는다.
-모든 서버는 같은 총량 설정을 사용해야 한다. 합계 조회 비용과 직렬화는 실제 부하 적용 전에 측정한다.
+기존 파일명·XLSX·압축/XML·기간·SHA-256·중복/revision 검사를 유지하고 최신 XLSX 검증기의 파일명 인자를 전달한다.
+검증용 임시 파일만 사용한 뒤 지우며 지속 로컬 원본은 만들지 않는다. 신고 크기가 작은 입력도 실제 바이트 수로 제한한다.
+upload row → storage marker·원본 INSERT → 활성 job INSERT를 같은 트랜잭션으로 수행해 어느 단계든 실패하면 전체 rollback한다.
+`pg_advisory_xact_lock(7601,1)` 이후 합계를 읽어 서로 다른 창고/프로세스도 같은 총량 검사를 직렬화한다.
+목록·상태 조회에는 binary를 매핑하거나 노출하지 않는다. 원본 다운로드 API는 추가하지 않는다.
 
-원본을 JPA entity 관계로 매핑하지 않는다. 업로드 목록·상태 조회 SQL/응답에는 원본 바이너리가 없다.
-외부 HTTP 다운로드 API는 추가하지 않는다.
+## 서비스 전용 원본 조회
 
-## 서버 ↔ AI 계약
+- `ipgo_ai_service_reader`는 AI 서비스 전용 로그인이다. 기존 공유 `ipgo_ai_reader`와 사람용 계정에는 raw view를 부여하지 않는다.
+- 전용 계정은 CONNECT·schema USAGE·승인된 5개 view SELECT·기본 read-only만 사용한다.
+  업무/원본 table 직접 SELECT·쓰기·DDL·migration 권한은 없다. 새 역할에 다른 역할을 상속시키지 않는다.
+- AI의 `IPGO_ORIGINAL_DATABASE_URL`에 이 계정의 별도 Secret 연결을 주입한다. `DATABASE_URL`로 자동 대체하지 않는다.
+  metadata용 DATABASE_URL은 기존 4개 view reader를 유지하거나 서비스 전용 reader로 전환할 수 있다.
+- 원본 조회 시 실제 `current_user`가 전용 role인지 확인한다. 다른 role이나 연결 미설정은 fail closed다.
+- view는 **회원별 RLS가 아니다**. 신뢰하는 서비스만 자격 증명을 가지며 앱이 uploadId/userId/warehouseId/storageKey/filename/PROCESSING을
+  같은 parameterized SQL에서 제한한다. 사람이 전용 자격 증명을 공유해 직접 조회하는 것은 허용하지 않는다.
+- size/MIME/SHA-256·read-only transaction·연결/SQL timeout·rollback을 검사한다. 큰 크기 선언은 CASE로 binary를 읽지 않는다.
+  DB source가 없거나 무결성이 다르면 INVALID_SOURCE로 끝나며 S3/local로 우회하지 않는다.
+- 기존 외부 key는 계속 S3/local reader로 읽는다. 원본·새 credential을 LLM에 보내지 않는다.
 
-SQS contractVersion과 `SourceFile` schema는 유지한다. DB 원본만 `storageKey`를
-`db/<userId>/<uuid>` 형식으로 생성하며 기존 숫자 회원 경로와 구별한다.
+기존 운영 DB는 전체 bootstrap을 다시 실행해 기존 계정 비밀번호를 바꾸지 않는다.
+승인된 one-off `bootstrap-original-reader`는 **새 서비스 계정만** 만들고 기존 계정은 건드리지 않는다.
+동명 계정이 이미 있으면 중단하며 비밀번호를 초기화하지 않는다. 새 빈 DB의 전체 bootstrap은 4개 역할을 준비한다.
+이 경로에 필요한 Secret 생성/주입과 IAM·네트워크 확인은 실제 적용 승인 때 진행한다.
 
-V15의 새 view `ai_upload_originals_v1` 전체 컬럼은 다음과 같다.
+## 적용·복구 경계
 
-`upload_file_id, user_id, warehouse_id, storage_key, original_name, status, sha256, content_type, size_bytes, content`
+이번 승인은 로컬 코드와 검증에 한정된다. 운영 V15·역할/Secret 생성·배포·모드 활성화는 별도 승인 대상이다.
+실제 적용 순서는 대상 환경/SHA·자원·백업/복구 확인 → 서비스 전용 계정만 준비 → V15 → 권한/원본 보존 검증 →
+호환 AI+Secret 주입 → 서버(처음에는 기존 S3 유지) → 별도 DB 모드 활성화다. existing Actions/OIDC·환경 승인을 유지한다.
+기존 원본의 보관 기간을 줄이거나 Secret·업무 파일을 이번 검증에 복사하지 않는다.
 
-`storage_kind=DATABASE`의 upload·warehouse·original을 조인한다. view 소유자는 migration role이며
-AI role에는 이 view의 SELECT만 추가한다. 업무 테이블·원본 테이블 직접 조회·쓰기·DDL은 추가하지 않는다.
-view는 회원별 RLS가 아니다. AI가 uploadId·회원·창고·storageKey·원래 이름·PROCESSING을 SQL에서 함께 제한한다.
+복구는 신규 저장을 S3/local로 돌리고 이미 있는 DB 원본을 읽는 호환 AI는 유지하는 방식이다.
+schema·원본·기존 실패는 보존한다. table DROP/down migration·임의 원본 삭제·구 AI로 무조건 복귀하지 않는다.
+실제 부하·WAL/백업/PITR·브라우저·업무 파일·운영 복원 성공은 별도 검증 사항이다.
 
-AI는 기존 source/월 경계 검증 후 `db/` 경로를 이 view에서 읽고 실제 크기와 SHA-256을 검사한다.
-지정 크기보다 큰 원본은 SQL CASE로 content를 반환하지 않는다. 연결·SQL timeout과 read-only transaction을
-사용하며 종료 시 rollback한다. DB 원본 누락·소유권/해시/크기 불일치는 `INVALID_SOURCE`로 실패한다.
-연결 미설정·DB 장애에는 기존 오류/재시도 경로를 사용하며 local/S3로 대체하지 않는다.
-기존 외부 key는 기존 local/S3 reader를 유지한다. 원본은 LLM에 전달하지 않는다.
+## 로컬 검증 — 2026-11-05
 
-AI 코드: `app/jobs.py`, `app/repository.py`. 계산 engine·prompt·기존 손계산 fixtures는 변경하지 않는다.
-AI의 `docs/decisions/0005-database-original.md`에 동일 계약을 기록한다.
-양쪽 모두 현재 로컬 후속 변경이다.
+- 최신 dev 통합 후 서버 JDK21 test/bootJar: 295개 중292통과·실패/오류0·조건부 생략3.
+- AI Python3.14 전체579통과·Ruff 통과. 실제 공급자/유료 LLM 시험은 하지 않았다.
+- 폐기용 PostgreSQL16에서 V1~V15 upgrade·기존 EXTERNAL 보존·전용/공유 reader 권한·retention 검사를 통과했다.
+- DB 작업 이미지의 비관리자 bootstrap·계정 추가 전용 경로·중복 계정 거부·migration/verify를 통과했다.
+- 실제 로컬 Spring/AI worker/PostgreSQL/Moto의 합성3상품×31일 연결 검사22개 통과: DB 원본 해시/크기·정제 DONE·일별기록93+93,
+  원본/job 실패 rollback·동시202/507·원본 비노출·다른회원/창고 거부·30일 이전 삭제/수정/TRUNCATE 차단·기존 S3 bytes/metadata/정제 보존.
+- 기간 경과 동작은 과거 시각을 가진 합성 row로 검사했다. 실제30일 관측·AWS 원본·최대부하/백업복원·브라우저는 미검증이다.
+- 최초 통합의 XLSX 검증기 인자 컴파일 오류, 개발 의존성 누락, 작업 이미지 파일 접근/기존 reader 검증문 실패와 후속 성공은 구분했다.
+  앱 역할 범위를 넓혀 검사를 통과시키지 않았으며 SQL 리소스를 비관리자 이미지 사용자도 읽도록 제한적으로 읽기 권한을 보장했다.
+- 현재 운영 V15·계정/Secret·배포·모드 전환·S3 이전/삭제는 미실행이다. 테스트 DB·컨테이너·network는 정리했다.
 
-## 보관 정책과 적용 전 결정
+## 과거 로컬 검증 — 2026-11-03
 
-- 파일별 상한은 기존 제한을 유지하며 DB 제약은 최대10 MiB다. 더 작은 runtime 제한을 둘 수 있다.
-- 총량은 DB 모드 시작 전 명시한다. 이번 검증용 한도는 운영 추천값이 아니다.
-- 보관 기간·회원별 quota·실패/구 revision 정리는 정책 미확정이다. 현재는 모두 보존하고 자동 삭제하지 않는다.
-- 기존 local/S3 파일의 이전·삭제는 하지 않는다. 별도 이전 작업은 원본 복사·해시 대조·marker 전환과 복구가 필요하다.
-- bytea·TOAST·WAL·snapshot/PITR·백업 보존량·복구 시간·메모리와 동시 업로드의 영향을 실제 환경에서 검토한다.
-  파일 크기 합계는 실제 DB/WAL/백업 디스크 소비량이 아니다.
-
-## 실제 DB 적용·배포·복구 — 별도 승인 필요
-
-1. 확정할 것: 서버/AI SHA, 환경, 총 보관량·보관 기간, DB 여유·경보·백업/PITR·복구 목표와 영향.
-2. 기존 승인 경로의 DB snapshot이 복구 가능함을 확인하고 V15 포함 DB task image를 검증한다.
-   새 `database-task.sh`는 V1~V15를 대상으로 한다. 기존 one-off Actions/OIDC·환경 승인을 유지한다.
-   새 image를 만들었다는 이유로 실제 migration을 실행하지 않는다.
-3. 승인한 환경의 기존 절차대로 V15를 적용하고 role·view·기존 EXTERNAL 기록을 검증한다.
-4. DB 읽기를 지원하는 AI를 먼저 배포하고, 서버는 처음에 기존 저장 모드를 유지한다.
-   코드 배포와 DB 저장 모드 활성화·총량 설정은 각각 실제 영향과 SHA를 확인한다.
-5. 승인된 테스트 원본으로 hash·정제 저장·실패·큰 메시지·UI 흐름을 검증한 뒤 사용 범위를 넓힌다.
-   SQS/worker 구성은 AI57처럼 별도로 필요하다.
-
-복구: 신규 업로드의 저장 모드를 이전 local/S3로 되돌리고 **DB 원본을 읽는 AI는 유지**한다.
-기존 DB key가 있거나 대기 작업이 있으면 구 AI로 돌아갈 수 없다. schema와 DB 원본은 보존하며
-테이블 DROP·down migration·일괄 상태 변경·기존 원본 삭제를 rollback으로 사용하지 않는다.
-필요한 코드 복구는 원본 reader 호환성을 유지한 SHA로 한다. snapshot restore는 별도 복구 판단이다.
-
-실제 DB에는 적용하지 않았으므로 운영 복구 실행 결과를 주장하지 않는다. 격리 시험과 업무 실측은 구별한다.
-
-## 로컬 검증 — 2026-11-03
 
 서버 전체 테스트187개·bootJar, AI 관련 테스트28개·Ruff, PostgreSQL16 migration/권한 검사를 통과했다.
 기존 migration의 합성 EXTERNAL 기록을 보존한 채 V15를 적용했고 새 binary view와 금지 권한을 확인했다.

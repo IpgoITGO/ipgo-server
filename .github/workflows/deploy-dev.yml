@@ -64,7 +64,6 @@ jobs:
       MAINTENANCE_APPROVED: ${{ inputs.maintenance_approved }}
       ENGINE_ENABLED: ${{ inputs.engine_enabled }}
       ENGINE_CONNECTION_APPROVED: ${{ inputs.engine_connection_approved }}
-      ENGINE_BASE_URL: ${{ vars.AWS_AI_ENGINE_BASE_URL }}
       INSIGHT_ENABLED: ${{ inputs.insight_enabled }}
       INSIGHT_APPROVED: ${{ inputs.insight_approved }}
       INSIGHT_WORKER_ENABLED: ${{ inputs.insight_worker_enabled }}
@@ -77,6 +76,8 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - name: Validate approved deployment before external writes
+        env:
+          ENGINE_BASE_URL: ${{ vars.AWS_AI_ENGINE_BASE_URL }}
         run: python3 scripts/deployment/render_dev_task.py validate
       - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd
         with:
@@ -106,6 +107,7 @@ jobs:
       - name: Render approved image and engine insight settings
         id: render
         env:
+          ENGINE_BASE_URL: ${{ vars.AWS_AI_ENGINE_BASE_URL }}
           SERVER_IMAGE: ${{ steps.login-ecr.outputs.registry }}/ipgo-dev/server:${{ env.IMAGE_TAG }}
         run: |
           python3 scripts/deployment/render_dev_task.py render \

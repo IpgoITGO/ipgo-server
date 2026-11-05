@@ -158,6 +158,8 @@ class DevDeploymentTests(unittest.TestCase):
         for name in ['EXPECTED_SHA','INSIGHT_ENABLED','INSIGHT_APPROVED','INSIGHT_WORKER_ENABLED','ENGINE_BASE_URL']:
             self.assertIn(name+': ${{ ',workflow)
         self.assertIn('python3 scripts/deployment/render_dev_task.py render',workflow)
+        # Environment-level vars are resolved inside runner steps, after the dev environment is declared.
+        self.assertEqual(workflow.count('          ENGINE_BASE_URL: ${{ vars.AWS_AI_ENGINE_BASE_URL }}'),2)
         self.assertIn('task-definition: ${{ steps.render.outputs.task-definition }}',workflow)
 
     def test_legacy_image_and_family_are_separate(self):

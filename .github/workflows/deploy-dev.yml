@@ -13,12 +13,12 @@ on:
         default: false
         type: boolean
       batch_insight_enabled:
-        description: "Allow explicit fixed master batch 812-816 only, lifetime at most five calls; no background generation"
+        description: "Allow explicit fixed master batch 1921-1925 sharing the original 812-816 lifetime five calls; no background generation"
         required: false
         default: false
         type: boolean
       batch_insight_approved:
-        description: "Approve the fixed master batch scope and maximum five possible paid attempts for this SHA"
+        description: "Approve the new fixed master batch scope and shared old/new maximum five possible paid attempts for this SHA"
         required: false
         default: false
         type: boolean

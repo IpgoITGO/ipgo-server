@@ -87,8 +87,17 @@ jobs:
           role-session-name: ipgo-server-deploy
       - uses: aws-actions/amazon-ecr-login@03f1aad4c6c7ffd436567f42f9384779290529bd
         id: login-ecr
+      - name: Look up immutable SHA image
+        id: image_lookup
+        env:
+          AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          ECR_REPOSITORY: ipgo-dev/server
+        run: python3 scripts/deployment/check_ecr_image.py
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069
+        if: steps.image_lookup.outputs.exists == 'false'
       - name: Build and push immutable image
+        if: steps.image_lookup.outputs.exists == 'false'
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc
         with:
           context: .
@@ -96,7 +105,15 @@ jobs:
           push: true
           provenance: true
           sbom: true
-          tags: ${{ steps.login-ecr.outputs.registry }}/ipgo-dev/server:${{ env.IMAGE_TAG }}
+          tags: ${{ steps.image_lookup.outputs.image }}
+      - name: Verify immutable image before deployment
+        id: verified_image
+        env:
+          AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          ECR_REPOSITORY: ipgo-dev/server
+          EXPECTED_IMAGE_DIGEST: ${{ steps.image_lookup.outputs.digest }}
+        run: python3 scripts/deployment/check_ecr_image.py --require-present
       - name: Read current task definition
         run: |
           umask 077
@@ -108,7 +125,7 @@ jobs:
         id: render
         env:
           ENGINE_BASE_URL: ${{ vars.AWS_AI_ENGINE_BASE_URL }}
-          SERVER_IMAGE: ${{ steps.login-ecr.outputs.registry }}/ipgo-dev/server:${{ env.IMAGE_TAG }}
+          SERVER_IMAGE: ${{ steps.verified_image.outputs.image }}
         run: |
           python3 scripts/deployment/render_dev_task.py render \
             --source "$RUNNER_TEMP/task-definition.json" \

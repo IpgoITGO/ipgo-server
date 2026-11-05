@@ -45,4 +45,4 @@ docker run --rm --network "$insight_prefix" \
   -e IPGO_TEST_DB_USERNAME=insight_test -e IPGO_TEST_DB_PASSWORD= -e IPGO_INSIGHT_LOCAL_FASTAPI=true \
   -v "$insight_repo_dir:/workspace" -v "${IPGO_INSIGHT_TEST_GRADLE_HOME:-${HOME}/.gradle}:/gradle-cache" -w /workspace \
   eclipse-temurin:21-jdk-jammy ./gradlew --offline --no-daemon --max-workers=2 test \
-    --tests '*InsightGenerationIntegrationTests' --tests '*SingleInsightIntegrationTests' --rerun-tasks
+    --tests '*InsightGenerationIntegrationTests' --tests '*SingleInsightIntegrationTests' --tests '*BatchInsightIntegrationTests' --rerun-tasks

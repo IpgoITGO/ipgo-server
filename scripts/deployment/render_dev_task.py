@@ -38,12 +38,16 @@ def settings(env):
     # Older callers omit the new controls; absence must keep the exception disabled.
     single = flag({"SINGLE_RESULT_INSIGHT_ENABLED": "false", **env}, "SINGLE_RESULT_INSIGHT_ENABLED")
     single_approved = flag({"SINGLE_RESULT_INSIGHT_APPROVED": "false", **env}, "SINGLE_RESULT_INSIGHT_APPROVED")
+    batch = flag({"BATCH_INSIGHT_ENABLED": "false", **env}, "BATCH_INSIGHT_ENABLED")
+    batch_approved = flag({"BATCH_INSIGHT_APPROVED": "false", **env}, "BATCH_INSIGHT_APPROVED")
     require(mode != "onebox" or maintenance, "One-box restart requires maintenance approval")
     require(not engine or connected, "Engine connection approval is required")
     require(not insight or (engine and approved), "Insight activation requires engine and cost approval")
     require(not worker or insight, "Insight worker requires insight activation")
     require(not single or (engine and single_approved and not insight and not worker),
             "Single result 811 requires separate approval and automatic insight/worker disabled")
+    require(not batch or (engine and batch_approved and not insight and not worker and not single),
+            "Fixed batch requires separate cost approval and automatic insight/worker/single-result disabled")
     require(env.get("DESIRED_COUNT") in ("0", "1"), "Unsupported task count")
     base = env.get("ENGINE_BASE_URL", "")
     require(not engine or bool(base), "AWS_AI_ENGINE_BASE_URL is required when engine is enabled")
@@ -59,7 +63,7 @@ def settings(env):
             require(uri.hostname not in ("localhost", "0.0.0.0", "127.0.0.1", "::1"), "Engine origin cannot be loopback")
         except (ValueError, InvalidDeployment):
             raise InvalidDeployment("Invalid engine origin configuration") from None
-    return {"sha": sha, "mode": mode, "engine": engine, "insight": insight, "worker": worker, "single": single, "base": base}
+    return {"sha": sha, "mode": mode, "engine": engine, "insight": insight, "worker": worker, "single": single, "batch": batch, "base": base}
 
 
 def render(task, image, env):
@@ -86,6 +90,7 @@ def render(task, image, env):
     managed = {"IPGO_API_DOCS_ENABLED": "true", "IPGO_ENGINE_ENABLED": str(config["engine"]).lower(),
                "IPGO_INSIGHT_ENABLED": str(config["insight"]).lower(),
                "IPGO_INSIGHT_SINGLE_RESULT_ENABLED": str(config["single"]).lower(),
+               "IPGO_INSIGHT_BATCH_ENABLED": str(config["batch"]).lower(),
                "IPGO_INSIGHT_WORKER_ENABLED": str(config["worker"]).lower()}
     if config["base"]:
         managed["IPGO_ENGINE_BASE_URL"] = config["base"]

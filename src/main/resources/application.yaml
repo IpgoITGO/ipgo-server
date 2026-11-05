@@ -35,6 +35,7 @@ springdoc:
 
 ipgo:
   insight:
+    batch-enabled: ${IPGO_INSIGHT_BATCH_ENABLED:false}
     single-result-enabled: ${IPGO_INSIGHT_SINGLE_RESULT_ENABLED:false}
     enabled: ${IPGO_INSIGHT_ENABLED:false}
     worker-enabled: ${IPGO_INSIGHT_WORKER_ENABLED:true}

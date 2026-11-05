@@ -10,6 +10,9 @@ public final class InsightBatchManifest {
     public static final int MAX_CALLS = 5;
     public record Target(long productId, long resultId) { }
     public static final List<Target> TARGETS = List.of(
+            new Target(33, 1921), new Target(34, 1922), new Target(35, 1923),
+            new Target(36, 1924), new Target(37, 1925));
+    public static final List<Target> ANCHORS = List.of(
             new Target(33, 812), new Target(34, 813), new Target(35, 814),
             new Target(36, 815), new Target(37, 816));
 

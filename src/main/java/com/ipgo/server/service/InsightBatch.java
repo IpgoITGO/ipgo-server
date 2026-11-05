@@ -18,25 +18,24 @@ import org.springframework.transaction.TransactionDefinition;
 import org.springframework.transaction.support.TransactionTemplate;
 import tools.jackson.databind.json.JsonMapper;
 
-/** Explicit calls only. Five immutable rows are the lifetime budget; no reset, queue or provider retry. */
+/** Explicit new targets share the original five lifetime grants; old versions fail closed after delegation. */
 @Service
 public class InsightBatch implements AutoCloseable {
     private static final Logger log = LoggerFactory.getLogger(InsightBatch.class);
-    private static final String IDS = InsightBatchManifest.TARGETS.stream().map(t -> Long.toString(t.resultId()))
-            .collect(java.util.stream.Collectors.joining(",","(",")"));
     private final JdbcTemplate jdbc;
     private final JsonMapper mapper;
     private final StoredInsightFacts facts;
     private final InsightGeneration generation;
     private final ProductDetailService details;
     private final TransactionTemplate claim;
+    private final InsightBatchBudget budget;
     private final boolean enabled;
     private final Duration timeout;
     private final ScheduledExecutorService recovery = Executors.newSingleThreadScheduledExecutor(
             Thread.ofPlatform().daemon(true).name("insight-batch-recovery").factory());
 
     public InsightBatch(JdbcTemplate jdbc, JsonMapper mapper, StoredInsightFacts facts, InsightGeneration generation,
-            ProductDetailService details, TransactionTemplate tx,
+            ProductDetailService details, InsightBatchBudget budget, TransactionTemplate tx,
             @Value("${ipgo.insight.batch-enabled:false}") boolean enabled,
             @Value("${ipgo.insight.enabled:false}") boolean automatic,
             @Value("${ipgo.insight.worker-enabled:true}") boolean worker,
@@ -47,15 +46,17 @@ public class InsightBatch implements AutoCloseable {
         if (InsightBatchManifest.TARGETS.size() != InsightBatchManifest.MAX_CALLS
                 || InsightBatchManifest.TARGETS.stream().map(InsightBatchManifest.Target::resultId).distinct().count() != InsightBatchManifest.MAX_CALLS
                 || InsightBatchManifest.TARGETS.stream().map(InsightBatchManifest.Target::productId).distinct().count() != InsightBatchManifest.MAX_CALLS
-                || InsightBatchManifest.TARGETS.stream().anyMatch(t -> t.resultId() == 811))
+                || !InsightBatchManifest.ANCHORS.stream().map(InsightBatchManifest.Target::resultId)
+                    .collect(java.util.stream.Collectors.toSet()).equals(java.util.Set.of(812L,813L,814L,815L,816L))
+                || InsightBatchManifest.TARGETS.stream().anyMatch(t -> t.resultId() == 811 || t.resultId() == 698 || InsightBatchManifest.ANCHORS.stream().anyMatch(a -> a.resultId()==t.resultId())))
             throw new IllegalArgumentException("Invalid fixed batch manifest");
         this.jdbc=jdbc; this.mapper=mapper; this.facts=facts; this.generation=generation;
-        this.details=details; this.enabled=enabled; this.timeout=timeout;
+        this.details=details; this.budget=budget; this.enabled=enabled; this.timeout=timeout;
         claim=new TransactionTemplate(tx.getTransactionManager());
         claim.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
     }
 
-    public record Item(long productId, long resultId, String state) { }
+    public record Item(long productId, long resultId, Long reservedByAnchorResultId, String state) { }
     public record Preview(String batchId, boolean enabled, int maximumCalls, int reservedAttempts,
                           int remainingAttempts, String gate, List<Item> targets) { }
 
@@ -63,14 +64,15 @@ public class InsightBatch implements AutoCloseable {
     @org.springframework.transaction.annotation.Transactional(readOnly=true)
     public Preview preview(long owner, String batchId) {
         authorizeScope(owner,batchId);
+        var state=budget.snapshot();
         var rows=InsightBatchManifest.TARGETS.stream().map(t -> {
-            String state;
-            try { checkReady(owner,t); state="READY"; }
-            catch(ProductException e) { state=e.code(); }
-            return new Item(t.productId(),t.resultId(),state);
+            String readiness;
+            try { checkReady(owner,t,state); readiness="READY"; }
+            catch(ProductException e) { readiness=e.code(); }
+            return new Item(t.productId(),t.resultId(),state.delegatedTargets().get(t.resultId()),readiness);
         }).toList();
-        int reserved=reserved();
-        String gate=gate();
+        int reserved=state.reserved();
+        String gate=state.gate();
         return new Preview(batchId,enabled,InsightBatchManifest.MAX_CALLS,reserved,
                 gate.equals("OPEN") ? Math.min(InsightBatchManifest.MAX_CALLS-reserved,(int)rows.stream().filter(t -> t.state().equals("READY")).count()) : 0,gate,rows);
     }
@@ -81,13 +83,13 @@ public class InsightBatch implements AutoCloseable {
         var target=InsightBatchManifest.TARGETS.stream().filter(t -> t.resultId()==resultId).findFirst()
                 .orElseThrow(ProductException::forbidden);
         claim.executeWithoutResult(tx -> {
-            // One shared lock order serializes claims across threads/replicas. Commit before HTTP.
-            var locked=jdbc.queryForList("SELECT result_id FROM ai_explanations WHERE result_id IN " + IDS + " ORDER BY result_id FOR UPDATE",Long.class);
-            if(locked.size()!=InsightBatchManifest.MAX_CALLS) throw ProductException.insightInputUnavailable();
-            checkReady(owner,target);
-            if(reserved()>=InsightBatchManifest.MAX_CALLS) throw ProductException.insightSpent();
-            if(!gate().equals("OPEN")) throw ProductException.insightBatchStopped();
-            var p=facts.restore(resultId,owner);
+            budget.lock();
+            var state=budget.snapshot();
+            var p=checkReady(owner,target,state);
+            if(state.reserved()>=InsightBatchManifest.MAX_CALLS) throw ProductException.insightSpent();
+            if(state.gate().equals("INPUT_UNAVAILABLE")) throw ProductException.insightInputUnavailable();
+            if(!state.gate().equals("OPEN")) throw ProductException.insightBatchStopped();
+            budget.delegate(state,target); // Same transaction as the new row. Old code now refuses further paid work.
             jdbc.update("""
                     UPDATE ai_explanations SET status='PROCESSING',reason_code=NULL,validation_passed=FALSE,
                       request_payload=CAST(? AS JSONB),output_path=?,created_at=CURRENT_TIMESTAMP
@@ -102,7 +104,8 @@ public class InsightBatch implements AutoCloseable {
         if(owner!=InsightBatchManifest.OWNER || !InsightBatchManifest.ID.equals(batchId)) throw ProductException.forbidden();
     }
 
-    private void checkReady(long owner,InsightBatchManifest.Target target) {
+    private InsightRenderer.Prepared checkReady(long owner,InsightBatchManifest.Target target,InsightBatchBudget.Snapshot state) {
+        budget.requireUnused(state,target);
         var owners=jdbc.query("""
                 SELECT p.user_id,p.id,w.user_id FROM calculation_results r JOIN products p ON p.id=r.product_id
                 JOIN calculation_runs cr ON cr.id=r.run_id JOIN warehouses w ON w.id=cr.warehouse_id WHERE r.id=?
@@ -118,27 +121,7 @@ public class InsightBatch implements AutoCloseable {
         if(ready!=1) throw ProductException.insightSpent();
         var current=details.detail(owner,target.productId(),null,null).result();
         if(current==null || current.resultId()!=target.resultId()) throw ProductException.insightResultStale();
-        facts.restore(target.resultId(),owner);
-    }
-
-    private int reserved() {
-        return (int)InsightBatchManifest.TARGETS.stream().filter(this::reserved).count();
-    }
-    private boolean reserved(InsightBatchManifest.Target t) {
-        return jdbc.queryForObject("SELECT COUNT(*) FROM ai_explanations WHERE result_id=? AND output_path=?",Integer.class,
-                t.resultId(),InsightBatchManifest.marker(t.resultId()))==1;
-    }
-    private String gate() {
-        if(jdbc.queryForObject("SELECT COUNT(*) FROM ai_explanations WHERE result_id IN " + IDS,Integer.class)
-                !=InsightBatchManifest.MAX_CALLS) return "INPUT_UNAVAILABLE";
-        for(var t:InsightBatchManifest.TARGETS) {
-            var states=jdbc.query("SELECT status,mode,validation_passed FROM ai_explanations WHERE result_id=? AND output_path=?",
-                    (rs,n) -> rs.getString(1).equals("PROCESSING") ? "IN_PROGRESS" :
-                            rs.getString(1).equals("DONE") && rs.getString(2).equals("LLM") && rs.getBoolean(3) ? "OPEN" : "STOPPED_AFTER_FAILURE",
-                    t.resultId(),InsightBatchManifest.marker(t.resultId()));
-            if(!states.isEmpty() && !states.getFirst().equals("OPEN")) return states.getFirst();
-        }
-        return "OPEN";
+        return facts.restore(target.resultId(),owner);
     }
 
     @jakarta.annotation.PostConstruct
@@ -148,11 +131,11 @@ public class InsightBatch implements AutoCloseable {
     }
     public void recover() {
         if(!enabled) return;
-        for(var t:InsightBatchManifest.TARGETS) {
-            int expired=jdbc.queryForObject("SELECT COUNT(*) FROM ai_explanations WHERE result_id=? AND output_path=? AND status='PROCESSING' AND created_at < ?",
-                    Integer.class,t.resultId(),InsightBatchManifest.marker(t.resultId()),Timestamp.from(Instant.now().minus(timeout).minusSeconds(30)));
-            if(expired==1) generation.expireClaimed(t.resultId());
-        }
+        var expired=jdbc.queryForList("SELECT result_id FROM ai_explanations WHERE result_id IN "+InsightBatchBudget.IDS+
+                " AND status='PROCESSING' AND created_at < ? AND output_path=CONCAT(?,result_id,?)",Long.class,
+                Timestamp.from(Instant.now().minus(timeout).minusSeconds(30)),"batch/"+InsightBatchManifest.ID+"/","/attempt-1");
+        for(long id:expired) generation.expireClaimed(id); // Legacy calls and new calls: fallback only, never retry HTTP.
+
     }
     @jakarta.annotation.PreDestroy public void close() { recovery.shutdownNow(); }
 }

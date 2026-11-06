@@ -916,3 +916,15 @@ AI의 CALCULATE `accuracyEvaluation`은 선택적 확장 필드입니다. 원본
 새 BACKTEST 작업·DB migration·LLM 호출·과거 결과 덮어쓰기는 없습니다.
 
 필드·digest 정규화·호환 규칙: [#93 계약](docs/decisions/accuracy-history-93.md).
+
+### 시연용 인사이트 시간 제한
+
+개발 배포에서 `insight_enabled`와 worker를 켜려면 `insight_expires_at`에 24시간 이내의
+UTC 종료 시각을 명시합니다. 신규 정상 계산부터 생성하며 이전 PENDING 작업은 편입하지 않습니다.
+종료 시각부터 새 작업과 외부 호출을 차단하고, 진행 중 응답의 저장과 기존 인사이트 조회는 유지합니다.
+이 기능은 총 호출 횟수나 실제 청구액 상한을 보장하지 않습니다. AI에도 같은 종료 시각을 설정합니다.
+
+`source_sha`를 생략하면 workflow의 dev SHA를 배포합니다. 현재 실행 버전에 필요한 변경만 포함한
+commit을 배포하려면 dev에 병합된 정확한 source SHA와 같은 `expected_sha`를 지정합니다.
+checkout 후 실제 HEAD와 승인 SHA 일치 및 dev의 ancestor 여부를 AWS 쓰기 전에 검사합니다.
+workflow head SHA와 실제 source SHA는 배포 기록에서 구분합니다.

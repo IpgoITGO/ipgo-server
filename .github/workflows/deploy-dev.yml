@@ -3,9 +3,24 @@ name: Deploy server to AWS dev
 on:
   workflow_dispatch:
     inputs:
+      source_sha:
+        description: "Optional exact source commit already merged into dev; preserves the deployed baseline"
+        required: false
+        default: ""
+        type: string
       expected_sha:
         description: "Full 40-character server SHA approved for this deployment"
         required: true
+        type: string
+      insight_starts_at:
+        description: "UTC start: only explanations created since this instant belong to the demo"
+        required: false
+        default: ""
+        type: string
+      insight_expires_at:
+        description: "UTC deadline for new insight calls (required when insight enabled, within 24h)"
+        required: false
+        default: ""
         type: string
       insight_enabled:
         description: "Queue new AI explanations (requires engine and explicit insight approval)"
@@ -79,11 +94,14 @@ jobs:
     if: github.ref == 'refs/heads/dev' && vars.AWS_DEPLOY_ROLE_ARN != '' && vars.AWS_ACCOUNT_ID != ''
     runs-on: ${{ vars.AWS_DEV_COMPUTE_MODE == 'onebox' && 'ubuntu-24.04-arm' || 'ubuntu-latest' }}
     env:
+      DEPLOYMENT_SOURCE_SHA: ${{ inputs.source_sha || github.sha }}
       EXPECTED_SHA: ${{ inputs.expected_sha }}
       AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
       MAINTENANCE_APPROVED: ${{ inputs.maintenance_approved }}
       ENGINE_ENABLED: ${{ inputs.engine_enabled }}
       ENGINE_CONNECTION_APPROVED: ${{ inputs.engine_connection_approved }}
+      INSIGHT_STARTS_AT: ${{ inputs.insight_starts_at }}
+      INSIGHT_EXPIRES_AT: ${{ inputs.insight_expires_at }}
       INSIGHT_ENABLED: ${{ inputs.insight_enabled }}
       BATCH_INSIGHT_ENABLED: ${{ inputs.batch_insight_enabled }}
       BATCH_INSIGHT_APPROVED: ${{ inputs.batch_insight_approved }}
@@ -95,10 +113,19 @@ jobs:
       COMPUTE_MODE: ${{ vars.AWS_DEV_COMPUTE_MODE }}
       ECS_SERVICE_NAME: ${{ vars.AWS_DEV_COMPUTE_MODE == 'onebox' && 'ipgo-dev-onebox-server' || 'ipgo-dev-server' }}
       ECS_TASK_FAMILY: ${{ vars.AWS_DEV_COMPUTE_MODE == 'onebox' && 'ipgo-dev-onebox-server' || 'ipgo-dev-server' }}
-      IMAGE_TAG: ${{ github.sha }}${{ vars.AWS_DEV_COMPUTE_MODE == 'onebox' && '-arm64' || '' }}
+      IMAGE_TAG: ${{ inputs.source_sha || github.sha }}${{ vars.AWS_DEV_COMPUTE_MODE == 'onebox' && '-arm64' || '' }}
     environment: dev
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ inputs.source_sha || github.sha }}
+          fetch-depth: 0
+      - name: Verify exact approved source merged into dev
+        run: |
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          git fetch origin dev
+          git merge-base --is-ancestor HEAD origin/dev
+
       - name: Validate approved deployment before external writes
         env:
           ENGINE_BASE_URL: ${{ vars.AWS_AI_ENGINE_BASE_URL }}

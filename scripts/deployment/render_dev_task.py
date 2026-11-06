@@ -1,4 +1,5 @@
 """AWS 호출 없이 dev 배포 승인 조건을 검사하고 task definition을 렌더링한다."""
+from datetime import datetime, timezone
 import argparse
 import copy
 import json
@@ -26,7 +27,7 @@ def flag(env, name):
 def settings(env):
     sha = env.get("EXPECTED_SHA", "")
     require(re.fullmatch(r"[0-9a-f]{40}", sha) is not None, "A full approved EXPECTED_SHA is required")
-    require(sha == env.get("GITHUB_SHA"), "Workflow SHA differs from the approved SHA")
+    require(sha == env.get("DEPLOYMENT_SOURCE_SHA", env.get("GITHUB_SHA")), "Workflow SHA differs from the approved SHA")
     mode = env.get("COMPUTE_MODE", "")
     require(mode in ("", "legacy", "onebox"), "Unsupported compute mode")
     maintenance = flag(env, "MAINTENANCE_APPROVED")
@@ -43,6 +44,18 @@ def settings(env):
     require(mode != "onebox" or maintenance, "One-box restart requires maintenance approval")
     require(not engine or connected, "Engine connection approval is required")
     require(not insight or (engine and approved), "Insight activation requires engine and cost approval")
+    expires = env.get("INSIGHT_EXPIRES_AT", "")
+    starts = env.get("INSIGHT_STARTS_AT", "")
+    if insight:
+        try:
+            start = datetime.fromisoformat(starts.replace("Z", "+00:00"))
+            end = datetime.fromisoformat(expires.replace("Z", "+00:00"))
+            require(start.tzinfo is not None and end.tzinfo is not None and start < end, "Invalid insight window")
+            require(-86400 <= (start-datetime.now(timezone.utc)).total_seconds() <= 0, "Insight start must be recent")
+            require(end.tzinfo is not None and 0 < (end - datetime.now(timezone.utc)).total_seconds() <= 86400,
+                    "Insight expiry must be within the next day")
+        except ValueError:
+            raise InvalidDeployment("Explicit UTC insight expiry is required") from None
     require(not worker or insight, "Insight worker requires insight activation")
     require(not single or (engine and single_approved and not insight and not worker),
             "Single result 811 requires separate approval and automatic insight/worker disabled")
@@ -63,7 +76,7 @@ def settings(env):
             require(uri.hostname not in ("localhost", "0.0.0.0", "127.0.0.1", "::1"), "Engine origin cannot be loopback")
         except (ValueError, InvalidDeployment):
             raise InvalidDeployment("Invalid engine origin configuration") from None
-    return {"sha": sha, "mode": mode, "engine": engine, "insight": insight, "worker": worker, "single": single, "batch": batch, "base": base}
+    return {"sha": sha, "mode": mode, "engine": engine, "insight": insight, "worker": worker, "single": single, "batch": batch, "base": base, "expires": expires, "starts": starts}
 
 
 def render(task, image, env):
@@ -92,6 +105,8 @@ def render(task, image, env):
                "IPGO_INSIGHT_SINGLE_RESULT_ENABLED": str(config["single"]).lower(),
                "IPGO_INSIGHT_BATCH_ENABLED": str(config["batch"]).lower(),
                "IPGO_INSIGHT_WORKER_ENABLED": str(config["worker"]).lower()}
+    managed["IPGO_INSIGHT_DEMO_STARTS_AT"] = config["starts"] if config["insight"] else ""
+    managed["IPGO_INSIGHT_DEMO_EXPIRES_AT"] = config["expires"] if config["insight"] else ""
     if config["base"]:
         managed["IPGO_ENGINE_BASE_URL"] = config["base"]
     server["environment"] = [e for e in previous if e["name"] not in managed]

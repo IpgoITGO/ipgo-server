@@ -1,3 +1,4 @@
+from datetime import datetime, timedelta, timezone
 import copy
 import importlib.util
 import json
@@ -75,11 +76,24 @@ class DevDeploymentTests(unittest.TestCase):
             self.assertIn(name+': ${{ inputs.'+field+' }}',workflow)
             with self.assertRaises(module.InvalidDeployment): module.settings(dict(self.env,**{name:'TRUE'}))
 
+    def test_insight_window_is_required_and_rendered(self):
+        for value in ('', 'bad', '2000-01-01T00:00:00Z', '2026-11-06T08:30:00'):
+            with self.assertRaises(module.InvalidDeployment):
+                module.settings(dict(self.env, INSIGHT_EXPIRES_AT=value))
+        values={e['name']:e['value'] for e in self.rendered()['containerDefinitions'][0]['environment']}
+        self.assertEqual(values['IPGO_INSIGHT_DEMO_EXPIRES_AT'],self.env['INSIGHT_EXPIRES_AT'])
+        self.assertEqual(values['IPGO_INSIGHT_DEMO_STARTS_AT'],self.env['INSIGHT_STARTS_AT'])
+
+    def test_exact_source_pin_still_rejects_mismatch(self):
+        self.assertEqual(module.settings(dict(self.env, DEPLOYMENT_SOURCE_SHA=SHA))['sha'],SHA)
+        with self.assertRaises(module.InvalidDeployment):
+            module.settings(dict(self.env, DEPLOYMENT_SOURCE_SHA='b'*40))
+
     def setUp(self):
         self.env = dict(EXPECTED_SHA=SHA, GITHUB_SHA=SHA, AWS_ACCOUNT_ID=ACCOUNT,
                         COMPUTE_MODE='onebox', MAINTENANCE_APPROVED='true', ENGINE_ENABLED='true',
                         ENGINE_CONNECTION_APPROVED='true', ENGINE_BASE_URL='http://ai.internal:8000',
-                        INSIGHT_ENABLED='true', INSIGHT_APPROVED='true', INSIGHT_WORKER_ENABLED='true', DESIRED_COUNT='1')
+                        INSIGHT_STARTS_AT=(datetime.now(timezone.utc)-timedelta(minutes=1)).isoformat(), INSIGHT_EXPIRES_AT=(datetime.now(timezone.utc)+timedelta(hours=2)).isoformat(), INSIGHT_ENABLED='true', INSIGHT_APPROVED='true', INSIGHT_WORKER_ENABLED='true', DESIRED_COUNT='1')
         self.task = dict(family='ipgo-dev-onebox-server', taskRoleArn='synthetic-task-role',
                          executionRoleArn='synthetic-execution-role', networkMode='bridge',
                          containerDefinitions=[dict(name='server', image='old-image', memory=448,

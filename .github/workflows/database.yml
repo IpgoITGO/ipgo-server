@@ -10,6 +10,7 @@ on:
       - "scripts/database-task.sh"
       - "scripts/verify-database-task-image.sh"
       - "scripts/verify-postgres-migrations.sh"
+      - "scripts/verify-insight-history-upgrade.sh"
       - "src/main/resources/db/migration/**"
       - "src/test/**"
       - "build.gradle"
@@ -36,5 +37,7 @@ jobs:
         run: ./gradlew test
       - name: Verify PostgreSQL roles and view
         run: ./scripts/verify-postgres-migrations.sh
+      - name: Verify deferred-schema insight history upgrade
+        run: ./scripts/verify-insight-history-upgrade.sh
       - name: Verify database task image
         run: ./scripts/verify-database-task-image.sh

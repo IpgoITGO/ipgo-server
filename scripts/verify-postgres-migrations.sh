@@ -92,7 +92,7 @@ migration_count="$(docker exec "${database_container}" \
 table_count="$(docker exec "${database_container}" \
   psql -U ipgo_migrator -d ipgo -Atc \
   "SELECT COUNT(*) FROM pg_tables WHERE schemaname = 'public' AND tablename <> 'flyway_schema_history'")"
-if [[ "${migration_count}" != "17" || "${table_count}" != "30" ]]; then
+if [[ "${migration_count}" != "18" || "${table_count}" != "31" ]]; then
   echo "unexpected schema: migrations=${migration_count}, tables=${table_count}" >&2
   exit 1
 fi
@@ -171,5 +171,11 @@ expect_denied ipgo_server "UPDATE receipt_matching_allocations SET warehouse_id=
 expect_denied ipgo_ai_reader "SELECT * FROM receipt_matching_events"
 expect_denied ipgo_ai_reader "SELECT * FROM receipt_matching_allocations"
 expect_denied ipgo_ai_service_reader "SELECT * FROM receipt_matching_reports"
+
+# Server owns call observations; neither AI reader may inspect requests/usage or change history.
+docker exec "${database_container}" psql -v ON_ERROR_STOP=1 -U ipgo_server -d ipgo \
+  -c "SELECT attempt_id,result_id,input_tokens FROM ai_explanation_calls; UPDATE ai_explanation_calls SET status='DONE' WHERE false" >/dev/null
+expect_denied ipgo_ai_reader "SELECT * FROM ai_explanation_calls"
+expect_denied ipgo_ai_service_reader "SELECT * FROM ai_explanation_calls"
 
 echo "PostgreSQL migrations, tenant integrity, and database roles verified."

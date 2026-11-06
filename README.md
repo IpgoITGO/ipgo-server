@@ -463,16 +463,23 @@ S2·S3 모두 Bearer JWT가 필요하며 CSRF는 요구하지 않습니다. 기�
 
 ### 기존 발주 물량 (R1~R3)
 
-이미 발주했지만 아직 도착하지 않은 물량(상품·수량·도착 예정일)을 `planned_receipts`에 저장합니다(BE-07). 도착 예정일이 있으면 `PENDING`(계산에 반영), 없으면 `NO_DATE`(저장만 하고 계산 제외)입니다. 수량은 1 이상 정수입니다.
+이미 발주했지만 아직 도착하지 않은 물량(상품·수량·도착 예정일)을 `planned_receipts`에 저장합니다(BE-07). 서울 오늘보다 예정일이 이전인 미입고 발주는 `OVERDUE`(계산 제외), 당일·미래는 `PENDING`(계산 후보), 날짜가 없으면 `NO_DATE`(계산 제외)입니다. `RECEIVED`·`CANCELLED`는 날짜 판정보다 우선합니다. 수량은 1 이상 정수입니다.
 
 | API | 동작 |
 |---|---|
 | `GET /api/planned-receipts` (R1) | 취소하지 않은 발주 목록. 도착 예정일 빠른 순, 예정일 없는 발주는 맨 뒤. 응답 `{items, total}`, 항목은 `receiptId`, `productId`, `skuName`, `quantity`, `expectedOn`, `receivedOn`, `status`, `reflected` |
 | `POST /api/planned-receipts` (R2) | `{productId, quantity, expectedOn}`. `201 {"receiptId", "reflected", "runId"}`. `runId`는 계산 번호 또는 선행 조건 미충족 시 null. `reflected: false`면 화면이 "계산에 반영되지 않음"을 안내 |
-| `PATCH /api/planned-receipts/{receiptId}` (R3) | `quantity`·`expectedOn` 중 보낸 칸만 수정. `NO_DATE`에 도착일을 넣으면 `PENDING` |
+| `PATCH /api/planned-receipts/{receiptId}` (R3) | `quantity`·`expectedOn` 중 보낸 칸만 수정. 예정일 변경 뒤 서울 오늘 기준으로 `PENDING`/`OVERDUE` 재판정 |
 | `DELETE /api/planned-receipts/{receiptId}` (R3) | 취소. `204`. 행은 지우지 않고 `CANCELLED`로 남기며, 이후 수정·취소는 `404` |
 
 R2·R3은 Bearer JWT가 필요하고, 다른 회원의 상품·발주는 `403`, 없는 상품·발주는 `404`입니다. 입고 자동 매칭과 확인 사유는 [#90 결정](docs/decisions/0010-receipt-matching.md)을 따릅니다. 입고 완료 발주의 수정·취소는 `409 RECEIPT_RECEIVED`로 거절합니다. 등록·수정·취소 후 입력이 달라지면 계산을 요청합니다. 날짜 없는 발주도 설명용 입력에 포함하므로 새 계산 번호가 생길 수 있지만 미래 입고량에서는 제외합니다.
+
+지연 판정은 R1·R2·R3 응답과 새 계산 입력에서 같은 서울 업무일 규칙을 사용합니다.
+`reflected`는 현재 날짜상 계산 후보 여부이며 실제 계산 생성·완료를 보장하지 않습니다.
+수불부 기준일 이하의 예정일은 이미 자료에 반영된 구간이므로 입력에서 추가 제외합니다.
+날짜 경과만으로 DB 상태·기존 run snapshot을 수정하거나 자정 자동 재계산을 시작하지 않습니다.
+목록은 다음 조회에서, 계산은 다음 업로드·설정/발주 변경·명시적 재계산에서 새 날짜를 적용합니다.
+[지연 정책과 검증 범위](docs/decisions/0011-overdue-receipts.md)를 따릅니다.
 
 ### 계산 상태 (C2)
 
@@ -709,7 +716,7 @@ DB commit이 끝난 뒤에만 결과 메시지를 삭제하며 같은 jobId의 �
 동일 기간의 최신 revision이 처리 중/실패 상태면 예전 DONE revision으로 대체하지 않습니다.
 전월 재고 연결은 직전 월 최신 DONE 원본의 월말 재고만 사용하며, 월말 기록이 없으면 명시적으로 실패합니다.
 계산 전 창고 기본 입고 조건을 확인해야 합니다. 원가·설정이 없는 상품은 계산 불가 사유를 반환합니다.
-꺼진 상품, 날짜 없는 발주와 기준일이 지난 예정 발주는 미래 입고량에 넣지 않습니다.
+꺼진 상품, 날짜 없는 발주, 서울 오늘보다 예정일이 이전인 미입고 발주와 수불부 기준일(asOfDate) 이하의 예정 발주는 미래 입고량에 넣지 않습니다.
 날짜 없는(`NO_DATE`) 발주는 계산 요청의 `noDateReceipts: [{productId, quantity}]`로 따로 보냅니다(#86). 엔진은 수량 계산에 쓰지 않고, AI 인사이트가 "도착 예정일 없는 발주 N개는 계산에 넣지 않음"을 알려 줄 때만 씁니다. 날짜 없는 발주를 추가·취소하면 입력이 달라져 새 계산을 만듭니다.
 선택한 자료에서 검산 제외된 활성 상품은 이번 계산에서도 제외하며 원래 제외 사유를 보존합니다.
 비활성 상품이 과거 업로드의 검산 제외 목록에 남아 있어도 새 계산 snapshot에는 포함하지 않아 정상 상품의 결과 저장을 막지 않습니다.

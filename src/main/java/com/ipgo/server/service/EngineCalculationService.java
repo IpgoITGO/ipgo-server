@@ -52,6 +52,13 @@ public class EngineCalculationService {
     @Transactional
     public Long request(long userId, long warehouseId, String trigger, boolean force) {
         if (!jobs.enabled()) return null;
+        return request(userId, warehouseId, trigger, force, LocalDate.now(clock.withZone(DashboardService.SEOUL)));
+    }
+
+    // 발주 변경 응답과 snapshot이 자정에 걸쳐도 같은 업무일을 쓰도록 호출자가 고정할 수 있다.
+    @Transactional
+    public Long request(long userId, long warehouseId, String trigger, boolean force, LocalDate today) {
+        if (!jobs.enabled()) return null;
         var warehouse = warehouses.findByIdForUpdate(warehouseId).orElseThrow();
         if (!warehouse.getUserId().equals(userId)) throw new IllegalArgumentException("Engine owner mismatch");
         // S1 is a suggestion. Do not invent a review cycle before the seller confirms settings.
@@ -61,7 +68,6 @@ public class EngineCalculationService {
                 .filter(u -> "DONE".equals(u.getStatus())).sorted(Comparator.comparing(UploadFile::getPeriodStart)).toList();
         if (sources.isEmpty()) return null;
         LocalDate asOf = sources.stream().map(UploadFile::getPeriodEnd).max(LocalDate::compareTo).orElseThrow();
-        LocalDate today = LocalDate.now(clock.withZone(DashboardService.SEOUL));
         if (today.isBefore(asOf)) return null;
         var active = products.findByUserIdAndSkuBarcodeIn(userId, jdbc.queryForList(
                 "SELECT sku_barcode FROM products WHERE user_id = ? AND is_active = TRUE ORDER BY id", String.class, userId))
@@ -93,7 +99,7 @@ public class EngineCalculationService {
         }
         var activeReceipts = receipts.findActive(warehouseId);
         List<Map<String, Object>> planned = activeReceipts.stream()
-                .filter(r -> r.isReflected() && ids.contains(r.getProductId()) && r.getExpectedOn() != null)
+                .filter(r -> r.isReflectedOn(today) && ids.contains(r.getProductId()) && r.getExpectedOn() != null)
                 // Past expected dates are not moved to today or counted as future arrivals.
                 .filter(r -> r.getExpectedOn().isAfter(asOf))
                 .sorted(Comparator.comparing(r -> r.getId()))

@@ -92,6 +92,15 @@ public class PlannedReceipt {
         this.updatedAt = Instant.now();
     }
 
+    // 정정 service가 같은 창고/사건의 활성 배정을 확인하고 잠근 transaction에서만 호출한다.
+    public void releaseForCorrection(LocalDate date) {
+        if (!isReceived() || !java.util.Objects.equals(receivedOn,date))
+            throw new IllegalStateException("Receipt allocation does not match correction");
+        this.status = expectedOn == null ? NO_DATE : PENDING;
+        this.receivedOn = null;
+        this.updatedAt = Instant.now();
+    }
+
     private void requireMutable() {
         if (isReceived()) throw com.ipgo.server.exception.ProductException.receiptReceived();
     }

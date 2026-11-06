@@ -18,9 +18,27 @@ public final class UploadTestDatabase {
                     new org.springframework.core.io.ClassPathResource("db/migration/V16__create_receipt_matching.sql"))
                     .execute(java.util.Objects.requireNonNull(jdbc.getDataSource()));
         }
+        if (jdbc.queryForObject("SELECT COUNT(*) FROM information_schema.tables WHERE LOWER(table_name) = 'receipt_correction_decisions'", Integer.class) == 0) {
+            try {
+                var resource = new org.springframework.core.io.ClassPathResource("db/migration/V18__receipt_correction_decisions.sql");
+                String sql = resource.getContentAsString(java.nio.charset.StandardCharsets.UTF_8)
+                        .split("-- PostgreSQL role permissions")[0];
+                new org.springframework.jdbc.datasource.init.ResourceDatabasePopulator(
+                        new org.springframework.core.io.ByteArrayResource(sql.getBytes(java.nio.charset.StandardCharsets.UTF_8)))
+                        .execute(java.util.Objects.requireNonNull(jdbc.getDataSource()));
+            } catch (java.io.IOException e) { throw new IllegalStateException(e); }
+        }
     }
 
     public static void clear(JdbcTemplate jdbc) {
+        try (var connection = java.util.Objects.requireNonNull(jdbc.getDataSource()).getConnection()) {
+            if (connection.getMetaData().getDatabaseProductName().equals("PostgreSQL")) {
+                jdbc.execute("SELECT ipgo_test_clear_receipt_history()");
+            } else {
+                jdbc.update("DELETE FROM receipt_allocation_history");
+                jdbc.update("DELETE FROM receipt_correction_decisions");
+            }
+        } catch (java.sql.SQLException e) { throw new IllegalStateException(e); }
         jdbc.update("DELETE FROM receipt_matching_reports");
         jdbc.update("DELETE FROM receipt_matching_allocations");
         jdbc.update("DELETE FROM receipt_matching_events");

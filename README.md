@@ -406,6 +406,36 @@ FAILED이면 `error.code`와 안전한 `error.message`를 반환합니다. 처�
 
 DB 기록 저장이 실패하면 이미 보관한 원본 폴더는 남을 수 있습니다.
 
+### 입고 정정 확인과 수동 확정 (#134 / IPGO-159)
+
+U2는 업로드 당시의 판정입니다. 현재 확인 필요 목록과 사용자 확정 결과는 별도로 조회합니다.
+
+| 메서드 | 경로 | 용도 |
+|---|---|---|
+| GET | `/api/receipt-corrections?state=OPEN&cursor=0&size=20` | 본인 사건 목록. RESOLVED/ALL도 지원, size는1~50 |
+| GET | `/api/receipt-corrections/{reviewId}` | 최신 원본·기존 배정·후보·허용 동작·경고·최근 결정 |
+| POST | `/api/receipt-corrections/{reviewId}/preview` | 저장 없이 전후 배정·발주 영향 확인 |
+| POST | `/api/receipt-corrections/{reviewId}/decisions` | 이유와 요청키로 수동 확정 |
+
+첫 버전은 SOURCE_CHANGED만 처리합니다. KEEP는 기존 배정을 유지하고, REPLACE는 최종 발주 ID
+전체를 명시합니다. 빈 목록은 전체 해제이며, 부분 배정이나 다른 날짜의 입고 합산은 하지 않습니다.
+preview는 `expectedVersion`, `action`, `receiptIds`를 받으며 확정에는 `reason`과 UUID
+`idempotencyKey`도 필요합니다. 같은 요청 재시도는 최초 결과를 반환하고 다른 내용의 키 재사용과
+오래된 검토 내용은409로 거절합니다. GET/preview는 업무 상태를 바꾸지 않습니다.
+
+최신 revision이 PROCESSING/FAILED이면 확정할 수 없습니다. 원본이 부족·누락·검산 불가인 상태에서
+기존 처리를 유지해도 경고는 남습니다. 같은 내용 재업로드에서 수동 확정을 되풀이하거나 남은 수량을
+새 발주에 자동 배정하지 않습니다. 새 원본 변경은 다시 검토합니다.
+
+V18은 기존 배정을 BASELINE 이력으로 보존한 뒤 감사 원장과 현재 배정을 같은 트랜잭션에서 관리합니다.
+과거 U2·원본·계산 결과를 수정하지 않으며 배정 변화가 있을 때 필요한 계산/outbox만 요청합니다.
+V18 적용 전 이 코드를 배포하지 않습니다. 실제 DB의 V15 보류와 후속 migration 승인 범위를 확인하고
+백업·선택 적용·복구를 별도 검토해야 합니다. UI 연결과 실제 개발 배포 검증은 후속 단계입니다.
+
+[정정 계약·오류·멱등성·검증·복구](docs/decisions/0012-receipt-corrections.md)를 따릅니다.
+로컬 관련 검사는 `./gradlew test --tests '*ReceiptCorrectionIntegrationTests'`로 실행하며,
+폐기 PostgreSQL의 migration·권한·기존 매칭 회귀는 `scripts/testing/verify-receipt-matching.sh`를 사용합니다.
+
 확장자나 클라이언트의 Content-Type만 신뢰하지 않고 ZIP의 CRC, 필수 OOXML 구성과 주요 XML을 확인합니다. 압축 해제 총량 100MiB, 항목 수 2,000개, 검사 대상 주요 XML 하나당 1MiB로 제한하며 매크로·DTD·외부 엔티티를 거절합니다. 검사 중 ZIP 내용을 파일로 풀지 않습니다. 이 검사는 기본 컨테이너 검사이며 모든 셀·관계의 유효성 검사나 악성코드 검사를 대신하지 않습니다. 수불부 필수 열·기간·재고 검산은 Python 연동 단계에서 수행합니다.
 
 ### 로컬 보관 구조

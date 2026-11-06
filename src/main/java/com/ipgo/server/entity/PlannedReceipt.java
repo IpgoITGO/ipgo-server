@@ -14,7 +14,7 @@ import lombok.Getter;
 import lombok.NoArgsConstructor;
 
 // 기존 발주 물량. 도착 예정일이 있으면 PENDING, 없으면 NO_DATE로 시작한다.
-// RECEIVED는 정제 입고 매칭으로만 전환한다. OVERDUE 판정은 #91 범위다.
+// RECEIVED는 정제 입고 매칭으로만 전환한다. 지연 상태는 서울 업무일로 읽을 때 판단한다.
 @Entity
 @Table(name = "planned_receipts")
 @Getter
@@ -100,8 +100,15 @@ public class PlannedReceipt {
         return CANCELLED.equals(status);
     }
 
-    // 계산에 넣는 물량인지. 지금은 도착 예정일이 있는 PENDING만 반영한다.
-    public boolean isReflected() {
-        return PENDING.equals(status);
+    // 날짜 경과만으로 DB를 쓰지 않는다. 입고 완료/취소 상태가 날짜 판정보다 우선한다.
+    public String statusOn(LocalDate today) {
+        if (isReceived() || isCancelled()) return status;
+        if (expectedOn == null) return NO_DATE;
+        return expectedOn.isBefore(today) ? "OVERDUE" : PENDING;
+    }
+
+    // 계산 후보. 수불부에 이미 포함된 날짜(asOfDate 이하)는 계산 입력에서 추가 제외한다.
+    public boolean isReflectedOn(LocalDate today) {
+        return PENDING.equals(statusOn(today));
     }
 }

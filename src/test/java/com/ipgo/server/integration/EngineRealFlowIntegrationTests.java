@@ -35,6 +35,8 @@ class EngineRealFlowIntegrationTests {
     @Autowired EngineJobs jobs;
     @Autowired EngineResults results;
     @Autowired EngineCalculationService calculations;
+    @Autowired com.ipgo.server.service.PlannedReceiptService plannedReceipts;
+    @Autowired java.time.Clock businessClock;
     @Autowired com.ipgo.server.service.CalculationRunService calculationStatus;
     @Autowired com.ipgo.server.service.DashboardService dashboard;
     @Autowired UploadRecordService records;
@@ -218,7 +220,7 @@ class EngineRealFlowIntegrationTests {
                 }
                 jdbc.update("UPDATE warehouses SET default_order_unit_qty=5 WHERE id=?", f.upload().getWarehouseId());
                 jdbc.update("INSERT INTO planned_receipts(product_id,warehouse_id,expected_on,quantity,status,created_at,updated_at) VALUES (?,?,?,?, 'PENDING', CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)",
-                        f.normal(), f.upload().getWarehouseId(), DAY.plusDays(3), 9);
+                        f.normal(), f.upload().getWarehouseId(), LocalDate.now(businessClock.withZone(java.time.ZoneId.of("Asia/Seoul"))).plusDays(3), 9);
                 nextRun[0] = calculations.request(f.owner(), f.upload().getWarehouseId(), "RECEIPTS", false);
             });
             pending[0].get(20, java.util.concurrent.TimeUnit.SECONDS);
@@ -459,6 +461,50 @@ class EngineRealFlowIntegrationTests {
         assertThat(calculations.request(owner, first.getWarehouseId(), "SETTINGS", false)).isNull();
         results.accept(failure(second));
         assertThat(calculations.request(owner, first.getWarehouseId(), "SETTINGS", false)).isNull();
+    }
+
+    @Test void overdueListAndMutationResponsesAgreeWithImmutableCalculationInputs() throws Exception {
+        var f = exclusionRun();
+        LocalDate today = LocalDate.now(businessClock.withZone(java.time.ZoneId.of("Asia/Seoul")));
+        var past = plannedReceipts.create(f.owner(), new com.ipgo.server.dto.request.PlannedReceiptRequest(
+                f.normal(), 4L, today.minusDays(1)));
+        assertThat(past.reflected()).isFalse();
+        assertThat(plannedReceipts.create(f.owner(), new com.ipgo.server.dto.request.PlannedReceiptRequest(
+                f.normal(), 5L, today)).reflected()).isTrue();
+        plannedReceipts.create(f.owner(), new com.ipgo.server.dto.request.PlannedReceiptRequest(
+                f.normal(), 6L, today.plusDays(1)));
+        var last = plannedReceipts.create(f.owner(), new com.ipgo.server.dto.request.PlannedReceiptRequest(
+                f.normal(), 7L, null));
+        var input = calculationInput(last.runId());
+        assertThat(receiptQuantities(input, "plannedReceipts")).containsExactly(5L, 6L);
+        assertThat(receiptQuantities(input, "noDateReceipts")).containsExactly(7L);
+        var listed = plannedReceipts.list(f.owner()).items();
+        assertThat(listed.getFirst().status()).isEqualTo("OVERDUE");
+        assertThat(listed.getFirst().reflected()).isFalse();
+        assertThat(listed).filteredOn(com.ipgo.server.dto.response.PlannedReceiptItem::reflected)
+                .extracting(com.ipgo.server.dto.response.PlannedReceiptItem::quantity).containsExactly(5L, 6L);
+        var changed = plannedReceipts.update(f.owner(), past.receiptId(),
+                new com.ipgo.server.dto.request.PlannedReceiptUpdateRequest(null, today.plusDays(2)));
+        assertThat(changed.receipt().status()).isEqualTo("PENDING");
+        assertThat(changed.receipt().reflected()).isTrue();
+        assertThat(receiptQuantities(calculationInput(changed.runId()), "plannedReceipts"))
+                .containsExactly(4L, 5L, 6L);
+        long cancelled = plannedReceipts.cancel(f.owner(), past.receiptId());
+        assertThat(receiptQuantities(calculationInput(cancelled), "plannedReceipts"))
+                .containsExactly(5L, 6L);
+        assertThat(calculationInput(last.runId())).isEqualTo(input);
+        assertThat(plannedReceipts.list(f.owner()).items()).extracting(
+                com.ipgo.server.dto.response.PlannedReceiptItem::receiptId).doesNotContain(past.receiptId());
+    }
+
+    private List<Long> receiptQuantities(tools.jackson.databind.JsonNode input, String field) {
+        var quantities = new java.util.ArrayList<Long>();
+        for (var receipt : input.path(field)) quantities.add(receipt.path("quantity").asLong());
+        return quantities;
+    }
+
+    private tools.jackson.databind.JsonNode calculationInput(long run) {
+        return jobs.find(jdbc.queryForObject("SELECT job_id FROM calculation_runs WHERE id=?", String.class, run)).payload();
     }
 
     @Test void calculationSnapshotIsOwnerScopedAndImmutable() throws Exception {

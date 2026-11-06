@@ -20,18 +20,21 @@ public class ReplenishmentService {
     private final ProductRepository products;
     private final ReplenishmentSettingRepository settings;
     private final EngineCalculationService calculations;
+    private final ReviewCycleSuggestionService suggestions;
 
     public ReplenishmentService(WarehouseService warehouses, ProductRepository products,
-            ReplenishmentSettingRepository settings, EngineCalculationService calculations) {
+            ReplenishmentSettingRepository settings, EngineCalculationService calculations, ReviewCycleSuggestionService suggestions) {
         this.warehouses = warehouses;
         this.products = products;
         this.settings = settings;
         this.calculations = calculations;
+        this.suggestions = suggestions;
     }
 
     @Transactional(readOnly = true)
     public DefaultSettings defaults(long userId) {
-        return DefaultSettings.from(warehouses.findDefault(userId));
+        var warehouse = warehouses.findDefault(userId);
+        return DefaultSettings.from(warehouse, suggestions.defaults(warehouse));
     }
 
     @Transactional

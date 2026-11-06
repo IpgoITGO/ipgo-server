@@ -25,12 +25,14 @@ import org.springframework.transaction.annotation.Transactional;
 // 정제 결과를 받아 상품(바코드 1개 = 1행)과 재고관리단위(LOT)를 자동 등록한다 (BE-05).
 @Service
 public class ProductRegistrationService {
+    private final BillingService billing;
     private final WarehouseRepository warehouses;
     private final ProductRepository products;
     private final InventoryUnitRepository inventoryUnits;
 
     public ProductRegistrationService(WarehouseRepository warehouses, ProductRepository products,
-            InventoryUnitRepository inventoryUnits) {
+            InventoryUnitRepository inventoryUnits, BillingService billing) {
+        this.billing=billing;
         this.warehouses = warehouses;
         this.products = products;
         this.inventoryUnits = inventoryUnits;
@@ -53,6 +55,7 @@ public class ProductRegistrationService {
                 .filter(entry -> !productsByBarcode.containsKey(entry.getKey()))
                 .map(entry -> new Product(userId, entry.getKey(), entry.getValue()))
                 .toList();
+        billing.assertProductCapacity(userId, newProducts.size());
         products.saveAll(newProducts).forEach(product -> productsByBarcode.put(product.getSkuBarcode(), product));
 
         // 2) 재고관리단위: sku_mixed_id + 입고일이 처음이면 새로 만든다. 입고일이 다르면 다른 단위다.

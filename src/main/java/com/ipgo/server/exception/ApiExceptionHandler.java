@@ -17,6 +17,12 @@ import tools.jackson.core.JacksonException;
 
 @RestControllerAdvice
 public class ApiExceptionHandler {
+    @ExceptionHandler(BillingException.class)
+    ResponseEntity<ApiError> billing(BillingException exception) {
+        return ResponseEntity.status(exception.status()).header("Cache-Control", "no-store")
+                .body(new ApiError(exception.code(), exception.getMessage()));
+    }
+
     @ExceptionHandler(AuthTokenException.class)
     ResponseEntity<ApiError> authToken(AuthTokenException exception) {
         return ResponseEntity.status(401).header("Cache-Control", "no-store")

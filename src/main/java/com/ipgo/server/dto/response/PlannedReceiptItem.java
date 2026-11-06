@@ -10,10 +10,10 @@ import java.util.List;
 public record PlannedReceiptItem(Long receiptId, Long productId, String skuName, Long quantity,
         LocalDate expectedOn, LocalDate receivedOn, String status, boolean reflected) {
 
-    public static PlannedReceiptItem from(PlannedReceipt receipt, Product product) {
+    public static PlannedReceiptItem from(PlannedReceipt receipt, Product product, LocalDate today) {
         return new PlannedReceiptItem(receipt.getId(), receipt.getProductId(), product.getSkuName(),
-                receipt.getQuantity(), receipt.getExpectedOn(), receipt.getReceivedOn(), receipt.getStatus(),
-                receipt.isReflected());
+                receipt.getQuantity(), receipt.getExpectedOn(), receipt.getReceivedOn(), receipt.statusOn(today),
+                receipt.isReflectedOn(today));
     }
 
     public record Page(List<PlannedReceiptItem> items, int total) {

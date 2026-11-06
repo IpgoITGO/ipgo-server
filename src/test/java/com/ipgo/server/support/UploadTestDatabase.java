@@ -21,10 +21,10 @@ public final class UploadTestDatabase {
     }
 
     public static void storageCostSchema(JdbcTemplate jdbc) {
-        // 기존 harness의 V11 뒤에 portable V17을 적용한다(#111). 테스트 DB는 클래스끼리 공유되므로 한 번만 적용한다.
+        // 기존 harness의 V11 뒤에 portable V18을 적용한다(#111). 테스트 DB는 클래스끼리 공유되므로 한 번만 적용한다.
         if (jdbc.queryForObject("SELECT COUNT(*) FROM information_schema.tables WHERE LOWER(table_name) = 'product_boxes'", Integer.class) == 0) {
             new org.springframework.jdbc.datasource.init.ResourceDatabasePopulator(
-                    new org.springframework.core.io.ClassPathResource("db/migration/V17__create_storage_cost.sql"))
+                    new org.springframework.core.io.ClassPathResource("db/migration/V18__create_storage_cost.sql"))
                     .execute(java.util.Objects.requireNonNull(jdbc.getDataSource()));
         }
     }

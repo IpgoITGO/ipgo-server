@@ -79,6 +79,7 @@ public class SecurityConfig {
                         .requestMatchers(HttpMethod.GET, "/api/auth/csrf", "/actuator/health", "/api/auth/email-availability").permitAll()
                         .requestMatchers(HttpMethod.POST, "/api/auth/signup", "/api/auth/login", "/api/auth/refresh", "/api/auth/logout",
                                 "/api/auth/email-verifications", "/api/auth/email-verifications/confirm").permitAll()
+                        .requestMatchers(HttpMethod.POST, "/api/billing/webhooks/toss").permitAll()
                         .anyRequest().authenticated();
                 })
                 .requestCache(cache -> cache.disable())

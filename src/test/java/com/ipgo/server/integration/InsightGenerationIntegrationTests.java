@@ -338,4 +338,32 @@ class InsightGenerationIntegrationTests extends DatabaseIntegrationTest {
         } finally { api.close(); }
     }
 
+    private void reserveForRace(long id) {
+        tx.executeWithoutResult(t -> {
+            jdbc.update("UPDATE ai_explanations SET status='PROCESSING',created_at=CURRENT_TIMESTAMP WHERE result_id=?",id);
+            org.springframework.test.util.ReflectionTestUtils.invokeMethod(generation,"recordClaim",id);
+        });
+    }
+    @Test void dispatchUsesRecordedRequestEvenIfLatestRowChanges() {
+        long id=save(); reserveForRace(id);
+        jdbc.update("UPDATE ai_explanations SET request_payload=CAST('{}' AS JSONB) WHERE result_id=?",id);
+        org.springframework.test.util.ReflectionTestUtils.invokeMethod(generation,"processClaimed",id);
+        assertThat(calls).hasValue(1); assertThat(insights.insight(owner,id).orElseThrow().mode()).isEqualTo("AI");
+        assertThat(sent.path("input").path("skuLabel").asText()).isEqualTo("이 상품");
+    }
+    @Test void expiredReservationCannotDispatchBeforeRecovery() {
+        long id=save(); reserveForRace(id);
+        jdbc.update("UPDATE ai_explanations SET created_at=? WHERE result_id=?",Timestamp.from(Instant.now().minusSeconds(120)),id);
+        org.springframework.test.util.ReflectionTestUtils.invokeMethod(generation,"processClaimed",id);
+        assertThat(calls).hasValue(0); generation.tick();
+        assertThat(reason()).isEqualTo("LLM_TIMEOUT"); assertThat(call().get("dispatched_at")).isNull();
+    }
+    @Test void staleRecoveryCandidateCannotExpireFreshReservation() {
+        long id=save(); reserveForRace(id);
+        org.springframework.test.util.ReflectionTestUtils.invokeMethod(generation,"expireClaimed",id);
+        assertThat(state()).isEqualTo("PROCESSING"); assertThat(call().get("finished_at")).isNull();
+        org.springframework.test.util.ReflectionTestUtils.invokeMethod(generation,"processClaimed",id);
+        assertThat(calls).hasValue(1); assertThat(state()).isEqualTo("DONE");
+    }
+
 }

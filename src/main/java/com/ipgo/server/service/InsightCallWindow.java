@@ -23,6 +23,6 @@ public class InsightCallWindow {
         if (!startsAt.isBefore(expiresAt)) throw new IllegalArgumentException("Invalid insight window");
     }
     boolean open() { var now = clock.instant(); return !now.isBefore(startsAt) && now.isBefore(expiresAt); }
-    boolean limited() { return !expiresAt.equals(Instant.MAX); }
+    boolean limited() { return !expiresAt.equals(Instant.MAX) || !startsAt.equals(Instant.MIN); }
     Instant startsAt() { return startsAt; }
 }

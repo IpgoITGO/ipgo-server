@@ -12,6 +12,7 @@ public final class UploadTestDatabase {
     }
 
     public static void receiptMatchingSchema(JdbcTemplate jdbc) {
+        jdbc.execute("CREATE TABLE IF NOT EXISTS insight_monthly_usage(month_key DATE PRIMARY KEY,reserved_calls INTEGER NOT NULL,updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP)");
         if (jdbc.queryForObject("SELECT COUNT(*) FROM information_schema.tables WHERE LOWER(table_name)='ai_explanation_calls'", Integer.class) == 0) {
             new org.springframework.jdbc.datasource.init.ResourceDatabasePopulator(
                     new org.springframework.core.io.ClassPathResource("db/migration/V18__store_insight_call_history.sql"))
@@ -55,6 +56,7 @@ public final class UploadTestDatabase {
     }
 
     public static void clear(JdbcTemplate jdbc) {
+        jdbc.update("DELETE FROM insight_monthly_usage");
         try (var connection = java.util.Objects.requireNonNull(jdbc.getDataSource()).getConnection()) {
             if (connection.getMetaData().getDatabaseProductName().equals("PostgreSQL")) {
                 jdbc.execute("SELECT ipgo_test_clear_receipt_history()");

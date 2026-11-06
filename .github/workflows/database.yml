@@ -47,3 +47,5 @@ jobs:
           ./scripts/testing/verify-receipt-matching.sh
       - name: Verify database task image
         run: ./scripts/verify-database-task-image.sh
+      - name: Verify monthly insight budget concurrency and permissions
+        run: bash scripts/testing/verify-monthly-insight-budget.sh

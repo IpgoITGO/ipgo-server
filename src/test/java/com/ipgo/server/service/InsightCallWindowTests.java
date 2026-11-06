@@ -21,4 +21,11 @@ class InsightCallWindowTests {
         assertThatThrownBy(() -> new InsightCallWindow("2026-11-07T00:00:00Z", "2026-11-06T00:00:00Z"))
                 .isInstanceOf(IllegalArgumentException.class);
     }
+    @Test void continuousWindowStillExcludesHistoricalCalculations() {
+        var window=new InsightCallWindow("2026-11-06T06:30:00Z", "",
+                Clock.fixed(Instant.parse("2026-12-07T00:00:00Z"),ZoneOffset.UTC));
+        assertThat(window.open()).isTrue();
+        assertThat(window.limited()).isTrue();
+        assertThat(window.startsAt()).isEqualTo(Instant.parse("2026-11-06T06:30:00Z"));
+    }
 }

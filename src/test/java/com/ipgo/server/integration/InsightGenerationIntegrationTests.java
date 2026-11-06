@@ -103,6 +103,16 @@ class InsightGenerationIntegrationTests extends DatabaseIntegrationTest {
         org.springframework.test.util.ReflectionTestUtils.invokeMethod(generation, "configureWindow",
                 new com.ipgo.server.service.InsightCallWindow(start, end));
     }
+    @Test void exhaustedMonthlyBudgetNeverSendsHttpAndPreservesCalculation() {
+        org.springframework.test.util.ReflectionTestUtils.setField(generation,"monthlyBudget",
+                new com.ipgo.server.service.MonthlyInsightBudget(jdbc,tx,java.math.BigDecimal.ZERO));
+        long id=save();generation.tick();generation.tick();
+        assertThat(calls).hasValue(0);
+        assertThat(reason()).isEqualTo("LLM_BUDGET_EXCEEDED");
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM ai_explanation_calls WHERE dispatched_at IS NOT NULL",Long.class)).isZero();
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM calculation_results WHERE id=?",Long.class,id)).isEqualTo(1);
+    }
+
     @Test void demoExpiredBeforeCalculationNeverEnqueuesOrCalls() {
         window("2000-01-01T00:00:00Z", "2000-01-02T00:00:00Z");
         save(); generation.tick();

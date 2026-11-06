@@ -17,7 +17,7 @@ AI 문장 검사가 실패했어도 수신·검증한 모델·토큰·비용·�
 
 - `ai_explanations`는 기존의 계산 결과당 최신 설명 한 행을 유지한다.
   이력의 DONE은 종료를 뜻하며 성공 판정은 mode=LLM·validation_passed를 함께 확인한다.
-- V17의 `ai_explanation_calls`는 호출 예약마다 별도 UUID를 만들고 요청·계산 result 연결·시작/종료·dispatch 시각·결과·검증·메타데이터를 보존한다.
+- V18의 `ai_explanation_calls`는 호출 예약마다 별도 UUID를 만들고 요청·계산 result 연결·시작/종료·dispatch 시각·결과·검증·메타데이터를 보존한다.
 - 새 자동/단건/배치 경로는 예약 상태와 이력을 같은 트랜잭션으로 commit한 뒤 HTTP를 호출한다. 이력 저장 실패 시 호출하지 않는다.
 - `LIVE`는 새 코드의 예약, `LEGACY`는 이전 예약 경로를 새 생성기가 이어받은 경우, `RECOVERY`는 이전 배포의 이력 없는 PROCESSING을 호출 없이 만료 처리한 기록이다.
   예약·dispatch 시각은 제공사 수신/과금의 증거가 아니다. RECOVERY를 실제 호출·0원 성공 표본으로 세지 않는다.
@@ -32,9 +32,9 @@ AI 문장 검사가 실패했어도 수신·검증한 모델·토큰·비용·�
 
 ## 반영과 되돌리기
 
-기존 V1~16은 수정하지 않고 V17을 추가한다. 실행 중인 DB에 이번 작업으로 migration을 적용하지 않는다.
-반영 시 V17 migration을 별도 승인·적용·검증한 뒤 서버(이전 응답 호환), AI(nullable 비용·새 메타데이터) 순서로 배포한다. 기존 환경의 Flyway OFF에서는 코드 배포만으로 schema가 생긴다고 가정하지 않는다.
-이전 서버는 null 비용을 거부하므로 새 AI만 먼저 배포하지 않는다. dev에 다른 V17이 합쳐지면 승인 전에 번호를 재조정하고 재검증한다.
+기존 V1~16은 수정하지 않고 V18을 추가한다. 실행 중인 DB에 이번 작업으로 migration을 적용하지 않는다.
+반영 시 V18 migration을 별도 승인·적용·검증한 뒤 서버(이전 응답 호환), AI(nullable 비용·새 메타데이터) 순서로 배포한다. 기존 환경의 Flyway OFF에서는 코드 배포만으로 schema가 생긴다고 가정하지 않는다.
+이전 서버는 null 비용을 거부하므로 새 AI만 먼저 배포하지 않는다. dev에 다른 V18이 합쳐지면 승인 전에 번호를 재조정하고 재검증한다.
 서버 롤백 시 AI도 기존 응답으로 되돌린다. 추가 테이블/열은 남겨 이력을 보존하며 DROP으로 복구하지 않는다.
 과거 서버에서 이루어진 호출은 새 기록이 없거나 이미 예약된 호출의 종료 이력이 미완료일 수 있으므로 롤백 구간을 따로 표시하고 실제 호출 횟수로 추정하지 않는다.
 
@@ -51,8 +51,8 @@ Spring 계산 결과→실제 FastAPI 생성/검사→메타데이터→Spring �
 
 - Server H2: 115개 통과·기존 별도 네트워크 선택 검사 3개 제외. 새 loopback FastAPI 계약 검사는 실행·통과했다.
 - Server PostgreSQL 16: 같은 회귀에 계산 run API 검사를 더해 119개 통과·기존 선택 검사 3개 제외.
-  이 회귀 harness는 V1~11 Flyway + portable V16/V17을 사용한다. V12~15의 실제 PostgreSQL 전용 역할/trigger는 다음 독립 검사로 검증했다.
-- `scripts/verify-postgres-migrations.sh`: 격리 PostgreSQL에서 기존 V9 seed→V17 upgrade·전체 17 migration·24 업무 table과 서버 접근/두 AI reader의 이력 접근 거부 확인.
+  이 회귀 harness는 V1~11 Flyway + portable V16/V18을 사용한다. V12~15의 실제 PostgreSQL 전용 역할/trigger는 다음 독립 검사로 검증했다.
+- `scripts/verify-postgres-migrations.sh`: 격리 PostgreSQL에서 기존 V9 seed→V18 upgrade·전체 17 migration·24 업무 table과 서버 접근/두 AI reader의 이력 접근 거부 확인.
 - AI Python 3.14: 관련 단위/계약 검사 134개·변경 Python ruff 통과. 두 저장소 diff 검사·서버 shell 문법 검사 통과.
 - 초기 서버 회귀는 레거시 예약 연결 6건·H2 JSON 비교 1건이 실패해 수정했다. 새 fixture 검사 추가 중 AutoCloseable 미구현 객체를 try-with-resources로 쓴 컴파일 오류 1건도 수정했다.
   이후 H2/PG의 성공 결과로 앞선 실패 기록을 삭제하지 않는다.

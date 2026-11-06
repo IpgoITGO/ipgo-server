@@ -14,7 +14,7 @@ public final class UploadTestDatabase {
     public static void receiptMatchingSchema(JdbcTemplate jdbc) {
         if (jdbc.queryForObject("SELECT COUNT(*) FROM information_schema.tables WHERE LOWER(table_name)='ai_explanation_calls'", Integer.class) == 0) {
             new org.springframework.jdbc.datasource.init.ResourceDatabasePopulator(
-                    new org.springframework.core.io.ClassPathResource("db/migration/V17__store_insight_call_history.sql"))
+                    new org.springframework.core.io.ClassPathResource("db/migration/V18__store_insight_call_history.sql"))
                     .execute(java.util.Objects.requireNonNull(jdbc.getDataSource()));
         }
 

@@ -94,7 +94,9 @@ public class InsightGeneration {
 
     private String activeAttempt(long id, boolean dispatch) {
         return tx.execute(s -> {
-            var rows = jdbc.queryForList("SELECT active_attempt_id FROM ai_explanations WHERE result_id=? AND status='PROCESSING' FOR UPDATE", id);
+            String age = dispatch ? " AND created_at>=?" : " AND created_at<?";
+            var rows = jdbc.queryForList("SELECT active_attempt_id FROM ai_explanations WHERE result_id=? AND status='PROCESSING'" + age + " FOR UPDATE",
+                    id, Timestamp.from(Instant.now().minus(timeout).minusSeconds(30)));
             if (rows.isEmpty()) return null;
             String attempt = (String) rows.getFirst().get("active_attempt_id");
             // Claims made by an older deployment have no call record. Recovery never sends HTTP.
@@ -110,7 +112,7 @@ public class InsightGeneration {
     void processClaimed(long id) {
         String attempt = activeAttempt(id, true);
         if (attempt == null) return;
-        JsonNode p = payload(id);
+        JsonNode p = payload(attempt);
         JsonNode response = null;
         InsightCallMetadata metrics = InsightCallMetadata.UNKNOWN;
         String reason = null;
@@ -127,11 +129,11 @@ public class InsightGeneration {
 
     void expireClaimed(long id) {
         String attempt = activeAttempt(id, false);
-        if (attempt != null) finish(id, attempt, payload(id), null, "LLM_TIMEOUT", InsightCallMetadata.UNKNOWN, null);
+        if (attempt != null) finish(id, attempt, payload(attempt), null, "LLM_TIMEOUT", InsightCallMetadata.UNKNOWN, null);
     }
 
-    private JsonNode payload(long id) {
-        return EngineJobs.readDatabaseJson(mapper, jdbc.queryForObject("SELECT request_payload FROM ai_explanations WHERE result_id = ?", String.class, id));
+    private JsonNode payload(String attempt) {
+        return EngineJobs.readDatabaseJson(mapper, jdbc.queryForObject("SELECT request_payload FROM ai_explanation_calls WHERE attempt_id=?", String.class, attempt));
     }
 
     private void finish(long id, String attempt, JsonNode payload, JsonNode response, String reason, InsightCallMetadata metrics, Integer roundTrip) {

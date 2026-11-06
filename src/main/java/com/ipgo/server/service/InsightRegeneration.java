@@ -72,6 +72,7 @@ public class InsightRegeneration implements AutoCloseable {
                     WHERE result_id=? AND output_path IS NULL AND status='DISABLED' AND reason_code='LLM_DISABLED'
                     """,ATTEMPT,payload,id);
             if(updated!=1) throw ProductException.insightSpent();
+            generation.recordClaim(id);
         });
         // Old 698 code also rejects the consumed anchor after rollback. Never call both targets.
         generation.processClaimed(id);

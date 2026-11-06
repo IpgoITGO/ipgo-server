@@ -28,7 +28,7 @@ docker run -d --name "${probe_name}-db" --network "$probe_name" \
   -e POSTGRES_USER=ipgo_migrator -e POSTGRES_PASSWORD=fixture-only -e POSTGRES_DB=ipgo_budget_test \
   postgres:16-alpine >/dev/null
 for n in $(seq 1 60); do
-  if docker exec "${probe_name}-db" pg_isready -U ipgo_migrator -d ipgo_budget_test >/dev/null 2>&1;then break;fi
+  if docker exec "${probe_name}-db" psql -h 127.0.0.1 -U ipgo_migrator -d ipgo_budget_test -v ON_ERROR_STOP=1 -Atc 'SELECT 1' >/dev/null 2>&1;then break;fi
   sleep 0.5
 done
 docker exec -i "${probe_name}-db" psql -U ipgo_migrator -d ipgo_budget_test -v ON_ERROR_STOP=1 <<'SQL'

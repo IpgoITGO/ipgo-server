@@ -19,6 +19,16 @@ public class ProductException extends RuntimeException {
         return new ProductException(HttpStatus.CONFLICT, "RECEIPT_RECEIVED", "입고 완료한 발주는 수정하거나 취소할 수 없어요. 입고 기록을 확인해 주세요.");
     }
 
+    public static ProductException correctionStale() {
+        return new ProductException(HttpStatus.CONFLICT,"RECEIPT_CORRECTION_STALE","자료나 발주가 바뀌었어요. 최신 내용을 확인해 주세요.");
+    }
+    public static ProductException correctionUnavailable() {
+        return new ProductException(HttpStatus.CONFLICT,"RECEIPT_CORRECTION_UNAVAILABLE","최신 정제와 확인 필요 상태를 확인해 주세요.");
+    }
+    public static ProductException correctionIdempotencyConflict() {
+        return new ProductException(HttpStatus.CONFLICT,"RECEIPT_CORRECTION_KEY_CONFLICT","이미 다른 내용에 사용한 요청 번호입니다.");
+    }
+
     public static ProductException notFound() {
         return new ProductException(HttpStatus.NOT_FOUND, "NOT_FOUND", "대상을 찾을 수 없습니다.");
     }

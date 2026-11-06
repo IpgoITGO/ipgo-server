@@ -10,6 +10,7 @@ on:
       - "scripts/database-task.sh"
       - "scripts/verify-database-task-image.sh"
       - "scripts/verify-postgres-migrations.sh"
+      - "scripts/verify-insight-history-upgrade.sh"
       - "src/main/resources/db/migration/**"
       - "src/test/**"
       - "build.gradle"

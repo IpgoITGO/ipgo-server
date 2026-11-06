@@ -78,6 +78,7 @@ class BillingIntegrationTests extends DatabaseIntegrationTest {
         }
         clearLedger(pg);
         now=START; when(clock.instant()).thenAnswer(i->now);
+        when(clock.withZone(any(java.time.ZoneId.class))).thenAnswer(i->Clock.fixed(now,i.getArgument(0)));
         user=newUser(); other=newUser();
         when(gateway.issue(anyString(),anyString(),anyString())).thenAnswer(i->new BillingGateway.Issued("fixture-key-"+UUID.randomUUID(),i.getArgument(1),"1234****5678"));
         when(gateway.charge(anyString(),any(),anyString())).thenAnswer(i->{ var c=i.getArgument(1,BillingGateway.Charge.class); return new BillingGateway.Payment("payment-"+UUID.randomUUID(),c.orderId(),c.amount(),"KRW","DONE","test-merchant",now); });

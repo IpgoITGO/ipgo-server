@@ -7,6 +7,8 @@
 
 Ipgo 서비스의 API와 서버 동작을 관리하는 저장소입니다.
 
+LLM의 모델·토큰·비용·응답 시간과 호출별 보존/반영 순서는 [호출 이력 계약](docs/decisions/0013-insight-call-history.md)을 따릅니다.
+
 > 이메일 인증을 거친 회원가입·로그인·로그아웃·본인 정보 조회와 수불부 엑셀의 로컬 원본 보관을 제공합니다. 회원 인증에는 PostgreSQL과 JWT 서명 키, 인증 메일 발송에는 SMTP 설정이 필요합니다. 업로드 파일과 보관 정보는 로컬 디스크에 저장하며, 테스트는 H2 메모리 DB·로컬 테스트 SMTP·임시 폴더를 사용합니다.
 
 ## 개발 환경
@@ -874,3 +876,18 @@ IPGO_INSIGHT_TEST_AI_IMAGE=local-ai-image \
 
 [최초698 설계](docs/decisions/0006-single-result-insight.md)는 이력이며,
 현재 경로/공유 한도/복구는 [811 전환 결정](docs/decisions/0007-single-result-811.md)을 따릅니다.
+
+## 상품 상세 정확도 이력 (#93)
+
+현재 계산과 같은 산식·배수·설정으로 2026년 5~7월 TUNE 자료를 재생한 이력을 연결합니다.
+각 점은 기준일 다음 날부터 리드타임+검토 주기(H일)의 예측/관측 출고 합계입니다.
+당시 발행한 예측의 실측 성과나 독립 TEST 성과가 아닙니다. 겹친 평가 창은 독립 표본으로 해석하지 않습니다.
+`covered`는 입고 재생에서 매일 기말 재고가 양수였는지를 뜻합니다.
+
+AI의 CALCULATE `accuracyEvaluation`은 선택적 확장 필드입니다. 원본 소수와 정책·입력 digest를
+서버의 기존 `selection_snapshot.resultFacts`에 저장하며, K1에는 정수 올림한 `accuracy.history`와
+출처/기간/H/평가 상태를 담은 선택적 `accuracy.evaluation`을 제공합니다. 오차는 원본으로 계산합니다.
+기록 없는 구버전은 빈 이력, 표본 없음은 EMPTY, 평가 미실행은 UNAVAILABLE로 구분합니다.
+새 BACKTEST 작업·DB migration·LLM 호출·과거 결과 덮어쓰기는 없습니다.
+
+필드·digest 정규화·호환 규칙: [#93 계약](docs/decisions/accuracy-history-93.md).

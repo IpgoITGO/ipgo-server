@@ -96,6 +96,7 @@ public class InsightBatch implements AutoCloseable {
                     WHERE result_id=?
                     """,mapper.writeValueAsString(Map.of("input",p.input(),"values",p.values(),"fallback",p.fallback())),
                     InsightBatchManifest.marker(resultId),resultId);
+            generation.recordClaim(resultId);
         });
         generation.processClaimed(resultId); // Exactly once after durable reservation. Never resume this HTTP on recovery.
     }

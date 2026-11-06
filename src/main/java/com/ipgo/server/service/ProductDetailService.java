@@ -20,13 +20,14 @@ import java.time.Clock;
 import java.time.LocalDate;
 import java.util.List;
 import java.util.Optional;
+import tools.jackson.databind.JsonNode;
 
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 // K1 SKU 상세 (BE-11 · BE-12). 상품 · 입고 조건 · 가장 최근에 성공한 계산 결과 · 정확도를 모은다.
-// 정확도 이력(history)은 백테스트 연동 뒤에 채운다.
+// 정확도 이력은 선택한 계산 run의 원본 facts에서만 읽는다.
 @Service
 public class ProductDetailService {
     // from · to를 주지 않으면 마지막 수불 날짜까지 90일을 보여준다.
@@ -86,8 +87,9 @@ public class ProductDetailService {
         LocalDate asOfDate = run.get().getAsOfDate();
         LocalDate today = LocalDate.now(clock.withZone(DashboardService.SEOUL));
         String needStatus = NeedJudgment.needStatus(calculated, asOfDate, today, productSettings.leadTimeDays());
+        JsonNode facts = resultFacts(calculated);
         return new ProductDetail(summary, needStatus, asOfDate, calculated.getExpectedShortageOn(), productSettings,
-                result(calculated, needStatus), accuracy(calculated, firstInboundOn), trend);
+                result(calculated, needStatus, facts), accuracy(calculated, firstInboundOn, facts), trend);
     }
 
     // 정제가 끝난(DONE) 업로드의 상품 일별 수불. 같은 날짜가 덮어쓰기로 여러 번 올라왔으면 가장 최근 업로드를 쓴다.
@@ -125,7 +127,7 @@ public class ProductDetailService {
                 reviewCycleSource, applied.orderUnitQty(), DisplayQuantities.won(product.getUnitCost()));
     }
 
-    private ProductDetail.Result result(CalculationResult result, String needStatus) {
+    private ProductDetail.Result result(CalculationResult result, String needStatus, JsonNode facts) {
         return new ProductDetail.Result(result.getId(), result.getStatus(), result.getReason() != null ? result.getReason()
                         : CalculationResult.NOT_CALCULABLE.equals(needStatus) && CalculationResult.OK.equals(result.getStatus())
                                 ? NeedJudgment.UNKNOWN_NEED_REASON : null, result.getMethod(),
@@ -134,25 +136,43 @@ public class ProductDetailService {
                 DisplayQuantities.stock(result.getStartStockQty()),
                 // 계산일이 기준일보다 늦으면 시작 재고는 예상 출고로 이어서 추정한 값이다.
                 result.getStartDate().isAfter(result.getOriginDate()),
-                result.getPlannedReceiptQty(), DisplayQuantities.demand(result.getPreArrivalUnmetQty()), beforeRounding(result),
+                result.getPlannedReceiptQty(), DisplayQuantities.demand(result.getPreArrivalUnmetQty()), beforeRounding(facts),
                 result.getRecommendedQty(), DisplayQuantities.won(result.getRecommendedAmount()));
     }
 
-    private Long beforeRounding(CalculationResult result) {
+    private JsonNode resultFacts(CalculationResult result) {
         String raw = jdbc.queryForObject("SELECT selection_snapshot FROM calculation_runs WHERE id = ?", String.class, result.getRunId());
-        var snapshot = EngineJobs.readDatabaseJson(mapper, raw);
-        var value = snapshot.path("resultFacts").path(""+result.getProductId()).path("requiredQtyBeforeRounding");
+        return EngineJobs.readDatabaseJson(mapper, raw).path("resultFacts").path("" + result.getProductId());
+    }
+
+    private Long beforeRounding(JsonNode facts) {
+        var value = facts.path("requiredQtyBeforeRounding");
         return value.isNumber() ? DisplayQuantities.demand(value.decimalValue()) : null;
     }
 
-    private static ProductDetail.Accuracy accuracy(CalculationResult result, LocalDate firstInboundOn) {
+    private ProductDetail.Accuracy accuracy(CalculationResult result, LocalDate firstInboundOn, JsonNode resultFacts) {
         boolean low = "LOW".equals(result.getAccuracyGrade());
         ProductDetail.Range range = low && result.getForecastRangeLow() != null
                 ? new ProductDetail.Range(DisplayQuantities.demand(result.getForecastRangeLow()),
                         DisplayQuantities.demand(result.getForecastRangeHigh()))
                 : null;
+        var facts = resultFacts.path("accuracyEvaluation");
+        var history = new java.util.ArrayList<ProductDetail.History>();
+        ProductDetail.Evaluation evaluation = null;
+        if (!facts.isMissingNode() && !facts.isNull()) {
+            for (var point : facts.path("history")) history.add(new ProductDetail.History(
+                    LocalDate.parse(point.path("originDate").asText()),
+                    DisplayQuantities.demand(point.path("forecastQty").decimalValue()),
+                    DisplayQuantities.demand(point.path("actualQty").decimalValue()), point.path("covered").asBoolean()));
+            evaluation = new ProductDetail.Evaluation(facts.path("status").asText(), facts.path("reason").isString() ? facts.path("reason").asText() : null,
+                    "HISTORICAL_REPLAY", "TUNE", optionalDate(facts,"periodStart"), optionalDate(facts,"periodEnd"),
+                    optionalDate(facts,"observedThrough"), facts.path("horizonDays").isIntegralNumber() ? facts.path("horizonDays").asInt() : null);
+        }
         return new ProductDetail.Accuracy(result.getAccuracyGrade(), low, result.getValidObservationDays(),
                 result.getCoverSuccessCount(), result.getCoverTrialCount(), result.getForecastErrorRate(),
-                List.of(), range, firstInboundOn);
+                List.copyOf(history), range, firstInboundOn, evaluation);
+    }
+    private static LocalDate optionalDate(tools.jackson.databind.JsonNode node, String key) {
+        return node.path(key).isString() ? LocalDate.parse(node.path(key).asText()) : null;
     }
 }

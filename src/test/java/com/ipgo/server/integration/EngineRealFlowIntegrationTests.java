@@ -48,7 +48,14 @@ class EngineRealFlowIntegrationTests {
     static final LocalDate DAY = LocalDate.of(2026, 9, 1);
 
     @DynamicPropertySource static void engineProperties(DynamicPropertyRegistry r) {
-        if ("true".equals(System.getenv("IPGO_ENGINE_LOCAL_POSTGRES"))) {
+        String localPort = System.getenv("IPGO93_TEST_PG_PORT");
+        if (localPort != null) {
+            int port = Integer.parseInt(localPort);
+            if (port < 1024 || port > 65535) throw new IllegalArgumentException("Invalid disposable PostgreSQL port");
+            r.add("spring.datasource.url", () -> "jdbc:postgresql://127.0.0.1:" + port + "/engine_test");
+            r.add("spring.datasource.username", () -> "engine_test");
+            r.add("spring.datasource.password", () -> "");
+        } else if ("true".equals(System.getenv("IPGO_ENGINE_LOCAL_POSTGRES"))) {
             // This opt-in is deliberately pinned to the disposable Docker network name.
             r.add("spring.datasource.url", () -> "jdbc:postgresql://ipgo-engine-e2e-118-test-db:5432/engine_test");
             r.add("spring.datasource.username", () -> System.getenv().getOrDefault("IPGO_TEST_DB_USERNAME", "engine_test"));
@@ -388,6 +395,98 @@ class EngineRealFlowIntegrationTests {
         var calculate = jdbc.queryForObject("SELECT job_id FROM calculation_runs WHERE warehouse_id=?", String.class, u.getWarehouseId());
         assertThat(jobs.find(calculate).payload().path("plannedReceipts").isEmpty()).isTrue();
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM receipt_matching_allocations", Integer.class)).isEqualTo(1);
+    }
+
+    private record AccuracyRun(long owner, long run, String jobId, long product, tools.jackson.databind.node.ObjectNode response) { }
+
+    private AccuracyRun accuracyRun() throws Exception {
+        long owner = user(); var u = upload(owner);
+        jdbc.update("UPDATE warehouses SET default_lead_time_days=3, default_review_cycle_days=7, default_order_unit_qty=1 WHERE id=?", u.getWarehouseId());
+        results.accept(success(u, clean(u.getId())));
+        long run = jdbc.queryForObject("SELECT id FROM calculation_runs", Long.class);
+        String jobId = jdbc.queryForObject("SELECT job_id FROM calculation_runs WHERE id=?", String.class, run);
+        var request = (tools.jackson.databind.node.ObjectNode) jobs.find(jobId).payload().deepCopy();
+        long product = request.path("productIds").get(0).asLong();
+        request.put("asOfDate", "2026-11-03"); request.put("today", "2026-11-03");
+        var snapshot = mapper.createObjectNode().set("request", request);
+        snapshot.set("excluded", mapper.createObjectNode()); snapshot.set("productIds", request.path("productIds"));
+        jdbc.update("UPDATE engine_jobs SET payload=CAST(? AS JSONB) WHERE job_id=?", mapper.writeValueAsString(request), jobId);
+        jdbc.update("UPDATE calculation_runs SET as_of_date=DATE '2026-11-03',selection_snapshot=CAST(? AS JSONB) WHERE id=?", mapper.writeValueAsString(snapshot),run);
+        var fixture = mapper.readTree(getClass().getResourceAsStream("/fixtures/accuracy-history-calculation.json"));
+        var response = (tools.jackson.databind.node.ObjectNode) fixture.path("response").deepCopy();
+        ((tools.jackson.databind.node.ObjectNode) response.path("results").get(0)).put("productId",product);
+        return new AccuracyRun(owner,run,jobId,product,response);
+    }
+    private String accuracyEnvelope(AccuracyRun run, tools.jackson.databind.JsonNode response) {
+        return mapper.writeValueAsString(Map.of("contractVersion","1","jobId",run.jobId(),"jobType","CALCULATE",
+                "status","SUCCEEDED","result",response));
+    }
+
+    @Test void accuracyHistoryRejectsBadFactsAtomicallyThenStoresRealAiFixture() throws Exception {
+        var run = accuracyRun();
+        for (String defect : List.of("duplicate","future","horizon","wape","covered","unknown","version","negative","policy")) {
+            var response = run.response().deepCopy();
+            var result = (tools.jackson.databind.node.ObjectNode) response.path("results").get(0);
+            var evaluation = (tools.jackson.databind.node.ObjectNode) result.path("accuracyEvaluation");
+            var first = (tools.jackson.databind.node.ObjectNode) evaluation.path("history").get(0);
+            switch (defect) {
+                case "duplicate" -> ((tools.jackson.databind.node.ArrayNode) evaluation.path("history")).add(first.deepCopy());
+                case "future" -> first.put("originDate","2027-05-01");
+                case "horizon" -> evaluation.put("horizonDays",11);
+                case "wape" -> result.put("forecastErrorRate",0.9);
+                case "covered" -> first.put("covered",!first.path("covered").asBoolean());
+                case "unknown" -> evaluation.put("privateRawData","must not persist");
+                case "version" -> evaluation.put("schemaVersion",2);
+                case "negative" -> first.put("actualQty",-1);
+                case "policy" -> evaluation.put("policyVersion","unknown");
+            }
+            assertThatThrownBy(() -> results.accept(accuracyEnvelope(run,response))).as(defect).isInstanceOf(IllegalArgumentException.class);
+            assertThat(count("calculation_results")).as(defect).isZero();
+            assertThat(count("scenario_results")).isZero();
+            assertThat(count("ai_explanations")).isZero();
+            assertThat(jobs.find(run.jobId()).status()).isEqualTo("PENDING");
+        }
+        results.accept(accuracyEnvelope(run,run.response()));
+        results.accept(accuracyEnvelope(run,run.response())); // 같은 job 재전달은 중복 저장하지 않는다
+        assertThat(count("calculation_results")).isEqualTo(1);
+        var detail = details.detail(run.owner(),run.product(),null,null);
+        assertThat(detail.accuracy().history()).hasSize(12);
+        assertThat(detail.accuracy().history().getFirst().forecastQty()).isEqualTo(13);
+        assertThat(detail.accuracy().history().getFirst().actualQty()).isEqualTo(13);
+        assertThat(detail.accuracy().evaluation().source()).isEqualTo("HISTORICAL_REPLAY");
+        assertThat(detail.accuracy().evaluation().horizonDays()).isEqualTo(10);
+        assertThat(detail.accuracy().coverTrialCount()).isEqualTo(12);
+        String original = jdbc.queryForObject("SELECT selection_snapshot FROM calculation_runs WHERE id=?",String.class,run.run());
+        var savedSnapshot = mapper.readTree(original);
+        if (savedSnapshot.isString()) savedSnapshot = mapper.readTree(savedSnapshot.asText());
+        var saved = savedSnapshot.path("resultFacts").path(""+run.product());
+        assertThat(saved.path("accuracyEvaluation").path("history").get(0).path("forecastQty").decimalValue()).isEqualByComparingTo("12.5");
+        assertThat(saved.has("requiredQtyBeforeRounding")).isTrue();
+        assertThatThrownBy(() -> details.detail(run.owner()+99999,run.product(),null,null)).isInstanceOf(com.ipgo.server.exception.ProductException.class);
+        assertThat(mapper.writeValueAsString(detail)).contains("HISTORICAL_REPLAY")
+                .doesNotContain("policyHash", "dataHash");
+        long next = calculations.request(run.owner(),jobs.find(run.jobId()).warehouseId(),"SETTINGS",true);
+        assertThat(next).isGreaterThan(run.run());
+        String nextJob = jdbc.queryForObject("SELECT job_id FROM calculation_runs WHERE id=?",String.class,next);
+        results.expire(nextJob);
+        assertThat(jobs.find(nextJob).status()).isEqualTo("FAILED");
+        assertThat(jdbc.queryForObject("SELECT selection_snapshot FROM calculation_runs WHERE id=?",String.class,run.run())).isEqualTo(original);
+        assertThat(details.detail(run.owner(),run.product(),null,null).accuracy().history()).isEqualTo(detail.accuracy().history());
+        var revisedUpload = upload(run.owner());
+        assertThat(revisedUpload.getRevisionNo()).isEqualTo(2);
+        results.accept(success(revisedUpload,clean(revisedUpload.getId())));
+        assertThat(jdbc.queryForObject("SELECT MAX(id) FROM calculation_runs",Long.class)).isGreaterThan(next);
+        assertThat(jdbc.queryForObject("SELECT selection_snapshot FROM calculation_runs WHERE id=?",String.class,run.run())).isEqualTo(original);
+        assertThat(details.detail(run.owner(),run.product(),null,null).accuracy().history()).isEqualTo(detail.accuracy().history());
+    }
+
+    @Test void accuracyHistoryMissingFieldRemainsLegacyEmpty() throws Exception {
+        var run = accuracyRun();
+        ((tools.jackson.databind.node.ObjectNode) run.response().path("results").get(0)).remove("accuracyEvaluation");
+        results.accept(accuracyEnvelope(run,run.response()));
+        var detail=details.detail(run.owner(),run.product(),null,null);
+        assertThat(detail.accuracy().history()).isEmpty();
+        assertThat(detail.accuracy().evaluation()).isNull();
     }
 
     @Test void cleanEnqueuesCalculationAndWriterCommitsOnlyValidCompleteResults() throws Exception {

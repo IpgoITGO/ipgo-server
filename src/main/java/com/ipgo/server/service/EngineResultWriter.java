@@ -41,8 +41,11 @@ public class EngineResultWriter {
             long productId = positiveId(result.get("productId"));
             require(expected.contains(productId) && seen.add(productId));
             save(job, productId, input, result);
+            var evaluation = AccuracyEvaluationFacts.validate(result, input);
+            var fact = facts.putObject("" + productId);
+            if (evaluation != null) fact.set("accuracyEvaluation", evaluation);
             var beforeRounding = number(result, "requiredQtyBeforeRounding", false);
-            if (beforeRounding != null) facts.putObject(""+productId).put("requiredQtyBeforeRounding", beforeRounding);
+            if (beforeRounding != null) fact.put("requiredQtyBeforeRounding", beforeRounding);
         }
         require(seen.equals(expected));
         var excluded = snapshot.get("excluded");

@@ -22,13 +22,14 @@ public class InsightGeneration {
     private final InsightRenderer renderer;
     private final InsightEngineClient client;
     private final TransactionTemplate tx;
+    private final InsightCallHistory history;
     private final boolean enabled;
     private final Duration timeout;
     public InsightGeneration(JdbcTemplate jdbc, JsonMapper mapper, InsightRenderer renderer, InsightEngineClient client,
             TransactionTemplate tx, @Value("${ipgo.insight.enabled:false}") boolean enabled,
             @Value("${ipgo.insight.timeout:15s}") Duration timeout) {
         this.jdbc = jdbc; this.mapper = mapper; this.renderer = renderer; this.client = client;
-        this.tx = tx; this.enabled = enabled; this.timeout = timeout;
+        this.tx = tx; this.history = new InsightCallHistory(jdbc); this.enabled = enabled; this.timeout = timeout;
     }
 
     /** Called inside the calculation transaction. A duplicate engine result never enqueues twice. */
@@ -80,32 +81,60 @@ public class InsightGeneration {
         }
         List<Long> due = jdbc.queryForList("SELECT result_id FROM ai_explanations WHERE status = 'PENDING' ORDER BY result_id FETCH FIRST 1 ROWS ONLY", Long.class);
         for (Long id : due) {
-            Boolean claimed = tx.execute(s -> jdbc.update("UPDATE ai_explanations SET status = 'PROCESSING', created_at = CURRENT_TIMESTAMP WHERE result_id = ? AND status = 'PENDING'", id) == 1);
+            Boolean claimed = tx.execute(s -> {
+                if (jdbc.update("UPDATE ai_explanations SET status='PROCESSING', created_at=CURRENT_TIMESTAMP WHERE result_id=? AND status='PENDING'", id) != 1) return false;
+                recordClaim(id);
+                return true;
+            });
             if (Boolean.TRUE.equals(claimed)) processClaimed(id);
         }
     }
 
+    void recordClaim(long id) { history.begin(id, "LIVE"); }
+
+    private String activeAttempt(long id, boolean dispatch) {
+        return tx.execute(s -> {
+            var rows = jdbc.queryForList("SELECT active_attempt_id FROM ai_explanations WHERE result_id=? AND status='PROCESSING' FOR UPDATE", id);
+            if (rows.isEmpty()) return null;
+            String attempt = (String) rows.getFirst().get("active_attempt_id");
+            // Claims made by an older deployment have no call record. Recovery never sends HTTP.
+            if (attempt == null) {
+                attempt = history.begin(id, dispatch ? "LEGACY" : "RECOVERY");
+            }
+            if (dispatch && jdbc.update("UPDATE ai_explanation_calls SET dispatched_at=CURRENT_TIMESTAMP WHERE attempt_id=? AND dispatched_at IS NULL AND status='PROCESSING'", attempt) != 1) return null;
+            return attempt;
+        });
+    }
+
     // Called only after a durable claim. The single-result path does not enable the global queue.
     void processClaimed(long id) {
+        String attempt = activeAttempt(id, true);
+        if (attempt == null) return;
         JsonNode p = payload(id);
         JsonNode response = null;
+        InsightCallMetadata metrics = InsightCallMetadata.UNKNOWN;
         String reason = null;
+        long started = System.nanoTime();
         try {
             response = client.generate(id, p.path("input"));
+            metrics = InsightCallMetadata.read(response);
             validateResponse(response);
             if ("FAILED".equals(response.path("validation").asText())) reason = response.path("failReason").asText();
         } catch (InsightEngineClient.Failure e) { reason = e.reason(); }
         catch (RuntimeException e) { reason = "VALIDATION_FAILED"; response = null; }
-        finish(id, p, response, reason);
+        finish(id, attempt, p, response, reason, metrics, (int) java.util.concurrent.TimeUnit.NANOSECONDS.toMillis(System.nanoTime()-started));
     }
 
-    void expireClaimed(long id) { finish(id, payload(id), null, "LLM_TIMEOUT"); }
+    void expireClaimed(long id) {
+        String attempt = activeAttempt(id, false);
+        if (attempt != null) finish(id, attempt, payload(id), null, "LLM_TIMEOUT", InsightCallMetadata.UNKNOWN, null);
+    }
 
     private JsonNode payload(long id) {
         return EngineJobs.readDatabaseJson(mapper, jdbc.queryForObject("SELECT request_payload FROM ai_explanations WHERE result_id = ?", String.class, id));
     }
 
-    private void finish(long id, JsonNode payload, JsonNode response, String reason) {
+    private void finish(long id, String attempt, JsonNode payload, JsonNode response, String reason, InsightCallMetadata metrics, Integer roundTrip) {
         String rendered = null;
         String draft = null;
         boolean valid = false;
@@ -120,19 +149,20 @@ public class InsightGeneration {
         }
         if (!valid) rendered = payload.hasNonNull("fallback") ? payload.get("fallback").asText() : null;
         String mode = valid ? "LLM" : rendered == null ? "NONE" : "TEMPLATE";
-        String version = response != null && response.path("promptVersion").isString() ? response.get("promptVersion").asText() : "unknown";
-        // Only validated response metadata is stored; upstream bodies are never logged or returned in errors.
-        boolean metadata = response != null && (reason == null || Set.of("LLM_ERROR", "LLM_TIMEOUT", "VALIDATION_FAILED", "VALUE_MISMATCH").contains(reason))
-                && response.path("latencyMs").isIntegralNumber() && response.path("costUsd").isNumber();
+        String version = metrics.prompt() == null ? "unknown" : metrics.prompt();
         final String text = rendered, finalDraft = valid ? draft : null, finalReason = reason;
         final boolean passed = valid;
-        tx.executeWithoutResult(s -> jdbc.update("""
+        tx.executeWithoutResult(s -> {
+            int updated = jdbc.update("""
                 UPDATE ai_explanations SET mode=?, status='DONE', rendered_text=?, raw_text=?, validation_passed=?,
-                    inserted_values=CAST(? AS JSONB), reason_code=?, versions=CAST(? AS JSONB), latency_ms=?, cost_usd=?, created_at=CURRENT_TIMESTAMP
-                WHERE result_id=? AND status='PROCESSING'
+                    inserted_values=CAST(? AS JSONB), reason_code=?, versions=CAST(? AS JSONB), latency_ms=?, cost_usd=?,
+                    model_name=?,input_tokens=?,output_tokens=?,created_at=CURRENT_TIMESTAMP
+                WHERE result_id=? AND status='PROCESSING' AND active_attempt_id=?
                 """, mode, text, finalDraft, passed, mapper.writeValueAsString(payload.path("values")), finalReason,
                 mapper.writeValueAsString(Map.of("template", "spring-1", "prompt", version)),
-                metadata ? response.path("latencyMs").asInt() : null, metadata ? response.path("costUsd").decimalValue() : null, id));
+                metrics.latency(), metrics.cost(), metrics.model(), metrics.inputTokens(), metrics.outputTokens(), id, attempt);
+            if (updated == 1) history.finish(id, attempt, roundTrip);
+        });
     }
 
     private static void validateResponse(JsonNode r) {
@@ -141,9 +171,6 @@ public class InsightGeneration {
         require(Set.of("PASSED", "FAILED").contains(validation));
         require(r.path("promptVersion").isString() && !r.path("promptVersion").asText().isBlank()
                 && r.path("promptVersion").asText().length() <= 100 && !"mock".equalsIgnoreCase(r.path("promptVersion").asText()));
-        require(r.path("latencyMs").isIntegralNumber() && r.path("latencyMs").canConvertToInt() && r.path("latencyMs").asInt() >= 0);
-        require(r.path("costUsd").isNumber() && r.path("costUsd").decimalValue().signum() >= 0
-                && r.path("costUsd").decimalValue().compareTo(new java.math.BigDecimal("999999.999999")) <= 0);
         if ("PASSED".equals(validation)) require(r.path("draft").isString() && !r.path("draft").asText().isBlank() && !r.hasNonNull("failReason"));
         else require(!r.hasNonNull("draft") && Set.of("LLM_ERROR", "LLM_TIMEOUT", "VALIDATION_FAILED").contains(r.path("failReason").asText()));
     }

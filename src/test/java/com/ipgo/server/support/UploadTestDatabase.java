@@ -12,6 +12,12 @@ public final class UploadTestDatabase {
     }
 
     public static void receiptMatchingSchema(JdbcTemplate jdbc) {
+        if (jdbc.queryForObject("SELECT COUNT(*) FROM information_schema.tables WHERE LOWER(table_name)='ai_explanation_calls'", Integer.class) == 0) {
+            new org.springframework.jdbc.datasource.init.ResourceDatabasePopulator(
+                    new org.springframework.core.io.ClassPathResource("db/migration/V17__store_insight_call_history.sql"))
+                    .execute(java.util.Objects.requireNonNull(jdbc.getDataSource()));
+        }
+
         // 기존 harness의 V11 뒤에 portable 정본 V16을 적용한다. V12~15는 별도 PG 전용 검사 대상이다.
         if (jdbc.queryForObject("SELECT COUNT(*) FROM information_schema.tables WHERE LOWER(table_name) = 'receipt_matching_events'", Integer.class) == 0) {
             new org.springframework.jdbc.datasource.init.ResourceDatabasePopulator(

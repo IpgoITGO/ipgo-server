@@ -86,6 +86,7 @@ class ReceiptCorrectionIntegrationTests extends DatabaseIntegrationTest {
         assertThat(saved.currentState()).isEqualTo("RESOLVED");assertThat(saved.runId()).isNull();
         var after=corrections.detail(owner,event);
         assertThat(after.allocations()).isEqualTo(before.allocations());assertThat(after.decisions()).hasSize(1);
+        assertThat(after.lastDecision().decisionId()).isEqualTo(saved.decisionId());
         assertThat(after.version()).isEqualTo(saved.version());assertThat(after.version()).isNotEqualTo(before.version());
         assertThat(mapper.writeValueAsString(matching.report(original.getId()))).isEqualTo(originalReport);
         assertThat(count("receipt_allocation_history")).isEqualTo(history);
@@ -127,6 +128,7 @@ class ReceiptCorrectionIntegrationTests extends DatabaseIntegrationTest {
         complete(upload(),160,true);assertThat(corrections.detail(owner,event).currentState()).isEqualTo("OPEN");
         complete(upload(),200,true);assertThat(corrections.detail(owner,event).currentState()).isEqualTo("OPEN");
         assertThat(count("receipt_matching_allocations")).isEqualTo(2);
+        assertThat(corrections.detail(owner,event).lastDecision()).isNotNull();
     }
     @Test void keepUnderQuantityDoesNotHideShortageAndInvalidSourceCanOnlyKeepOrClear() {
         complete(upload(),120,true);var d=corrections.detail(owner,event);
@@ -297,11 +299,29 @@ class ReceiptCorrectionIntegrationTests extends DatabaseIntegrationTest {
     }
     @Test void postgresServerCannotRewriteAuditOrCrossScope() {
         Assumptions.assumeTrue(isPostgres());
-        corrections.decide(owner,event,request(corrections.detail(owner,event),Action.KEEP,List.of(),UUID.randomUUID()));
+        var saved=corrections.decide(owner,event,request(corrections.detail(owner,event),Action.KEEP,List.of(),UUID.randomUUID()));
         assertThatThrownBy(()->jdbc.update("UPDATE receipt_correction_decisions SET reason='changed'")).rootCause()
                 .isInstanceOfSatisfying(java.sql.SQLException.class,e->assertThat(e.getSQLState()).isEqualTo("42501"));
         assertThatThrownBy(()->jdbc.update("DELETE FROM receipt_allocation_history")).rootCause()
                 .isInstanceOfSatisfying(java.sql.SQLException.class,e->assertThat(e.getSQLState()).isEqualTo("42501"));
+        jdbc.update("INSERT INTO warehouses(user_id,name) VALUES (?,'범위 검사')",owner);
+        long otherWarehouse=jdbc.queryForObject("SELECT MAX(id) FROM warehouses WHERE user_id=?",Long.class,owner);
+        assertThatThrownBy(()->jdbc.update("""
+                INSERT INTO receipt_correction_decisions(id,event_id,user_id,warehouse_id,product_id,source_upload_file_id,
+                    source_fingerprint,action,reason,idempotency_key,request_hash,previous_version,snapshot,response)
+                SELECT ?,event_id,user_id,?,product_id,source_upload_file_id,source_fingerprint,action,'scope test',?,
+                    request_hash,previous_version,snapshot,response FROM receipt_correction_decisions WHERE id=?
+                """,UUID.randomUUID().toString(),otherWarehouse,UUID.randomUUID().toString(),saved.decisionId())).rootCause()
+                .isInstanceOfSatisfying(java.sql.SQLException.class,e->assertThat(e.getSQLState()).isEqualTo("23503"));
+        jdbc.update("INSERT INTO receipt_matching_events(user_id,warehouse_id,product_id,stock_date,quantity,valid_observation,source_upload_file_id) VALUES (?,?,?,?,100,TRUE,?)",
+                owner,warehouse,product,DAY.plusDays(1),changed.getId());
+        long otherEvent=jdbc.queryForObject("SELECT id FROM receipt_matching_events WHERE warehouse_id=? AND stock_date=?",Long.class,warehouse,DAY.plusDays(1));
+        assertThatThrownBy(()->jdbc.update("""
+                INSERT INTO receipt_allocation_history(event_id,receipt_id,warehouse_id,product_id,quantity,sku_name,received_on,action,decision_id)
+                VALUES (?,?,?,?,100,'상품A',?,'ASSIGN',?)
+                """,otherEvent,first,warehouse,product,DAY.plusDays(1),saved.decisionId())).rootCause()
+                .isInstanceOfSatisfying(java.sql.SQLException.class,e->assertThat(e.getSQLState()).isEqualTo("23503"));
+        assertThat(count("receipt_correction_decisions")).isEqualTo(1);
     }
 
     private void fault(String target,boolean enabled) {

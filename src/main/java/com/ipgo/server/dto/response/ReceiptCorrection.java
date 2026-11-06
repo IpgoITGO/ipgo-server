@@ -15,7 +15,7 @@ public final class ReceiptCorrection {
     public record Detail(long reviewId, long warehouseId, long productId, String skuName, LocalDate stockDate,
             String currentState, String version, boolean sourceReady, Source originalSource, Source currentSource,
             List<Allocation> allocations, List<Candidate> candidates, Capabilities capabilities,
-            List<String> warnings, List<Decision> decisions) { }
+            List<String> warnings, Decision lastDecision, List<Decision> decisions) { }
     public record Page(List<Detail> items, Long nextCursor) { }
     public record Change(long receiptId, String beforeStatus, String afterStatus, boolean beforeReflected, boolean afterReflected) { }
     public record Preview(String version, String action, List<Allocation> before, List<Allocation> after,

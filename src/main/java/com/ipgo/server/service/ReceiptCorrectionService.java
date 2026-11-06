@@ -234,15 +234,17 @@ public class ReceiptCorrectionService {
         if(!current.present()) warnings.add("SOURCE_MISSING");
         if(!current.valid()) warnings.add("INVALID_OBSERVATION");
         if(allocations.stream().mapToLong(Allocation::quantity).reduce(0L,Math::addExact)>current.quantity()) warnings.add("INSUFFICIENT_QUANTITY");
-        var decisions=jdbc.query("SELECT id,action,reason,user_id,created_at FROM receipt_correction_decisions WHERE event_id=? ORDER BY created_at DESC,id DESC FETCH FIRST 20 ROWS ONLY",
-                (rs,n)->new Decision(rs.getString(1),rs.getString(2),rs.getString(3),rs.getLong(4),rs.getTimestamp(5).toInstant().toString()),e.id());
+        // transaction 시작 시각/UUID 정렬 대신 실제 마지막 확정 포인터를 우선한다.
+        var decisions=jdbc.query("SELECT id,action,reason,user_id,created_at FROM receipt_correction_decisions WHERE event_id=? ORDER BY CASE WHEN id=? THEN 0 ELSE 1 END,created_at DESC,id DESC FETCH FIRST 20 ROWS ONLY",
+                (rs,n)->new Decision(rs.getString(1),rs.getString(2),rs.getString(3),rs.getLong(4),rs.getTimestamp(5).toInstant().toString()),e.id(),e.lastDecision());
+        Decision lastDecision=decisions.stream().filter(d->d.decisionId().equals(e.lastDecision())).findFirst().orElse(null);
         Source original=new Source(e.originalUpload(),e.originalRevision(),true,e.quantity(),e.valid(),ReceiptCorrectionSources.fingerprint(true,e.quantity(),e.valid()));
         Capabilities capabilities=new Capabilities(ready && e.review(),ready && e.review() && current.present() && current.valid() && current.quantity()>0,ready && e.review());
         // 후보 판정은 위와 같은 event/창고/배정 집합을 사용한다.
         Context shell=new Context(e,w,null,active,allocated,today,asOf);
         var candidates=active.stream().map(r->new Candidate(r.getId(),r.getQuantity(),r.getExpectedOn(),r.statusOn(today),capabilities.replace() && eligible(r,shell))).toList();
         var detail=new Detail(e.id(),e.warehouse(),e.product(),name,e.day(),e.review()?"OPEN":"RESOLVED",version,ready,original,current,
-                allocations,candidates,capabilities,List.copyOf(warnings),decisions);
+                allocations,candidates,capabilities,List.copyOf(warnings),lastDecision,decisions);
         return new Context(e,w,detail,active,allocated,today,asOf);
     }
 }

@@ -31,7 +31,8 @@ idempotencyKey는 UUID다. expectedVersion은64자 hex 문자열이며 내부 �
 
 Detail에는 상품/창고/stockDate, `currentState`, `version`, `sourceReady`, 최초 배정 근거 `originalSource`,
 최신 revision 근거 `currentSource`, 현재 allocations, 본인 상품의 candidates, capabilities,
-warnings, 최근20개 decisions가 있다. Source에는 uploadId/revision/존재/수량/검산 유효성/의미 지문이 있다.
+warnings, 명시적 lastDecision과 최근20개 decisions가 있다. 현재 결정은 시간 정렬 대신 사건의 마지막 결정
+포인터로 식별한다. Source에는 uploadId/revision/존재/수량/검산 유효성/의미 지문이 있다.
 Candidate의 selectable을 정본으로 삼되 저장 시 서버가 다시 검증한다. 과거 이름은 배정 당시 값,
 새 배정 이름은 현재 상품명으로 기록한다.
 

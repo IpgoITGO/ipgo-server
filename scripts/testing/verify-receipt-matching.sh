@@ -20,7 +20,7 @@ docker run -d --name "$matching_prefix-db" --network "$matching_prefix" --networ
 matching_database_created=true
 matching_ready=false
 for matching_attempt in {1..30}; do
-  if docker exec "$matching_prefix-db" pg_isready -U postgres -d engine_test >/dev/null 2>&1; then matching_ready=true; break; fi
+  if docker exec "$matching_prefix-db" psql -h 127.0.0.1 -U postgres -d engine_test -v ON_ERROR_STOP=1 -Atc 'SELECT 1' >/dev/null 2>&1; then matching_ready=true; break; fi
   sleep 1
 done
 "$matching_ready" || { echo 'Disposable PostgreSQL not ready' >&2; exit 1; }

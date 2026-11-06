@@ -12,13 +12,23 @@ on:
         description: "Full 40-character server SHA approved for this deployment"
         required: true
         type: string
+      continuous_insight_approved:
+        description: "Approve ongoing insight; monthly quota remains enabled unless separately waived"
+        required: false
+        default: false
+        type: boolean
+      unlimited_insight_approved:
+        description: "Explicitly approve ongoing LLM costs without the monthly USD10 quota"
+        required: false
+        default: false
+        type: boolean
       insight_starts_at:
         description: "UTC start: only explanations created since this instant belong to the demo"
         required: false
         default: ""
         type: string
       insight_expires_at:
-        description: "UTC deadline for new insight calls (required when insight enabled, within 24h)"
+        description: "UTC deadline for demo calls (required unless continuous mode approved, within 24h)"
         required: false
         default: ""
         type: string
@@ -100,6 +110,8 @@ jobs:
       MAINTENANCE_APPROVED: ${{ inputs.maintenance_approved }}
       ENGINE_ENABLED: ${{ inputs.engine_enabled }}
       ENGINE_CONNECTION_APPROVED: ${{ inputs.engine_connection_approved }}
+      CONTINUOUS_INSIGHT_APPROVED: ${{ inputs.continuous_insight_approved }}
+      UNLIMITED_INSIGHT_APPROVED: ${{ inputs.unlimited_insight_approved }}
       INSIGHT_STARTS_AT: ${{ inputs.insight_starts_at }}
       INSIGHT_EXPIRES_AT: ${{ inputs.insight_expires_at }}
       INSIGHT_ENABLED: ${{ inputs.insight_enabled }}

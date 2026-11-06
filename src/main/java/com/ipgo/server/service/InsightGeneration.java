@@ -26,6 +26,9 @@ public class InsightGeneration {
     private final boolean enabled;
     private final Duration timeout;
     private InsightCallWindow callWindow;
+    private MonthlyInsightBudget monthlyBudget;
+    @org.springframework.beans.factory.annotation.Autowired
+    void configureBudget(MonthlyInsightBudget budget) { this.monthlyBudget = budget; }
     @org.springframework.beans.factory.annotation.Autowired
     void configureWindow(InsightCallWindow window) { this.callWindow = window; }
     private boolean windowOpen() { return callWindow == null || callWindow.open(); }
@@ -34,6 +37,7 @@ public class InsightGeneration {
             @Value("${ipgo.insight.timeout:15s}") Duration timeout) {
         this.jdbc = jdbc; this.mapper = mapper; this.renderer = renderer; this.client = client;
         this.tx = tx; this.history = new InsightCallHistory(jdbc); this.enabled = enabled; this.timeout = timeout;
+        this.monthlyBudget = new MonthlyInsightBudget(jdbc, tx, java.math.BigDecimal.TEN);
     }
 
     /** Called inside the calculation transaction. A duplicate engine result never enqueues twice. */
@@ -117,7 +121,6 @@ public class InsightGeneration {
             if (attempt == null) {
                 attempt = history.begin(id, dispatch ? "LEGACY" : "RECOVERY");
             }
-            if (dispatch && jdbc.update("UPDATE ai_explanation_calls SET dispatched_at=CURRENT_TIMESTAMP WHERE attempt_id=? AND dispatched_at IS NULL AND status='PROCESSING'", attempt) != 1) return null;
             return attempt;
         });
     }
@@ -127,6 +130,12 @@ public class InsightGeneration {
         String attempt = activeAttempt(id, true);
         if (attempt == null) return;
         JsonNode p = payload(attempt);
+        var permission = monthlyBudget.tryDispatch(attempt);
+        if (permission == MonthlyInsightBudget.Decision.ALREADY_DISPATCHED) return;
+        if (permission == MonthlyInsightBudget.Decision.EXHAUSTED) {
+            finish(id, attempt, p, null, "LLM_BUDGET_EXCEEDED", InsightCallMetadata.UNKNOWN, null);
+            return;
+        }
         JsonNode response = null;
         InsightCallMetadata metrics = InsightCallMetadata.UNKNOWN;
         String reason = null;

@@ -20,6 +20,25 @@ IMAGE = f'{ACCOUNT}.dkr.ecr.ap-northeast-2.amazonaws.com/ipgo-dev/server:{SHA}-a
 
 
 class DevDeploymentTests(unittest.TestCase):
+    def test_continuous_requires_explicit_approval_and_keeps_monthly_budget(self):
+        env=dict(self.env,CONTINUOUS_INSIGHT_APPROVED='true',INSIGHT_EXPIRES_AT='')
+        self.assertTrue(module.settings(env)['continuous'])
+        task=module.render(self.task,IMAGE,env)
+        values={e['name']:e['value'] for e in task['containerDefinitions'][0]['environment']}
+        self.assertEqual(values['IPGO_INSIGHT_MONTHLY_BUDGET_USD'],'10')
+        self.assertEqual(values['IPGO_INSIGHT_DEMO_EXPIRES_AT'],'')
+        for change in [dict(CONTINUOUS_INSIGHT_APPROVED='false'),dict(INSIGHT_APPROVED='false'),dict(INSIGHT_WORKER_ENABLED='false')]:
+            with self.subTest(change=change),self.assertRaises(module.InvalidDeployment):
+                module.settings(dict(env,**change))
+
+    def test_unlimited_monthly_calls_require_separate_cost_approval(self):
+        env=dict(self.env,CONTINUOUS_INSIGHT_APPROVED='true',UNLIMITED_INSIGHT_APPROVED='true',INSIGHT_EXPIRES_AT='')
+        values={e['name']:e['value'] for e in module.render(self.task,IMAGE,env)['containerDefinitions'][0]['environment']}
+        self.assertEqual(values['IPGO_INSIGHT_MONTHLY_BUDGET_ENABLED'],'false')
+        for change in [dict(CONTINUOUS_INSIGHT_APPROVED='false'),dict(UNLIMITED_INSIGHT_APPROVED='TRUE')]:
+            with self.subTest(change=change),self.assertRaises(module.InvalidDeployment):
+                module.settings(dict(env,**change))
+
     def test_single_result_is_disabled_when_new_inputs_are_absent(self):
         self.assertFalse(module.settings(self.env)['single'])
         self.task['containerDefinitions'][0]['environment'].append({'name':'IPGO_INSIGHT_SINGLE_RESULT_ENABLED','value':'true'})

@@ -44,15 +44,19 @@ def settings(env):
     require(mode != "onebox" or maintenance, "One-box restart requires maintenance approval")
     require(not engine or connected, "Engine connection approval is required")
     require(not insight or (engine and approved), "Insight activation requires engine and cost approval")
+    continuous = flag({"CONTINUOUS_INSIGHT_APPROVED": "false", **env}, "CONTINUOUS_INSIGHT_APPROVED")
+    require(not continuous or (insight and worker and approved), "Continuous insight requires explicit activation, worker and cost approval")
+    unlimited = flag({"UNLIMITED_INSIGHT_APPROVED": "false", **env}, "UNLIMITED_INSIGHT_APPROVED")
+    require(not unlimited or continuous, "Unlimited insight requires continuous mode and explicit cost approval")
     expires = env.get("INSIGHT_EXPIRES_AT", "")
     starts = env.get("INSIGHT_STARTS_AT", "")
     if insight:
         try:
             start = datetime.fromisoformat(starts.replace("Z", "+00:00"))
-            end = datetime.fromisoformat(expires.replace("Z", "+00:00"))
+            end = datetime.max.replace(tzinfo=timezone.utc) if continuous and not expires else datetime.fromisoformat(expires.replace("Z", "+00:00"))
             require(start.tzinfo is not None and end.tzinfo is not None and start < end, "Invalid insight window")
             require(-86400 <= (start-datetime.now(timezone.utc)).total_seconds() <= 0, "Insight start must be recent")
-            require(end.tzinfo is not None and 0 < (end - datetime.now(timezone.utc)).total_seconds() <= 86400,
+            require(continuous and not expires or (end.tzinfo is not None and 0 < (end - datetime.now(timezone.utc)).total_seconds() <= 86400),
                     "Insight expiry must be within the next day")
         except ValueError:
             raise InvalidDeployment("Explicit UTC insight expiry is required") from None
@@ -76,7 +80,7 @@ def settings(env):
             require(uri.hostname not in ("localhost", "0.0.0.0", "127.0.0.1", "::1"), "Engine origin cannot be loopback")
         except (ValueError, InvalidDeployment):
             raise InvalidDeployment("Invalid engine origin configuration") from None
-    return {"sha": sha, "mode": mode, "engine": engine, "insight": insight, "worker": worker, "single": single, "batch": batch, "base": base, "expires": expires, "starts": starts}
+    return {"continuous": continuous, "sha": sha, "mode": mode, "engine": engine, "insight": insight, "worker": worker, "single": single, "batch": batch, "base": base, "expires": expires, "starts": starts}
 
 
 def render(task, image, env):
@@ -105,6 +109,8 @@ def render(task, image, env):
                "IPGO_INSIGHT_SINGLE_RESULT_ENABLED": str(config["single"]).lower(),
                "IPGO_INSIGHT_BATCH_ENABLED": str(config["batch"]).lower(),
                "IPGO_INSIGHT_WORKER_ENABLED": str(config["worker"]).lower()}
+    managed["IPGO_INSIGHT_MONTHLY_BUDGET_USD"] = "10"
+    managed["IPGO_INSIGHT_MONTHLY_BUDGET_ENABLED"] = str(env.get("UNLIMITED_INSIGHT_APPROVED", "false") != "true").lower()
     managed["IPGO_INSIGHT_DEMO_STARTS_AT"] = config["starts"] if config["insight"] else ""
     managed["IPGO_INSIGHT_DEMO_EXPIRES_AT"] = config["expires"] if config["insight"] else ""
     if config["base"]:

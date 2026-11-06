@@ -1,5 +1,7 @@
 # Ipgo Server
 
+토스 테스트 카드 월 구독의 서버 원장·API·로컬 검증은 [빌링 계약](docs/decisions/0012-toss-billing-ledger.md)을 따릅니다. 기본 API/청구 작업기는 OFF이며, 실제 키 확인·토스 테스트 결제·클라이언트 연결·배포는 별도 단계입니다.
+
 현재 설명·시나리오의 확정 계약과 검증 범위·관련 후속은 [계약 대조](docs/decisions/0009-current-insight-scenario-contract.md)에 정리합니다.
 정제·계산 실패/재시도/동시성의 기존 근거와 검증 잔여는 [검증 대조](docs/verification/engine-failures-and-concurrency.md)에 기록합니다.
 

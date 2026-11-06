@@ -92,7 +92,7 @@ migration_count="$(docker exec "${database_container}" \
 table_count="$(docker exec "${database_container}" \
   psql -U ipgo_migrator -d ipgo -Atc \
   "SELECT COUNT(*) FROM pg_tables WHERE schemaname = 'public' AND tablename <> 'flyway_schema_history'")"
-if [[ "${migration_count}" != "16" || "${table_count}" != "23" ]]; then
+if [[ "${migration_count}" != "17" || "${table_count}" != "24" ]]; then
   echo "unexpected schema: migrations=${migration_count}, tables=${table_count}" >&2
   exit 1
 fi
@@ -171,5 +171,21 @@ expect_denied ipgo_server "UPDATE receipt_matching_allocations SET warehouse_id=
 expect_denied ipgo_ai_reader "SELECT * FROM receipt_matching_events"
 expect_denied ipgo_ai_reader "SELECT * FROM receipt_matching_allocations"
 expect_denied ipgo_ai_service_reader "SELECT * FROM receipt_matching_reports"
+
+# V17: 보관 요율·상자 크기는 서버 역할만 쓰고, 0 이하 값은 거부하며 AI 역할은 볼 수 없다(#111).
+docker exec -i "${database_container}" psql -v ON_ERROR_STOP=1 -U ipgo_server -d ipgo >/dev/null <<'SQL'
+UPDATE warehouses SET storage_rate_per_cbm = 15000.50 WHERE id = 10;
+UPDATE warehouses SET storage_rate_per_cbm = NULL WHERE id = 20;
+INSERT INTO product_boxes(product_id,width_cm,depth_cm,height_cm) VALUES (100,30.5,20,10);
+UPDATE product_boxes SET height_cm = 12.5 WHERE product_id = 100;
+SQL
+expect_denied ipgo_server "UPDATE warehouses SET storage_rate_per_cbm = 0 WHERE id = 10"
+expect_denied ipgo_server "INSERT INTO product_boxes(product_id,width_cm,depth_cm,height_cm) VALUES (100,1,1,1)"
+expect_denied ipgo_server "UPDATE product_boxes SET width_cm = 0 WHERE product_id = 100"
+expect_denied ipgo_server "INSERT INTO product_boxes(product_id,width_cm,depth_cm,height_cm) VALUES (999999,1,1,1)"
+expect_denied ipgo_ai_reader "SELECT * FROM product_boxes"
+expect_denied ipgo_ai_service_reader "SELECT * FROM product_boxes"
+docker exec "${database_container}" psql -v ON_ERROR_STOP=1 -U ipgo_server -d ipgo \
+  -c "DELETE FROM product_boxes WHERE product_id = 100" >/dev/null
 
 echo "PostgreSQL migrations, tenant integrity, and database roles verified."

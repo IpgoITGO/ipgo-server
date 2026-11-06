@@ -12,6 +12,12 @@ public final class UploadTestDatabase {
     }
 
     public static void receiptMatchingSchema(JdbcTemplate jdbc) {
+        if (jdbc.queryForObject("SELECT COUNT(*) FROM information_schema.tables WHERE LOWER(table_name)='ai_explanation_calls'", Integer.class) == 0) {
+            new org.springframework.jdbc.datasource.init.ResourceDatabasePopulator(
+                    new org.springframework.core.io.ClassPathResource("db/migration/V18__store_insight_call_history.sql"))
+                    .execute(java.util.Objects.requireNonNull(jdbc.getDataSource()));
+        }
+
         // 기존 harness의 V11 뒤에 portable 정본 V16을 적용한다. V12~15는 별도 PG 전용 검사 대상이다.
         if (jdbc.queryForObject("SELECT COUNT(*) FROM information_schema.tables WHERE LOWER(table_name) = 'receipt_matching_events'", Integer.class) == 0) {
             new org.springframework.jdbc.datasource.init.ResourceDatabasePopulator(
@@ -21,19 +27,19 @@ public final class UploadTestDatabase {
     }
 
     public static void storageCostSchema(JdbcTemplate jdbc) {
-        // 기존 harness의 V11 뒤에 portable V18을 적용한다(#111). 테스트 DB는 클래스끼리 공유되므로 한 번만 적용한다.
+        // 기존 harness의 V11 뒤에 portable V19를 적용한다(#111). 테스트 DB는 클래스끼리 공유되므로 한 번만 적용한다.
         if (jdbc.queryForObject("SELECT COUNT(*) FROM information_schema.tables WHERE LOWER(table_name) = 'product_boxes'", Integer.class) == 0) {
             new org.springframework.jdbc.datasource.init.ResourceDatabasePopulator(
-                    new org.springframework.core.io.ClassPathResource("db/migration/V18__create_storage_cost.sql"))
+                    new org.springframework.core.io.ClassPathResource("db/migration/V19__create_storage_cost.sql"))
                     .execute(java.util.Objects.requireNonNull(jdbc.getDataSource()));
         }
     }
 
     public static void plannedQuantitySchema(JdbcTemplate jdbc) {
-        // 기존 harness의 V11 뒤에 portable V19를 적용한다(#119). 테스트 DB는 클래스끼리 공유되므로 한 번만 적용한다.
+        // 기존 harness의 V11 뒤에 portable V20을 적용한다(#119). 테스트 DB는 클래스끼리 공유되므로 한 번만 적용한다.
         if (jdbc.queryForObject("SELECT COUNT(*) FROM information_schema.tables WHERE LOWER(table_name) = 'product_planned_quantities'", Integer.class) == 0) {
             new org.springframework.jdbc.datasource.init.ResourceDatabasePopulator(
-                    new org.springframework.core.io.ClassPathResource("db/migration/V19__create_planned_quantities.sql"))
+                    new org.springframework.core.io.ClassPathResource("db/migration/V20__create_planned_quantities.sql"))
                     .execute(java.util.Objects.requireNonNull(jdbc.getDataSource()));
         }
     }

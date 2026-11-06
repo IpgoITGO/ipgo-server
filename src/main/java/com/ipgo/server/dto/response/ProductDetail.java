@@ -17,18 +17,21 @@ public record ProductDetail(Product product, String needStatus, LocalDate asOfDa
             String reviewCycleSource, Long orderUnitQty, Long unitCost) {
     }
 
-    // requiredQtyBeforeRounding은 ERD에 저장 칸이 없어 계산 연동 때 정한다. 그 전까지 null이다.
+    // requiredQtyBeforeRounding은 계산 run의 resultFacts에 저장된 원본 필요량에서 읽는다.
     public record Result(Long resultId, String status, String reason, String method, String methodReason,
             BigDecimal multiplier, Integer horizonDays, Long forecastOutboundQty, Long startStockQty,
             boolean startStockEstimated, Long plannedReceiptsInHorizon, Long preArrivalUnmetQty,
             Long requiredQtyBeforeRounding, Long recommendedQty, Long recommendedAmount) {
     }
 
-    // history는 백테스트 연동 전까지 비어 있다. range는 등급이 LOW일 때만 있다.
+    // history는 같은 계산의 TUNE 재생 이력이다. 구버전 결과는 빈 목록, evaluation=null.
     public record Accuracy(String grade, boolean isReference, Integer validObservationDays,
             Integer coverSuccessCount, Integer coverTrialCount, BigDecimal forecastErrorRate,
-            List<History> history, Range range, LocalDate firstInboundOn) {
+            List<History> history, Range range, LocalDate firstInboundOn, Evaluation evaluation) {
     }
+
+    public record Evaluation(String status, String reason, String source, String period,
+            LocalDate periodStart, LocalDate periodEnd, LocalDate observedThrough, Integer horizonDays) { }
 
     public record History(LocalDate originDate, Long forecastQty, Long actualQty, boolean covered) {
     }

@@ -25,6 +25,10 @@ public class InsightGeneration {
     private final InsightCallHistory history;
     private final boolean enabled;
     private final Duration timeout;
+    private InsightCallWindow callWindow;
+    @org.springframework.beans.factory.annotation.Autowired
+    void configureWindow(InsightCallWindow window) { this.callWindow = window; }
+    private boolean windowOpen() { return callWindow == null || callWindow.open(); }
     public InsightGeneration(JdbcTemplate jdbc, JsonMapper mapper, InsightRenderer renderer, InsightEngineClient client,
             TransactionTemplate tx, @Value("${ipgo.insight.enabled:false}") boolean enabled,
             @Value("${ipgo.insight.timeout:15s}") Duration timeout) {
@@ -36,7 +40,7 @@ public class InsightGeneration {
     public void prepare(long resultId, JsonNode result, String asOf) {
         String status = "DISABLED", reason = "LLM_DISABLED";
         JsonNode payload = mapper.createObjectNode();
-        if (enabled) {
+        if (enabled && windowOpen()) {
             try {
                 renderer.prepare(result, asOf); // Validate engine facts before normalizing to stored precision.
                 var p = renderer.prepareStored(storedFacts(resultId, result), asOf);
@@ -79,7 +83,17 @@ public class InsightGeneration {
                 Long.class, Timestamp.from(Instant.now().minus(timeout).minusSeconds(30)))) {
             expireClaimed(id);
         }
-        List<Long> due = jdbc.queryForList("SELECT result_id FROM ai_explanations WHERE status = 'PENDING' ORDER BY result_id FETCH FIRST 1 ROWS ONLY", Long.class);
+        if (!windowOpen()) {
+            // Never reopen expired queued work. Recovery of already-started calls above still runs.
+            if (callWindow != null && callWindow.limited()) jdbc.update(
+                    "UPDATE ai_explanations SET status='DISABLED', reason_code='LLM_DISABLED' WHERE status='PENDING' AND created_at>=?",
+                    Timestamp.from(callWindow.startsAt()));
+            return;
+        }
+        List<Long> due = callWindow != null && callWindow.limited()
+                ? jdbc.queryForList("SELECT result_id FROM ai_explanations WHERE status='PENDING' AND created_at>=? ORDER BY result_id FETCH FIRST 1 ROWS ONLY",
+                    Long.class, Timestamp.from(callWindow.startsAt()))
+                : jdbc.queryForList("SELECT result_id FROM ai_explanations WHERE status = 'PENDING' ORDER BY result_id FETCH FIRST 1 ROWS ONLY", Long.class);
         for (Long id : due) {
             Boolean claimed = tx.execute(s -> {
                 if (jdbc.update("UPDATE ai_explanations SET status='PROCESSING', created_at=CURRENT_TIMESTAMP WHERE result_id=? AND status='PENDING'", id) != 1) return false;
@@ -118,10 +132,13 @@ public class InsightGeneration {
         String reason = null;
         long started = System.nanoTime();
         try {
-            response = client.generate(id, p.path("input"));
-            metrics = InsightCallMetadata.read(response);
-            validateResponse(response);
-            if ("FAILED".equals(response.path("validation").asText())) reason = response.path("failReason").asText();
+            if (!windowOpen()) reason = "LLM_DISABLED";
+            else response = client.generate(id, p.path("input"));
+            if (response != null) {
+                metrics = InsightCallMetadata.read(response);
+                validateResponse(response);
+                if ("FAILED".equals(response.path("validation").asText())) reason = response.path("failReason").asText();
+            }
         } catch (InsightEngineClient.Failure e) { reason = e.reason(); }
         catch (RuntimeException e) { reason = "VALIDATION_FAILED"; response = null; }
         finish(id, attempt, p, response, reason, metrics, (int) java.util.concurrent.TimeUnit.NANOSECONDS.toMillis(System.nanoTime()-started));

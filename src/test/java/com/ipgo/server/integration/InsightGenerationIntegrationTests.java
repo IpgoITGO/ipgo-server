@@ -99,6 +99,35 @@ class InsightGenerationIntegrationTests extends DatabaseIntegrationTest {
     String state() { return jdbc.queryForObject("SELECT status FROM ai_explanations", String.class); }
     String reason() { return jdbc.queryForObject("SELECT reason_code FROM ai_explanations", String.class); }
 
+    private void window(String start, String end) {
+        org.springframework.test.util.ReflectionTestUtils.invokeMethod(generation, "configureWindow",
+                new com.ipgo.server.service.InsightCallWindow(start, end));
+    }
+    @Test void demoExpiredBeforeCalculationNeverEnqueuesOrCalls() {
+        window("2000-01-01T00:00:00Z", "2000-01-02T00:00:00Z");
+        save(); generation.tick();
+        assertThat(state()).isEqualTo("DISABLED"); assertThat(calls).hasValue(0);
+    }
+    @Test void demoQueuedBeforeExpiryIsClosedWithoutDispatch() {
+        long id=save();
+        window("2000-01-01T00:00:00Z", "2000-01-02T00:00:00Z");
+        generation.tick();
+        assertThat(state()).isEqualTo("DISABLED"); assertThat(reason()).isEqualTo("LLM_DISABLED");
+        assertThat(calls).hasValue(0);
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM ai_explanation_calls WHERE result_id=?",Integer.class,id)).isZero();
+    }
+    @Test void demoDoesNotDrainAnOlderPendingQueue() {
+        save();
+        jdbc.update("UPDATE ai_explanations SET created_at=?",java.sql.Timestamp.from(java.time.Instant.parse("2000-01-01T00:00:00Z")));
+        window(java.time.Instant.now().minusSeconds(60).toString(),java.time.Instant.now().plusSeconds(600).toString());
+        generation.tick(); assertThat(calls).hasValue(0); assertThat(state()).isEqualTo("PENDING");
+    }
+    @Test void demoActiveNewCalculationCallsOnlyOnce() {
+        window(java.time.Instant.now().minusSeconds(60).toString(),java.time.Instant.now().plusSeconds(600).toString());
+        long id=save(); generation.tick(); generation.tick();
+        assertThat(calls).hasValue(1); assertThat(insights.insight(owner,id).orElseThrow().mode()).isEqualTo("AI");
+    }
+
     @Test void calculatesCallsFillsStoresAndServesK4WithoutDisclosingFacts() throws Exception {
         long id = save();
         assertThat(state()).isEqualTo("PENDING");

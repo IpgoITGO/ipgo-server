@@ -46,6 +46,8 @@ def settings(env):
     require(not insight or (engine and approved), "Insight activation requires engine and cost approval")
     continuous = flag({"CONTINUOUS_INSIGHT_APPROVED": "false", **env}, "CONTINUOUS_INSIGHT_APPROVED")
     require(not continuous or (insight and worker and approved), "Continuous insight requires explicit activation, worker and cost approval")
+    unlimited = flag({"UNLIMITED_INSIGHT_APPROVED": "false", **env}, "UNLIMITED_INSIGHT_APPROVED")
+    require(not unlimited or continuous, "Unlimited insight requires continuous mode and explicit cost approval")
     expires = env.get("INSIGHT_EXPIRES_AT", "")
     starts = env.get("INSIGHT_STARTS_AT", "")
     if insight:
@@ -108,6 +110,7 @@ def render(task, image, env):
                "IPGO_INSIGHT_BATCH_ENABLED": str(config["batch"]).lower(),
                "IPGO_INSIGHT_WORKER_ENABLED": str(config["worker"]).lower()}
     managed["IPGO_INSIGHT_MONTHLY_BUDGET_USD"] = "10"
+    managed["IPGO_INSIGHT_MONTHLY_BUDGET_ENABLED"] = str(env.get("UNLIMITED_INSIGHT_APPROVED", "false") != "true").lower()
     managed["IPGO_INSIGHT_DEMO_STARTS_AT"] = config["starts"] if config["insight"] else ""
     managed["IPGO_INSIGHT_DEMO_EXPIRES_AT"] = config["expires"] if config["insight"] else ""
     if config["base"]:

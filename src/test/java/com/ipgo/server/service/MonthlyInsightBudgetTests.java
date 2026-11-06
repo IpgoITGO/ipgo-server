@@ -79,4 +79,22 @@ class MonthlyInsightBudgetTests {
         assertThatThrownBy(()->budget("10.01")).isInstanceOf(IllegalArgumentException.class);
         assertThatThrownBy(()->budget("-1")).isInstanceOf(IllegalArgumentException.class);
     }
+    @Test void explicitlyUnlimitedModeIgnoresExhaustedQuotaButDoesNotRefundIt() {
+        jdbc.update("INSERT INTO insight_monthly_usage(month_key,reserved_calls) VALUES (DATE '2026-11-01',1000)");
+        attempt("unlimited");
+        var b = new MonthlyInsightBudget(jdbc,tx,BigDecimal.TEN,clock,false);
+        assertThat(b.tryDispatch("unlimited")).isEqualTo(MonthlyInsightBudget.Decision.GRANTED);
+        assertThat(b.tryDispatch("unlimited")).isEqualTo(MonthlyInsightBudget.Decision.ALREADY_DISPATCHED);
+        assertThat(jdbc.queryForObject("SELECT reserved_calls FROM insight_monthly_usage",Integer.class)).isEqualTo(1000);
+    }
+    @Test void unlimitedDispatchRequiresNoQuotaTableAndKeepsDuplicateSuppression() throws Exception {
+        jdbc.execute("DROP TABLE insight_monthly_usage");attempt("unlimited");
+        var b = new MonthlyInsightBudget(jdbc,tx,BigDecimal.TEN,clock,false);
+        try(var pool = Executors.newFixedThreadPool(4)) {
+            var jobs = new ArrayList<java.util.concurrent.Callable<MonthlyInsightBudget.Decision>>();
+            for(int n=0;n<8;n++)jobs.add(()->b.tryDispatch("unlimited"));
+            long granted=0;for(var r:pool.invokeAll(jobs))if(r.get()==MonthlyInsightBudget.Decision.GRANTED)granted++;
+            assertThat(granted).isEqualTo(1);
+        }
+    }
 }

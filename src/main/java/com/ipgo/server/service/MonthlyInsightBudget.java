@@ -21,18 +21,28 @@ public class MonthlyInsightBudget {
     private final JdbcTemplate jdbc;
     private final TransactionTemplate tx;
     private final long callLimit;
+    private final boolean limitEnabled;
     private final Clock clock;
 
     @org.springframework.beans.factory.annotation.Autowired
     public MonthlyInsightBudget(JdbcTemplate jdbc, TransactionTemplate tx,
-            @Value("${ipgo.insight.monthly-budget-usd:10}") BigDecimal budget) {
-        this(jdbc, tx, budget, Clock.systemUTC());
+            @Value("${ipgo.insight.monthly-budget-usd:10}") BigDecimal budget,
+            @Value("${ipgo.insight.monthly-budget-enabled:true}") boolean limitEnabled) {
+        this(jdbc, tx, budget, Clock.systemUTC(), limitEnabled);
+    }
+
+    public MonthlyInsightBudget(JdbcTemplate jdbc, TransactionTemplate tx, BigDecimal budget) {
+        this(jdbc, tx, budget, Clock.systemUTC(), true);
     }
 
     MonthlyInsightBudget(JdbcTemplate jdbc, TransactionTemplate tx, BigDecimal budget, Clock clock) {
+        this(jdbc, tx, budget, clock, true);
+    }
+
+    MonthlyInsightBudget(JdbcTemplate jdbc, TransactionTemplate tx, BigDecimal budget, Clock clock, boolean limitEnabled) {
         if (budget == null || budget.signum() < 0 || budget.compareTo(BigDecimal.TEN) > 0)
             throw new IllegalArgumentException("Monthly insight budget must be between USD 0 and 10");
-        this.jdbc = jdbc; this.tx = tx; this.clock = clock;
+        this.jdbc = jdbc; this.tx = tx; this.clock = clock; this.limitEnabled = limitEnabled;
         this.callLimit = budget.divide(RESERVATION_USD, 0, RoundingMode.DOWN).longValueExact();
     }
 
@@ -49,6 +59,11 @@ public class MonthlyInsightBudget {
             if (!"PROCESSING".equals(row.get("status")) || row.get("dispatched_at") != null)
                 return Decision.ALREADY_DISPATCHED;
             Instant now = postgres ? jdbc.queryForObject("SELECT clock_timestamp()", Timestamp.class).toInstant() : clock.instant();
+            // Unlimited mode retains durable duplicate suppression without reading or changing the optional quota.
+            if (!limitEnabled) {
+                return jdbc.update("UPDATE ai_explanation_calls SET dispatched_at=? WHERE attempt_id=? AND dispatched_at IS NULL AND status='PROCESSING'",
+                        Timestamp.from(now), attempt) == 1 ? Decision.GRANTED : Decision.ALREADY_DISPATCHED;
+            }
             var month = now.atZone(MONTH_ZONE).withDayOfMonth(1).toLocalDate().atStartOfDay(MONTH_ZONE);
             var key = month.toLocalDate();
             jdbc.update("INSERT INTO insight_monthly_usage(month_key,reserved_calls) SELECT ?,0 WHERE NOT EXISTS (SELECT 1 FROM insight_monthly_usage WHERE month_key=?)",key,key);

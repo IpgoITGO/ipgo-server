@@ -1,6 +1,6 @@
 # Ipgo Server
 
-지속 LLM의 월 US$10 보수 예약 상한·V22·적용/중단 절차는 [월별 비용 제한](docs/decisions/0017-insight-monthly-budget.md)을 따릅니다. 구현과 실제 개발 반영은 구분합니다.
+지속 LLM의 선택적 월 상한·승인된 무상한 모드·V22·적용/중단 절차는 [월별 비용 제한](docs/decisions/0017-insight-monthly-budget.md)을 따릅니다. 구현과 실제 개발 반영은 구분합니다.
 
 토스 테스트 카드 월 구독의 서버 원장·API·로컬 검증은 [빌링 계약](docs/decisions/0012-toss-billing-ledger.md)을 따릅니다. 기본 API/청구 작업기는 OFF이며, 실제 키 확인·토스 테스트 결제·클라이언트 연결·배포는 별도 단계입니다.
 

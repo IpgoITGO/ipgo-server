@@ -31,6 +31,14 @@ class DevDeploymentTests(unittest.TestCase):
             with self.subTest(change=change),self.assertRaises(module.InvalidDeployment):
                 module.settings(dict(env,**change))
 
+    def test_unlimited_monthly_calls_require_separate_cost_approval(self):
+        env=dict(self.env,CONTINUOUS_INSIGHT_APPROVED='true',UNLIMITED_INSIGHT_APPROVED='true',INSIGHT_EXPIRES_AT='')
+        values={e['name']:e['value'] for e in module.render(self.task,IMAGE,env)['containerDefinitions'][0]['environment']}
+        self.assertEqual(values['IPGO_INSIGHT_MONTHLY_BUDGET_ENABLED'],'false')
+        for change in [dict(CONTINUOUS_INSIGHT_APPROVED='false'),dict(UNLIMITED_INSIGHT_APPROVED='TRUE')]:
+            with self.subTest(change=change),self.assertRaises(module.InvalidDeployment):
+                module.settings(dict(env,**change))
+
     def test_single_result_is_disabled_when_new_inputs_are_absent(self):
         self.assertFalse(module.settings(self.env)['single'])
         self.task['containerDefinitions'][0]['environment'].append({'name':'IPGO_INSIGHT_SINGLE_RESULT_ENABLED','value':'true'})

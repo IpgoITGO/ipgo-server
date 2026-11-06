@@ -7,7 +7,7 @@ import java.util.Optional;
 
 // 입고 조건 세 칸. 창고 기본값과 상품별로 실제 적용되는 값에 함께 쓴다.
 public record ProductSettings(Integer leadTimeDays, Integer reviewCycleDays, Long orderUnitQty) {
-    // 셀러가 기본값을 확인하기 전 제안값. 입고 주기는 수불부로 추정할 자료가 아직 없어서 비워 둔다.
+    // 확인 전 계산의 fallback. 화면의 정제 기반 제안은 ReviewCycleSuggestionService에서 조립한다.
     static final ProductSettings SUGGESTED = new ProductSettings(5, null, 1L);
 
     public static ProductSettings defaults(Optional<Warehouse> warehouse) {

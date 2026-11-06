@@ -30,6 +30,7 @@ import tools.jackson.databind.json.JsonMapper;
 /** Creates immutable, owner-scoped inputs; all domain triggers serialize on the warehouse lock. */
 @Service
 public class EngineCalculationService {
+    private final BillingService billing;
     private final EngineJobs jobs;
     private final WarehouseRepository warehouses;
     private final UploadFileRepository uploads;
@@ -43,7 +44,8 @@ public class EngineCalculationService {
 
     public EngineCalculationService(EngineJobs jobs, WarehouseRepository warehouses, UploadFileRepository uploads,
             ProductRepository products, ReplenishmentSettingRepository settings, PlannedReceiptRepository receipts,
-            JdbcTemplate jdbc, JsonMapper mapper, EntityManager entities, Clock clock) {
+            JdbcTemplate jdbc, JsonMapper mapper, EntityManager entities, Clock clock, BillingService billing) {
+        this.billing = billing;
         this.jobs = jobs; this.warehouses = warehouses; this.uploads = uploads; this.products = products;
         this.settings = settings; this.receipts = receipts; this.jdbc = jdbc; this.mapper = mapper;
         this.entities = entities; this.clock = clock;
@@ -61,6 +63,9 @@ public class EngineCalculationService {
         if (!jobs.enabled()) return null;
         var warehouse = warehouses.findByIdForUpdate(warehouseId).orElseThrow();
         if (!warehouse.getUserId().equals(userId)) throw new IllegalArgumentException("Engine owner mismatch");
+        // 이미 접수한 업로드의 CLEAN 완료 후 이어지는 계산은 기존 작업의 일부다.
+        // UPLOAD trigger는 검증된 EngineResults 내부에서만 전달하며 HTTP 입력으로 받지 않는다.
+        if (!"UPLOAD".equals(trigger)) billing.assertWriteAllowed(userId);
         // S1 is a suggestion. Do not invent a review cycle before the seller confirms settings.
         if (!warehouse.hasConfirmedDefaults()) return null;
         entities.flush();

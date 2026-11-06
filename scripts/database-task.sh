@@ -75,7 +75,7 @@ run_migrate() {
     --tuples-only --no-align \
     --command="
       SELECT CASE
-        WHEN COUNT(*) = 20 AND MAX(version::integer) = 21 THEN 'ok'
+        WHEN COUNT(*) = 21 AND MAX(version::integer) = 21 THEN 'ok'
         ELSE 'invalid'
       END
       FROM flyway_schema_history

@@ -45,7 +45,7 @@ public class ReceiptMatchingService {
     private record Day(long productId, LocalDate date) { }
     private record Observation(long quantity, boolean valid) { }
     private record Lot(String key, LocalDate receivedOn) { }
-    private record Event(long id, Day day, long quantity, boolean valid, boolean review) { }
+    private record Event(long id, Day day, long quantity, boolean valid, boolean review, String confirmed) { }
 
     @Transactional(propagation = Propagation.MANDATORY)
     public void match(UploadFile upload, long userId, CleaningResult result, Map<String, Product> products) {
@@ -56,13 +56,14 @@ public class ReceiptMatchingService {
             return;
         }
         Map<Day, Observation> observed = observations(result, products);
+        var presentDays = java.util.Set.copyOf(observed.keySet());
         Map<Day, Event> existing = new HashMap<>();
         // 최신 revision이 상품/날짜를 없애거나 자료 끝을 줄인 경우도 비교한다.
         jdbc.query("""
-                SELECT id,product_id,stock_date,quantity,valid_observation,review_required
+                SELECT id,product_id,stock_date,quantity,valid_observation,review_required,confirmed_source_fingerprint
                 FROM receipt_matching_events WHERE warehouse_id = ? AND stock_date >= ? AND stock_date < ?
                 """, (rs, n) -> new Event(rs.getLong(1), new Day(rs.getLong(2), rs.getObject(3, LocalDate.class)),
-                        rs.getLong(4), rs.getBoolean(5), rs.getBoolean(6)),
+                        rs.getLong(4), rs.getBoolean(5), rs.getBoolean(6), rs.getString(7)),
                 upload.getWarehouseId(), upload.getPeriodStart(), upload.getPeriodStart().plusMonths(1))
                 .forEach(e -> existing.put(e.day(), e));
         existing.keySet().forEach(day -> observed.putIfAbsent(day, new Observation(0, false)));
@@ -83,10 +84,18 @@ public class ReceiptMatchingService {
             if (old == null && observation.quantity() == 0) continue;
             Event event = old == null ? create(upload, userId, day, observation) : old;
             List<MatchedReceipt> allocations = allocations(event.id());
+            String fingerprint = ReceiptCorrectionSources.fingerprint(presentDays.contains(day), observation.quantity(), observation.valid());
             boolean changed = old != null && (old.quantity() != observation.quantity() || old.valid() != observation.valid());
-            if (event.review() || (changed && !allocations.isEmpty())) {
+            if (event.review() || (event.confirmed() != null && !event.confirmed().equals(fingerprint))
+                    || (event.confirmed() == null && changed && !allocations.isEmpty())) {
                 jdbc.update("UPDATE receipt_matching_events SET review_required = TRUE WHERE id = ?", event.id());
                 issues.add(new ReceiptMatchingIssue(day.productId(), day.date(), "SOURCE_CHANGED"));
+            } else if (event.confirmed() != null) {
+                // 같은 내용 재업로드에서 수동 확정을 다시 하거나 잔량을 새 발주에 배정하지 않는다.
+                if (!observation.valid()) issues.add(new ReceiptMatchingIssue(day.productId(),day.date(),"INVALID_OBSERVATION"));
+                long used = allocations.stream().mapToLong(MatchedReceipt::quantity).reduce(0L, Math::addExact);
+                if (used > observation.quantity()) issues.add(new ReceiptMatchingIssue(day.productId(),day.date(),"INSUFFICIENT_QUANTITY"));
+                explain(day, observation, candidates, used, issues);
             } else if (old == null || changed) {
                 jdbc.update("""
                         UPDATE receipt_matching_events SET quantity = ?,valid_observation = ?,source_upload_file_id = ? WHERE id = ?
@@ -113,7 +122,7 @@ public class ReceiptMatchingService {
         for (var row : result.unitDailyRecords()) {
             Day day = new Day(productByLot.get(new Lot(row.sourceInventoryKey(), row.receivedOn())), row.stockDate());
             lots.merge(day, row.inboundQty(), Math::addExact);
-            if (row.openingQty() + row.inboundQty() - row.outboundQty() + row.adjustmentQty() != row.closingQty())
+            if (!ReceiptCorrectionSources.balanced(row.openingQty(),row.inboundQty(),row.outboundQty(),row.adjustmentQty(),row.closingQty()))
                 excluded.add(day.productId());
         }
         Map<Day, Observation> observed = new LinkedHashMap<>();
@@ -122,7 +131,7 @@ public class ReceiptMatchingService {
             // isValidObservation은 수요 관측(시작 재고>0) 지표다. 첫 입고의 물리적 검산과 분리한다.
             boolean valid = !excluded.contains(day.productId())
                     && lots.getOrDefault(day, 0L).longValue() == row.inboundQty().longValue()
-                    && row.openingQty() + row.inboundQty() - row.outboundQty() + row.adjustmentQty() == row.closingQty();
+                    && ReceiptCorrectionSources.balanced(row.openingQty(),row.inboundQty(),row.outboundQty(),row.adjustmentQty(),row.closingQty());
             observed.put(day, new Observation(row.inboundQty(), valid));
         }
         return observed;
@@ -135,7 +144,7 @@ public class ReceiptMatchingService {
                 """, userId, upload.getWarehouseId(), day.productId(), day.date(), observation.quantity(), observation.valid(), upload.getId());
         long id = jdbc.queryForObject("SELECT id FROM receipt_matching_events WHERE warehouse_id = ? AND product_id = ? AND stock_date = ?",
                 Long.class, upload.getWarehouseId(), day.productId(), day.date());
-        return new Event(id, day, observation.quantity(), observation.valid(), false);
+        return new Event(id, day, observation.quantity(), observation.valid(), false, null);
     }
 
     private void allocate(UploadFile upload, long eventId, Day day, Observation observation, List<PlannedReceipt> candidates,
@@ -150,6 +159,10 @@ public class ReceiptMatchingService {
                         VALUES (?,?,?,?,?,?)
                         """, receipt.getId(), eventId, upload.getWarehouseId(), day.productId(), receipt.getQuantity(), names.get(day.productId()));
                 receipt.receive(day.date());
+                jdbc.update("""
+                        INSERT INTO receipt_allocation_history(event_id,receipt_id,warehouse_id,product_id,quantity,sku_name,received_on,action)
+                        VALUES (?,?,?,?,?,?,?,'ASSIGN')
+                        """,eventId,receipt.getId(),upload.getWarehouseId(),day.productId(),receipt.getQuantity(),names.get(day.productId()),day.date());
                 remaining -= receipt.getQuantity();
             }
         }

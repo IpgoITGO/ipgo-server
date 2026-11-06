@@ -11,6 +11,7 @@ on:
       - "scripts/verify-database-task-image.sh"
       - "scripts/verify-postgres-migrations.sh"
       - "scripts/verify-insight-history-upgrade.sh"
+      - "scripts/testing/verify-receipt-matching.sh"
       - "src/main/resources/db/migration/**"
       - "src/test/**"
       - "build.gradle"
@@ -39,5 +40,10 @@ jobs:
         run: ./scripts/verify-postgres-migrations.sh
       - name: Verify deferred-schema insight history upgrade
         run: ./scripts/verify-insight-history-upgrade.sh
+      - name: Verify receipt correction transactions
+        run: |
+          ./gradlew --stop
+          docker pull eclipse-temurin:21-jdk-jammy
+          ./scripts/testing/verify-receipt-matching.sh
       - name: Verify database task image
         run: ./scripts/verify-database-task-image.sh

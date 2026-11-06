@@ -26,7 +26,7 @@ public final class UploadTestDatabase {
         }
         if (jdbc.queryForObject("SELECT COUNT(*) FROM information_schema.tables WHERE LOWER(table_name) = 'receipt_correction_decisions'", Integer.class) == 0) {
             try {
-                var resource = new org.springframework.core.io.ClassPathResource("db/migration/V18__receipt_correction_decisions.sql");
+                var resource = new org.springframework.core.io.ClassPathResource("db/migration/V19__receipt_correction_decisions.sql");
                 String sql = resource.getContentAsString(java.nio.charset.StandardCharsets.UTF_8)
                         .split("-- PostgreSQL role permissions")[0];
                 new org.springframework.jdbc.datasource.init.ResourceDatabasePopulator(

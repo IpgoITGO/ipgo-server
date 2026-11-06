@@ -27,8 +27,8 @@ done
 docker exec -i "$matching_prefix-db" psql -v ON_ERROR_STOP=1 -U postgres -d engine_test \
   < "$matching_root/database/bootstrap/create_roles.sql" >/dev/null
 docker run --rm --network "$matching_prefix" -v "$matching_root/src/main/resources/db/migration:/flyway/sql:ro" \
-  flyway/flyway:11-alpine -url=jdbc:postgresql://ipgo-engine-e2e-118-test-db:5432/engine_test -user=ipgo_migrator -target=17 migrate
-# 기존 V16 배정이 있는 DB에서 V18 기준 이력 생성과 원본 보존을 확인한다.
+  flyway/flyway:11-alpine -url=jdbc:postgresql://ipgo-engine-e2e-118-test-db:5432/engine_test -user=ipgo_migrator -target=18 migrate
+# 기존 V16 배정이 있는 DB에서 V19 기준 이력 생성과 원본 보존을 확인한다.
 docker exec -i "$matching_prefix-db" psql -v ON_ERROR_STOP=1 -U ipgo_migrator -d engine_test <<'SQL'
 INSERT INTO users(id,email,password_hash) VALUES (9801,'migration-only@example.test','test-only-hash');
 INSERT INTO warehouses(id,user_id,name) VALUES (9801,9801,'migration fixture');
@@ -45,7 +45,7 @@ INSERT INTO receipt_matching_reports(upload_file_id,report) VALUES (9801,'{"mark
 SQL
 matching_views_before=$(docker exec "$matching_prefix-db" psql -At -U ipgo_migrator -d engine_test -c "SELECT md5(string_agg(viewname||definition,'' ORDER BY viewname)) FROM pg_views WHERE schemaname='public' AND viewname LIKE 'ai_%'")
 docker run --rm --network "$matching_prefix" -v "$matching_root/src/main/resources/db/migration:/flyway/sql:ro" \
-  flyway/flyway:11-alpine -url=jdbc:postgresql://ipgo-engine-e2e-118-test-db:5432/engine_test -user=ipgo_migrator -target=18 migrate
+  flyway/flyway:11-alpine -url=jdbc:postgresql://ipgo-engine-e2e-118-test-db:5432/engine_test -user=ipgo_migrator -target=19 migrate
 matching_views_after=$(docker exec "$matching_prefix-db" psql -At -U ipgo_migrator -d engine_test -c "SELECT md5(string_agg(viewname||definition,'' ORDER BY viewname)) FROM pg_views WHERE schemaname='public' AND viewname LIKE 'ai_%'")
 [[ "$matching_views_before" == "$matching_views_after" ]] || { echo 'AI view contract changed' >&2; exit 1; }
 docker exec -i "$matching_prefix-db" psql -v ON_ERROR_STOP=1 -U ipgo_migrator -d engine_test <<'SQL'
@@ -54,12 +54,12 @@ DO $$ BEGIN
     OR (SELECT COUNT(*) FROM receipt_matching_allocations WHERE receipt_id=9801 AND quantity=100)<>1
     OR NOT (SELECT review_required FROM receipt_matching_events WHERE id=9801)
     OR (SELECT report->>'marker' FROM receipt_matching_reports WHERE upload_file_id=9801)<>'immutable-baseline'
-    THEN RAISE EXCEPTION 'V18 baseline/history changed'; END IF;
+    THEN RAISE EXCEPTION 'V19 baseline/history changed'; END IF;
   IF has_table_privilege('ipgo_server','receipt_correction_decisions','UPDATE')
     OR has_table_privilege('ipgo_server','receipt_allocation_history','DELETE')
     OR has_table_privilege('ipgo_ai_reader','receipt_correction_decisions','SELECT')
     OR has_table_privilege('ipgo_ai_service_reader','receipt_allocation_history','SELECT')
-    THEN RAISE EXCEPTION 'V18 privilege mismatch'; END IF;
+    THEN RAISE EXCEPTION 'V19 privilege mismatch'; END IF;
 END $$;
 -- 이 전용 폐기 DB의 migration fixture만 지운다.
 TRUNCATE users CASCADE;
@@ -85,7 +85,7 @@ END $$;
 REVOKE ALL ON FUNCTION ipgo_test_correction_fault(text,boolean) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION ipgo_test_correction_fault(text,boolean) TO ipgo_server;
 SQL
-# 서버 역할의 실제 읽기/쓰기 권한과 전체 V1~18 제약을 사용한다.
+# 서버 역할의 실제 읽기/쓰기 권한과 전체 V1~19 제약을 사용한다.
 docker run --rm --network "$matching_prefix" --user "$(id -u):$(id -g)" -e GRADLE_USER_HOME=/gradle-cache \
   -e IPGO_TEST_DB_URL=jdbc:postgresql://ipgo-engine-e2e-118-test-db:5432/engine_test \
   -e IPGO_TEST_DB_USERNAME=ipgo_server -e IPGO_TEST_DB_PASSWORD= -e IPGO_ENGINE_LOCAL_POSTGRES=true \

@@ -34,6 +34,7 @@ public class ProductDetailService {
 
     private final ProductRepository products;
     private final WarehouseService warehouses;
+    private final ReviewCycleSuggestionService suggestions;
     private final ReplenishmentSettingRepository settings;
     private final CalculationRunRepository runs;
     private final CalculationResultRepository results;
@@ -45,9 +46,10 @@ public class ProductDetailService {
     public ProductDetailService(ProductRepository products, WarehouseService warehouses,
             ReplenishmentSettingRepository settings, CalculationRunRepository runs,
             CalculationResultRepository results, InventoryUnitRepository inventoryUnits, JdbcTemplate jdbc,
-            Clock clock, tools.jackson.databind.json.JsonMapper mapper) {
+            Clock clock, tools.jackson.databind.json.JsonMapper mapper, ReviewCycleSuggestionService suggestions) {
         this.products = products;
         this.warehouses = warehouses;
+        this.suggestions = suggestions;
         this.settings = settings;
         this.runs = runs;
         this.results = results;
@@ -111,9 +113,9 @@ public class ProductDetailService {
                         rs.getBoolean(4)), productId, start, end);
     }
 
-    private static ProductDetail.Settings settings(Product product, Optional<Warehouse> warehouse,
+    private ProductDetail.Settings settings(Product product, Optional<Warehouse> warehouse,
             ReplenishmentSetting override) {
-        ProductSettings applied = ProductSettings.defaults(warehouse).applying(override);
+        ProductSettings applied = suggestions.defaults(warehouse).applying(override);
         boolean confirmed = warehouse.map(Warehouse::hasConfirmedDefaults).orElse(false);
         String fallback = confirmed ? "DEFAULT" : "SUGGESTED";
         String leadTimeSource = override != null && override.getLeadTimeDays() != null ? "PRODUCT" : fallback;

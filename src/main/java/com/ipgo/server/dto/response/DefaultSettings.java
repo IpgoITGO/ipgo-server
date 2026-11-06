@@ -9,8 +9,11 @@ public record DefaultSettings(boolean confirmed, Integer leadTimeDays, Integer r
         String reviewCycleSource, Long orderUnitQty) {
 
     public static DefaultSettings from(Optional<Warehouse> warehouse) {
+        return from(warehouse, ProductSettings.defaults(warehouse));
+    }
+
+    public static DefaultSettings from(Optional<Warehouse> warehouse, ProductSettings values) {
         boolean confirmed = warehouse.map(Warehouse::hasConfirmedDefaults).orElse(false);
-        ProductSettings values = ProductSettings.defaults(warehouse);
         return new DefaultSettings(confirmed, values.leadTimeDays(), values.reviewCycleDays(),
                 confirmed ? "DEFAULT" : "ESTIMATED", values.orderUnitQty());
     }

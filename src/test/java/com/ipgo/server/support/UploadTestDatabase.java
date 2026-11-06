@@ -26,13 +26,22 @@ public final class UploadTestDatabase {
         }
         if (jdbc.queryForObject("SELECT COUNT(*) FROM information_schema.tables WHERE LOWER(table_name) = 'receipt_correction_decisions'", Integer.class) == 0) {
             try {
-                var resource = new org.springframework.core.io.ClassPathResource("db/migration/V19__receipt_correction_decisions.sql");
+                var resource = new org.springframework.core.io.ClassPathResource("db/migration/V20__receipt_correction_decisions.sql");
                 String sql = resource.getContentAsString(java.nio.charset.StandardCharsets.UTF_8)
                         .split("-- PostgreSQL role permissions")[0];
                 new org.springframework.jdbc.datasource.init.ResourceDatabasePopulator(
                         new org.springframework.core.io.ByteArrayResource(sql.getBytes(java.nio.charset.StandardCharsets.UTF_8)))
                         .execute(java.util.Objects.requireNonNull(jdbc.getDataSource()));
             } catch (java.io.IOException e) { throw new IllegalStateException(e); }
+        }
+    }
+
+    public static void storageCostSchema(JdbcTemplate jdbc) {
+        // 기존 harness의 V11 뒤에 portable V19를 적용한다(#111). 테스트 DB는 클래스끼리 공유되므로 한 번만 적용한다.
+        if (jdbc.queryForObject("SELECT COUNT(*) FROM information_schema.tables WHERE LOWER(table_name) = 'product_boxes'", Integer.class) == 0) {
+            new org.springframework.jdbc.datasource.init.ResourceDatabasePopulator(
+                    new org.springframework.core.io.ClassPathResource("db/migration/V19__create_storage_cost.sql"))
+                    .execute(java.util.Objects.requireNonNull(jdbc.getDataSource()));
         }
     }
 

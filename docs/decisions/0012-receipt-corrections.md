@@ -66,7 +66,7 @@ RESOLVED 사건의 새 결정은 원본이 실질적으로 바뀌어 OPEN이 다
 
 ## 원본·감사·동시성
 
-V19은 사건에 확정 의미 지문/단조 sequence/최근 결정 ID를 더하고,
+V20은 사건에 확정 의미 지문/단조 sequence/최근 결정 ID를 더하고,
 `receipt_correction_decisions`와 `receipt_allocation_history`를 추가한다. migration은 기존 V16 배정을
 BASELINE으로 먼저 복사한다. 이후 자동 배정과수동 ASSIGN/RELEASE를 원장에 추가하고, 현재 배정 projection과
 RECEIVED를 같은 transaction에서 관리한다. 결정에는행위자·서버 시각·이유·원본/revision·전후 배정·버전·요청 해시·응답을 보존한다.
@@ -87,10 +87,10 @@ Gradle은 테스트 DB 종류(H2/외부 DB)를 입력으로 구분한다. 외부
 실제 `:test` 실행과 JUnit 결과를 확인하며, 이전 PostgreSQL 결과의 재사용을 H2 성공으로 세지 않는다.
 
 H2와 폐기 PostgreSQL에서 현재/과거 분리·권한·부족/누락/0/검산 불가·동일 자료/재정정·멱등성·경합·rollback을 검사한다.
-`scripts/testing/verify-receipt-matching.sh`는 V18 기존 배정 fixture → V19 기준 이력/AI view 불변·권한 검사 후
+`scripts/testing/verify-receipt-matching.sh`는 V19 기존 배정 fixture → V20 기준 이력/AI view 불변·권한 검사 후
 서버 역할로 정정/기존 매칭·업로드·발주·엔진 회귀를 수행한다. 테스트 정리/fault 함수는 이 폐기 DB에만 설치하고 제품 migration에 넣지 않는다.
 
-V19을 적용하기 전에는 이 코드를 배포하지 않는다. 실제 개발 DB의 이력1~14,16과 V15 보류 및 후속 V17 승인 상태를 확인하고
+V20을 적용하기 전에는 이 코드를 배포하지 않는다. 실제 개발 DB의 이력1~14,16과 V15 보류 및 후속 V17 승인 상태를 확인하고
 백업·정확한 선택 번들·체크섬·적용 후 조건·복구안을 별도 승인받는다. 전체 migrate로 V15/V17을 임의 동반 적용하지 않는다.
 추가 DDL/기준 이력 생성은 배정량에 따른 잠금/시간 영향이 있다. 배정 변경 이후에는 코드만 구버전으로 되돌리지 않고
 쓰기/정제 중지·보호 코드 유지와 이력을 보존한 보상 결정을 검토한다. 원장·snapshot을 삭제해 되돌리지 않는다.
@@ -98,5 +98,6 @@ V19을 적용하기 전에는 이 코드를 배포하지 않는다. 실제 개�
 
 ## PR 준비 시 최신 dev 반영
 
-#33의 V18 호출 이력이 먼저 dev에 반영돼 정정 schema를 V19로 옮겼다. 기존 V18은 수정하지 않았다.
-전체 PostgreSQL 검증 기준은19개 migration/33개 업무 table이며, Database CI에서 정정 transaction 회귀도 실행한다.
+먼저 dev에 반영된 #33의 V18 호출 이력과 #111의 V19 보관 비용을 수정하지 않고,
+정정 schema는 V20으로 배정했다. 전체 PostgreSQL 검증 기준은20개 migration/34개 업무 table이다.
+Database CI는 정정 transaction 회귀도 실행한다. 실제 database-task의 기존 고정 target은 이 PR에서 바꾸지 않는다.

@@ -138,7 +138,7 @@ psql -U <관리자> -d <database> -f database/bootstrap/create_roles.sql
 ### AWS DB one-off 작업 이미지
 
 `Dockerfile.database`는 애플리케이션 이미지와 분리된 DB 관리 전용 이미지입니다. `bootstrap`은
-최초 PostgreSQL 역할 생성과 비밀번호 설정, `bootstrap-original-reader`는 기존 계정을 바꾸지 않고 새 원본 조회 계정만 생성합니다. `migrate`는 Flyway V1~V16 적용과 이력 확인,
+최초 PostgreSQL 역할 생성과 비밀번호 설정, `bootstrap-original-reader`는 기존 계정을 바꾸지 않고 새 원본 조회 계정만 생성합니다. `migrate`는 Flyway V1~V19 적용과 이력 확인,
 `verify`는 Spring DML·AI 조회 권한과 금지 권한을 점검합니다. AWS에서는 각 명령을 별도 ECS
 one-off task로 실행하며 상시 서비스에서는 이 이미지를 사용하지 않습니다.
 
@@ -429,9 +429,9 @@ preview는 `expectedVersion`, `action`, `receiptIds`를 받으며 확정에는 `
 기존 처리를 유지해도 경고는 남습니다. 같은 내용 재업로드에서 수동 확정을 되풀이하거나 남은 수량을
 새 발주에 자동 배정하지 않습니다. 새 원본 변경은 다시 검토합니다.
 
-V19는 기존 배정을 BASELINE 이력으로 보존한 뒤 감사 원장과 현재 배정을 같은 트랜잭션에서 관리합니다.
+V20은 기존 배정을 BASELINE 이력으로 보존한 뒤 감사 원장과 현재 배정을 같은 트랜잭션에서 관리합니다.
 과거 U2·원본·계산 결과를 수정하지 않으며 배정 변화가 있을 때 필요한 계산/outbox만 요청합니다.
-V19 적용 전 이 코드를 배포하지 않습니다. 실제 DB의 V15 보류와 후속 migration 승인 범위를 확인하고
+V20 적용 전 이 코드를 배포하지 않습니다. 실제 DB의 V15 보류와 후속 migration 승인 범위를 확인하고
 백업·선택 적용·복구를 별도 검토해야 합니다. UI 연결과 실제 개발 배포 검증은 후속 단계입니다.
 
 [정정 계약·오류·멱등성·검증·복구](docs/decisions/0012-receipt-corrections.md)를 따릅니다.
@@ -494,6 +494,19 @@ GET은 설정 저장·계산을 시작하지 않습니다. S2로 확정한 조�
 S2·S3 모두 Bearer JWT가 필요하며 CSRF는 요구하지 않습니다. 기본 조건을 확인하기 전 제안값의
 `reviewCycleDays`는 null이며, 추측한 주기로 계산하지 않습니다. 엔진이 활성화되고 입력이 준비되면
 저장 후 계산을 요청합니다. S2의 `recalculate=true`는 같은 입력이어도 새 계산을 만듭니다.
+
+### 보관 비용 설정 (#111)
+
+입고 조건 화면의 창고 보관 요율과 상품별 상자 크기를 저장합니다(V19). 계산 입력이 아니어서 저장해도 재계산하지 않습니다.
+
+| API | 동작 |
+|---|---|
+| `GET /api/settings/storage-cost` | `{ ratePerCbm, boxes: [{ productId, width, depth, height }] }`. 요율은 원 / CBM · 월, 상자 크기는 cm입니다. 입력하지 않았으면 `ratePerCbm: null`, `boxes: []`이고 상자는 상품 ID 순서입니다 |
+| `PUT /api/settings/storage-cost` | `{ ratePerCbm }`. 0보다 크고 소수 둘째 자리까지 받습니다. `null`이면 요율을 지웁니다. 응답은 GET과 같습니다 |
+| `PUT /api/products/{productId}/box` | `{ width, depth, height }`. 세 값 모두 필수이고 0보다 크며 소수 첫째 자리까지 받습니다. 응답은 저장한 상자 한 개입니다 |
+| `DELETE /api/products/{productId}/box` | 상자 크기를 지우고 `204`를 돌려줍니다. 이미 없어도 `204`입니다 |
+
+잘못된 값은 `400 INVALID_INPUT`과 `details.field`(예: `ratePerCbm`, `depth`), 다른 회원 상품은 `403`, 없는 상품은 `404`입니다.
 
 ### 기존 발주 물량 (R1~R3)
 
@@ -680,7 +693,7 @@ scripts/testing/verify-insight-contract.sh /path/to/ipgo-ai
 
 ## Database 변경과 복구
 
-이미 병합된 migration은 Flyway 이력을 보존하기 위해 수정하지 않습니다. 새 DB에서는 승인한 범위의 migration을 순서대로 적용합니다. #90 구현은 V16까지 필요하며 운영 적용은 별도 승인입니다. V4는 `warehouses`·`products`·`inventory_units`, V5는 `upload_files`, V6은 `replenishment_settings`, V7은 `planned_receipts`, V8은 `auth_sessions`·`refresh_tokens`, V9는 `calculation_runs`·`calculation_results`, V10은 일별 수불 2개 표, V11은 계산 출처·시나리오·백테스트·AI 인사이트 4개 표를 추가합니다. V12는 PostgreSQL tenant 무결성 trigger, V13은 FastAPI view와 역할별 권한을 적용하고, V14는 `engine_jobs`·입력 hash·정제 조회 view를 추가합니다. V15의 DB 원본 저장 전환(Server #77·AI #60)은 보류 상태입니다. V16은 입고 사건·배정·업로드 판정 기록을 추가하며 기존 원본 저장 모드를 바꾸지 않습니다. V16을 위해 전체 migration 경로를 실행하기 전 V15의 보류/실제 DB 이력을 함께 확인해야 합니다. 전체 관계와 변경 규칙은 [Database ERD v1](docs/database/erd-v1.md)에 있습니다. Hibernate는 스키마를 자동 수정하지 않고 검증만 수행합니다.
+이미 병합된 migration은 Flyway 이력을 보존하기 위해 수정하지 않습니다. 새 DB에서는 승인한 범위의 migration을 순서대로 적용합니다. #90 구현은 V16까지 필요하며 운영 적용은 별도 승인입니다. V4는 `warehouses`·`products`·`inventory_units`, V5는 `upload_files`, V6은 `replenishment_settings`, V7은 `planned_receipts`, V8은 `auth_sessions`·`refresh_tokens`, V9는 `calculation_runs`·`calculation_results`, V10은 일별 수불 2개 표, V11은 계산 출처·시나리오·백테스트·AI 인사이트 4개 표를 추가합니다. V12는 PostgreSQL tenant 무결성 trigger, V13은 FastAPI view와 역할별 권한을 적용하고, V14는 `engine_jobs`·입력 hash·정제 조회 view를 추가합니다. V15의 DB 원본 저장 전환(Server #77·AI #60)은 보류 상태입니다. V16은 입고 사건·배정·업로드 판정 기록을 추가하며 기존 원본 저장 모드를 바꾸지 않습니다. V16을 위해 전체 migration 경로를 실행하기 전 V15의 보류/실제 DB 이력을 함께 확인해야 합니다. V19는 창고 보관 요율 칸과 `product_boxes`를 추가합니다(#111). 기존 행은 바꾸지 않고, 되돌릴 때는 새 칸과 표만 지우면 됩니다. 실제 DB 적용은 V15~V18과 같은 순서 확인과 별도 승인을 따릅니다. 전체 관계와 변경 규칙은 [Database ERD v1](docs/database/erd-v1.md)에 있습니다. Hibernate는 스키마를 자동 수정하지 않고 검증만 수행합니다.
 
 초기 PostgreSQL은 administrator가 `database/bootstrap/create_roles.sql`을 먼저 실행한 뒤 `ipgo_migrator`로 Flyway를 적용합니다. 새 DB의 bootstrap SQL은 `ipgo_migrator`·`ipgo_server`·`ipgo_ai_reader`·`ipgo_ai_service_reader` 역할을 만들고 비밀번호는 설정하지 않습니다. 비밀번호는 repository·shell history·Terraform state에 남기지 않고 승인된 Secrets Manager 절차로 설정합니다. Spring runtime은 `ipgo_server`, FastAPI는 `ipgo_ai_reader`를 사용하며 runtime에서는 `SPRING_FLYWAY_ENABLED=false`로 migration 자격 증명을 분리합니다.
 

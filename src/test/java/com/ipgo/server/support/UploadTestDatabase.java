@@ -36,10 +36,10 @@ public final class UploadTestDatabase {
     }
 
     public static void plannedQuantitySchema(JdbcTemplate jdbc) {
-        // 기존 harness의 V11 뒤에 portable V20을 적용한다(#119). 테스트 DB는 클래스끼리 공유되므로 한 번만 적용한다.
+        // 기존 harness의 V11 뒤에 portable V21을 적용한다(#119). 테스트 DB는 클래스끼리 공유되므로 한 번만 적용한다.
         if (jdbc.queryForObject("SELECT COUNT(*) FROM information_schema.tables WHERE LOWER(table_name) = 'product_planned_quantities'", Integer.class) == 0) {
             new org.springframework.jdbc.datasource.init.ResourceDatabasePopulator(
-                    new org.springframework.core.io.ClassPathResource("db/migration/V20__create_planned_quantities.sql"))
+                    new org.springframework.core.io.ClassPathResource("db/migration/V21__create_planned_quantities.sql"))
                     .execute(java.util.Objects.requireNonNull(jdbc.getDataSource()));
         }
     }

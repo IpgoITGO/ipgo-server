@@ -193,7 +193,7 @@ expect_denied ipgo_ai_service_reader "SELECT * FROM product_boxes"
 docker exec "${database_container}" psql -v ON_ERROR_STOP=1 -U ipgo_server -d ipgo \
   -c "DELETE FROM product_boxes WHERE product_id = 100" >/dev/null
 
-# V20: 내 입고량은 상품당 1개, 양수·정해진 출처·실제 계산만 받고 AI 역할은 볼 수 없다(#119).
+# V21: 내 입고량은 상품당 1개, 양수·정해진 출처·실제 계산만 받고 AI 역할은 볼 수 없다(#119).
 docker exec -i "${database_container}" psql -v ON_ERROR_STOP=1 -U ipgo_server -d ipgo >/dev/null <<'SQL'
 INSERT INTO product_planned_quantities(product_id,quantity,source,calculation_run_id) VALUES (100,40,'SCENARIO_120',3000);
 UPDATE product_planned_quantities SET quantity = 35, source = 'MANUAL' WHERE product_id = 100;

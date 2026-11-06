@@ -1,5 +1,7 @@
 # Ipgo Server
 
+토스 테스트 카드 월 구독의 서버 원장·API·로컬 검증은 [빌링 계약](docs/decisions/0012-toss-billing-ledger.md)을 따릅니다. 기본 API/청구 작업기는 OFF이며, 실제 키 확인·토스 테스트 결제·클라이언트 연결·배포는 별도 단계입니다.
+
 현재 설명·시나리오의 확정 계약과 검증 범위·관련 후속은 [계약 대조](docs/decisions/0009-current-insight-scenario-contract.md)에 정리합니다.
 정제·계산 실패/재시도/동시성의 기존 근거와 검증 잔여는 [검증 대조](docs/verification/engine-failures-and-concurrency.md)에 기록합니다.
 
@@ -134,7 +136,7 @@ psql -U <관리자> -d <database> -f database/bootstrap/create_roles.sql
 ### AWS DB one-off 작업 이미지
 
 `Dockerfile.database`는 애플리케이션 이미지와 분리된 DB 관리 전용 이미지입니다. `bootstrap`은
-최초 PostgreSQL 역할 생성과 비밀번호 설정, `bootstrap-original-reader`는 기존 계정을 바꾸지 않고 새 원본 조회 계정만 생성합니다. `migrate`는 Flyway V1~V18 적용과 이력 확인,
+최초 PostgreSQL 역할 생성과 비밀번호 설정, `bootstrap-original-reader`는 기존 계정을 바꾸지 않고 새 원본 조회 계정만 생성합니다. `migrate`는 Flyway V1~V19 적용과 이력 확인,
 `verify`는 Spring DML·AI 조회 권한과 금지 권한을 점검합니다. AWS에서는 각 명령을 별도 ECS
 one-off task로 실행하며 상시 서비스에서는 이 이미지를 사용하지 않습니다.
 
@@ -438,6 +440,17 @@ storage/uploads/<인증된 사용자 ID>/<보관 UUID>/
 
 ### 입고 조건 (S1~S3)
 
+미확정 입고 주기 제안(#92)은 정제 보고서의 `estimatedReviewCycleDays`를 조회합니다.
+같은 창고의 **기간별 최신 revision을 먼저 선택한 뒤 DONE만 후보**로 남기고,
+자료 기간이 가장 최근인 보고서의 값을 사용합니다. 그 값이 null이면 과거 양수 값으로
+대체하지 않습니다. 처리 중/실패한 revision의 같은 기간 이전 값도 되살리지 않습니다.
+AI는 파일 내 SKU별 입고일 3개 이상에서 간격 중앙값들의 중앙값(0.5 올림)을 제안하며,
+자료가 부족하면 null입니다. 월 경계·누적 추정과 과거 null 보고서의 자동 재처리는 하지 않습니다.
+S1·P1·K1 표시는 상품별 저장값 → 창고 확정값 → 제안값 순서이며,
+GET은 설정 저장·계산을 시작하지 않습니다. S2로 확정한 조건과 과거 계산 snapshot은
+새 정제/재업로드로 바뀌지 않습니다. 기존 JSONB 보고서를 사용하며 신규 migration은 없습니다.
+
+
 리드타임·입고 주기·입고 단위를 창고 기본값(`warehouses.default_*`)과 상품별 값(`replenishment_settings`)으로 저장합니다(BE-06). 상품별 값이 비어 있으면 기본값을 씁니다. 모든 값은 1 이상 정수이며, 0 이하·소수·누락은 `400 INVALID_INPUT`과 `details.field`로 응답합니다. 정수 칸에 소수를 보내면 잘라내지 않고 거절합니다.
 
 | API | 동작 |
@@ -452,7 +465,7 @@ S2·S3 모두 Bearer JWT가 필요하며 CSRF는 요구하지 않습니다. 기�
 
 ### 보관 비용 설정 (#111)
 
-입고 조건 화면의 창고 보관 요율과 상품별 상자 크기를 저장합니다(V17). 계산 입력이 아니어서 저장해도 재계산하지 않습니다.
+입고 조건 화면의 창고 보관 요율과 상품별 상자 크기를 저장합니다(V18). 계산 입력이 아니어서 저장해도 재계산하지 않습니다.
 
 | API | 동작 |
 |---|---|
@@ -465,7 +478,7 @@ S2·S3 모두 Bearer JWT가 필요하며 CSRF는 요구하지 않습니다. 기�
 
 ### 내 입고량 (#119)
 
-셀러가 상품 상세에서 "이 수량으로 정하기"를 누른 수량을 상품당 하나 저장합니다(V18). 대시보드(D1)와 상품 상세(K1) 응답은 바꾸지 않고, 화면이 목록을 한 번 받아 상품별로 붙입니다. 새 계산이 끝나도 지우지 않습니다. 화면은 `calculationRunId`가 지금 결과의 `runId`와 다르면 "지난 계산 기준"으로 보여 줍니다.
+셀러가 상품 상세에서 "이 수량으로 정하기"를 누른 수량을 상품당 하나 저장합니다(V19). 대시보드(D1)와 상품 상세(K1) 응답은 바꾸지 않고, 화면이 목록을 한 번 받아 상품별로 붙입니다. 새 계산이 끝나도 지우지 않습니다. 화면은 `calculationRunId`가 지금 결과의 `runId`와 다르면 "지난 계산 기준"으로 보여 줍니다.
 
 | API | 동작 |
 |---|---|
@@ -477,16 +490,23 @@ S2·S3 모두 Bearer JWT가 필요하며 CSRF는 요구하지 않습니다. 기�
 
 ### 기존 발주 물량 (R1~R3)
 
-이미 발주했지만 아직 도착하지 않은 물량(상품·수량·도착 예정일)을 `planned_receipts`에 저장합니다(BE-07). 도착 예정일이 있으면 `PENDING`(계산에 반영), 없으면 `NO_DATE`(저장만 하고 계산 제외)입니다. 수량은 1 이상 정수입니다.
+이미 발주했지만 아직 도착하지 않은 물량(상품·수량·도착 예정일)을 `planned_receipts`에 저장합니다(BE-07). 서울 오늘보다 예정일이 이전인 미입고 발주는 `OVERDUE`(계산 제외), 당일·미래는 `PENDING`(계산 후보), 날짜가 없으면 `NO_DATE`(계산 제외)입니다. `RECEIVED`·`CANCELLED`는 날짜 판정보다 우선합니다. 수량은 1 이상 정수입니다.
 
 | API | 동작 |
 |---|---|
 | `GET /api/planned-receipts` (R1) | 취소하지 않은 발주 목록. 도착 예정일 빠른 순, 예정일 없는 발주는 맨 뒤. 응답 `{items, total}`, 항목은 `receiptId`, `productId`, `skuName`, `quantity`, `expectedOn`, `receivedOn`, `status`, `reflected` |
 | `POST /api/planned-receipts` (R2) | `{productId, quantity, expectedOn}`. `201 {"receiptId", "reflected", "runId"}`. `runId`는 계산 번호 또는 선행 조건 미충족 시 null. `reflected: false`면 화면이 "계산에 반영되지 않음"을 안내 |
-| `PATCH /api/planned-receipts/{receiptId}` (R3) | `quantity`·`expectedOn` 중 보낸 칸만 수정. `NO_DATE`에 도착일을 넣으면 `PENDING` |
+| `PATCH /api/planned-receipts/{receiptId}` (R3) | `quantity`·`expectedOn` 중 보낸 칸만 수정. 예정일 변경 뒤 서울 오늘 기준으로 `PENDING`/`OVERDUE` 재판정 |
 | `DELETE /api/planned-receipts/{receiptId}` (R3) | 취소. `204`. 행은 지우지 않고 `CANCELLED`로 남기며, 이후 수정·취소는 `404` |
 
 R2·R3은 Bearer JWT가 필요하고, 다른 회원의 상품·발주는 `403`, 없는 상품·발주는 `404`입니다. 입고 자동 매칭과 확인 사유는 [#90 결정](docs/decisions/0010-receipt-matching.md)을 따릅니다. 입고 완료 발주의 수정·취소는 `409 RECEIPT_RECEIVED`로 거절합니다. 등록·수정·취소 후 입력이 달라지면 계산을 요청합니다. 날짜 없는 발주도 설명용 입력에 포함하므로 새 계산 번호가 생길 수 있지만 미래 입고량에서는 제외합니다.
+
+지연 판정은 R1·R2·R3 응답과 새 계산 입력에서 같은 서울 업무일 규칙을 사용합니다.
+`reflected`는 현재 날짜상 계산 후보 여부이며 실제 계산 생성·완료를 보장하지 않습니다.
+수불부 기준일 이하의 예정일은 이미 자료에 반영된 구간이므로 입력에서 추가 제외합니다.
+날짜 경과만으로 DB 상태·기존 run snapshot을 수정하거나 자정 자동 재계산을 시작하지 않습니다.
+목록은 다음 조회에서, 계산은 다음 업로드·설정/발주 변경·명시적 재계산에서 새 날짜를 적용합니다.
+[지연 정책과 검증 범위](docs/decisions/0011-overdue-receipts.md)를 따릅니다.
 
 ### 계산 상태 (C2)
 
@@ -653,7 +673,7 @@ scripts/testing/verify-insight-contract.sh /path/to/ipgo-ai
 
 ## Database 변경과 복구
 
-이미 병합된 migration은 Flyway 이력을 보존하기 위해 수정하지 않습니다. 새 DB에서는 승인한 범위의 migration을 순서대로 적용합니다. #90 구현은 V16까지 필요하며 운영 적용은 별도 승인입니다. V4는 `warehouses`·`products`·`inventory_units`, V5는 `upload_files`, V6은 `replenishment_settings`, V7은 `planned_receipts`, V8은 `auth_sessions`·`refresh_tokens`, V9는 `calculation_runs`·`calculation_results`, V10은 일별 수불 2개 표, V11은 계산 출처·시나리오·백테스트·AI 인사이트 4개 표를 추가합니다. V12는 PostgreSQL tenant 무결성 trigger, V13은 FastAPI view와 역할별 권한을 적용하고, V14는 `engine_jobs`·입력 hash·정제 조회 view를 추가합니다. V15의 DB 원본 저장 전환(Server #77·AI #60)은 보류 상태입니다. V16은 입고 사건·배정·업로드 판정 기록을 추가하며 기존 원본 저장 모드를 바꾸지 않습니다. V16을 위해 전체 migration 경로를 실행하기 전 V15의 보류/실제 DB 이력을 함께 확인해야 합니다. V17은 창고 보관 요율 칸과 `product_boxes`를 추가합니다(#111). 기존 행은 바꾸지 않고, 되돌릴 때는 새 칸과 표만 지우면 됩니다. 실제 DB 적용은 V15·V16과 같은 순서 확인과 별도 승인을 따릅니다. V18은 내 입고량 `product_planned_quantities`를 추가합니다(#119). 되돌릴 때는 이 표만 지우면 됩니다. 전체 관계와 변경 규칙은 [Database ERD v1](docs/database/erd-v1.md)에 있습니다. Hibernate는 스키마를 자동 수정하지 않고 검증만 수행합니다.
+이미 병합된 migration은 Flyway 이력을 보존하기 위해 수정하지 않습니다. 새 DB에서는 승인한 범위의 migration을 순서대로 적용합니다. #90 구현은 V16까지 필요하며 운영 적용은 별도 승인입니다. V4는 `warehouses`·`products`·`inventory_units`, V5는 `upload_files`, V6은 `replenishment_settings`, V7은 `planned_receipts`, V8은 `auth_sessions`·`refresh_tokens`, V9는 `calculation_runs`·`calculation_results`, V10은 일별 수불 2개 표, V11은 계산 출처·시나리오·백테스트·AI 인사이트 4개 표를 추가합니다. V12는 PostgreSQL tenant 무결성 trigger, V13은 FastAPI view와 역할별 권한을 적용하고, V14는 `engine_jobs`·입력 hash·정제 조회 view를 추가합니다. V15의 DB 원본 저장 전환(Server #77·AI #60)은 보류 상태입니다. V16은 입고 사건·배정·업로드 판정 기록을 추가하며 기존 원본 저장 모드를 바꾸지 않습니다. V16을 위해 전체 migration 경로를 실행하기 전 V15의 보류/실제 DB 이력을 함께 확인해야 합니다. V18은 창고 보관 요율 칸과 `product_boxes`를 추가합니다(#111). 기존 행은 바꾸지 않고, 되돌릴 때는 새 칸과 표만 지우면 됩니다. V19는 내 입고량 `product_planned_quantities`를 추가합니다(#119). 되돌릴 때는 이 표만 지우면 됩니다. 실제 DB 적용은 V15~V17과 같은 순서 확인과 별도 승인을 따릅니다. 전체 관계와 변경 규칙은 [Database ERD v1](docs/database/erd-v1.md)에 있습니다. Hibernate는 스키마를 자동 수정하지 않고 검증만 수행합니다.
 
 초기 PostgreSQL은 administrator가 `database/bootstrap/create_roles.sql`을 먼저 실행한 뒤 `ipgo_migrator`로 Flyway를 적용합니다. 새 DB의 bootstrap SQL은 `ipgo_migrator`·`ipgo_server`·`ipgo_ai_reader`·`ipgo_ai_service_reader` 역할을 만들고 비밀번호는 설정하지 않습니다. 비밀번호는 repository·shell history·Terraform state에 남기지 않고 승인된 Secrets Manager 절차로 설정합니다. Spring runtime은 `ipgo_server`, FastAPI는 `ipgo_ai_reader`를 사용하며 runtime에서는 `SPRING_FLYWAY_ENABLED=false`로 migration 자격 증명을 분리합니다.
 
@@ -723,7 +743,7 @@ DB commit이 끝난 뒤에만 결과 메시지를 삭제하며 같은 jobId의 �
 동일 기간의 최신 revision이 처리 중/실패 상태면 예전 DONE revision으로 대체하지 않습니다.
 전월 재고 연결은 직전 월 최신 DONE 원본의 월말 재고만 사용하며, 월말 기록이 없으면 명시적으로 실패합니다.
 계산 전 창고 기본 입고 조건을 확인해야 합니다. 원가·설정이 없는 상품은 계산 불가 사유를 반환합니다.
-꺼진 상품, 날짜 없는 발주와 기준일이 지난 예정 발주는 미래 입고량에 넣지 않습니다.
+꺼진 상품, 날짜 없는 발주, 서울 오늘보다 예정일이 이전인 미입고 발주와 수불부 기준일(asOfDate) 이하의 예정 발주는 미래 입고량에 넣지 않습니다.
 날짜 없는(`NO_DATE`) 발주는 계산 요청의 `noDateReceipts: [{productId, quantity}]`로 따로 보냅니다(#86). 엔진은 수량 계산에 쓰지 않고, AI 인사이트가 "도착 예정일 없는 발주 N개는 계산에 넣지 않음"을 알려 줄 때만 씁니다. 날짜 없는 발주를 추가·취소하면 입력이 달라져 새 계산을 만듭니다.
 선택한 자료에서 검산 제외된 활성 상품은 이번 계산에서도 제외하며 원래 제외 사유를 보존합니다.
 비활성 상품이 과거 업로드의 검산 제외 목록에 남아 있어도 새 계산 snapshot에는 포함하지 않아 정상 상품의 결과 저장을 막지 않습니다.

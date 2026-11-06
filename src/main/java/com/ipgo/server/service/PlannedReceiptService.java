@@ -12,6 +12,8 @@ import com.ipgo.server.repository.PlannedReceiptRepository;
 import com.ipgo.server.repository.ProductRepository;
 import com.ipgo.server.repository.WarehouseRepository;
 
+import java.time.Clock;
+import java.time.LocalDate;
 import java.util.List;
 import java.util.Map;
 import java.util.function.Function;
@@ -20,7 +22,7 @@ import java.util.stream.Collectors;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-// 기존 발주 물량 등록 · 조회 · 수정 · 취소(R1~R3). 저장 뒤 계산 시작은 계산 엔진 연동 때 붙인다.
+// 기존 발주 물량 등록 · 조회 · 수정 · 취소(R1~R3)와 계산 요청.
 @Service
 public class PlannedReceiptService {
     private final PlannedReceiptRepository receipts;
@@ -28,14 +30,16 @@ public class PlannedReceiptService {
     private final WarehouseService warehouses;
     private final WarehouseRepository warehouseRepository;
     private final EngineCalculationService calculations;
+    private final Clock clock;
 
     public PlannedReceiptService(PlannedReceiptRepository receipts, ProductRepository products,
-            WarehouseService warehouses, WarehouseRepository warehouseRepository, EngineCalculationService calculations) {
+            WarehouseService warehouses, WarehouseRepository warehouseRepository, EngineCalculationService calculations, Clock clock) {
         this.receipts = receipts;
         this.products = products;
         this.warehouses = warehouses;
         this.warehouseRepository = warehouseRepository;
         this.calculations = calculations;
+        this.clock = clock;
     }
 
     @Transactional(readOnly = true)
@@ -45,8 +49,9 @@ public class PlannedReceiptService {
                 .orElse(List.of());
         Map<Long, Product> byId = products.findAllById(active.stream().map(PlannedReceipt::getProductId).toList())
                 .stream().collect(Collectors.toMap(Product::getId, Function.identity()));
+        LocalDate today = LocalDate.now(clock.withZone(DashboardService.SEOUL));
         List<PlannedReceiptItem> items = active.stream()
-                .map(receipt -> PlannedReceiptItem.from(receipt, byId.get(receipt.getProductId()))).toList();
+                .map(receipt -> PlannedReceiptItem.from(receipt, byId.get(receipt.getProductId()), today)).toList();
         return new PlannedReceiptItem.Page(items, items.size());
     }
 
@@ -56,7 +61,9 @@ public class PlannedReceiptService {
         Warehouse warehouse = warehouses.lockDefault(userId);
         PlannedReceipt saved = receipts.save(new PlannedReceipt(request.productId(), warehouse.getId(),
                 request.quantity(), request.expectedOn()));
-        return new PlannedReceiptCreated(saved.getId(), saved.isReflected(), calculations.request(userId, warehouse.getId(), "RECEIPTS", false));
+        LocalDate today = LocalDate.now(clock.withZone(DashboardService.SEOUL));
+        Long runId = calculations.request(userId, warehouse.getId(), "RECEIPTS", false, today);
+        return new PlannedReceiptCreated(saved.getId(), saved.isReflectedOn(today), runId);
     }
 
     @Transactional
@@ -64,8 +71,10 @@ public class PlannedReceiptService {
         var warehouse = lockReceiptWarehouse(userId, receiptId);
         PlannedReceipt receipt = ownedReceipt(userId, receiptId);
         receipt.update(request.quantity(), request.expectedOn());
-        Long runId = calculations.request(userId, warehouse.getId(), "RECEIPTS", false);
-        return new Changed(PlannedReceiptItem.from(receipt, ownedProduct(userId, receipt.getProductId())), runId);
+        LocalDate today = LocalDate.now(clock.withZone(DashboardService.SEOUL));
+        Long runId = calculations.request(userId, warehouse.getId(), "RECEIPTS", false, today);
+        return new Changed(PlannedReceiptItem.from(receipt,
+                ownedProduct(userId, receipt.getProductId()), today), runId);
     }
 
     @Transactional

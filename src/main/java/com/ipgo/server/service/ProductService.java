@@ -29,13 +29,15 @@ public class ProductService {
     private final WarehouseService warehouses;
     private final ReplenishmentSettingRepository settings;
     private final EngineCalculationService calculations;
+    private final ReviewCycleSuggestionService suggestions;
 
     public ProductService(ProductRepository products, WarehouseService warehouses,
-            ReplenishmentSettingRepository settings, EngineCalculationService calculations) {
+            ReplenishmentSettingRepository settings, EngineCalculationService calculations, ReviewCycleSuggestionService suggestions) {
         this.products = products;
         this.warehouses = warehouses;
         this.settings = settings;
         this.calculations = calculations;
+        this.suggestions = suggestions;
     }
 
     @Transactional(readOnly = true)
@@ -61,7 +63,7 @@ public class ProductService {
 
     // 창고 기본값과 상품별 입고 조건을 합쳐 실제 적용되는 값을 붙인다.
     private List<ProductItem> items(long userId, List<Product> page) {
-        ProductSettings defaults = ProductSettings.defaults(warehouses.findDefault(userId));
+        ProductSettings defaults = suggestions.defaults(warehouses.findDefault(userId));
         Map<Long, ReplenishmentSetting> overrides = settings.findByProductIdIn(page.stream().map(Product::getId).toList())
                 .stream().collect(Collectors.toMap(ReplenishmentSetting::getProductId, Function.identity()));
         return page.stream().map(product -> ProductItem.from(product, defaults, overrides.get(product.getId()))).toList();

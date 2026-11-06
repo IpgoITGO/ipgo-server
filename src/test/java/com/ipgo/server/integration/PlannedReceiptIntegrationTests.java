@@ -33,6 +33,15 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 class PlannedReceiptIntegrationTests extends DatabaseIntegrationTest {
     private static final String RECEIPTS = "/api/planned-receipts";
 
+    @org.springframework.test.context.bean.override.mockito.MockitoBean java.time.Clock clock;
+    @org.junit.jupiter.api.BeforeEach
+    void businessClock() { at("2026-11-01T00:00:00Z"); }
+
+    private void at(String instant) {
+        org.mockito.Mockito.when(clock.withZone(org.mockito.ArgumentMatchers.any()))
+                .thenReturn(java.time.Clock.fixed(java.time.Instant.parse(instant), java.time.ZoneId.of("Asia/Seoul")));
+    }
+
     @Autowired MockMvc mvc;
     @Autowired JdbcTemplate jdbc;
     @Autowired JsonMapper mapper;
@@ -161,6 +170,69 @@ class PlannedReceiptIntegrationTests extends DatabaseIntegrationTest {
 
         assertThat(jdbc.queryForObject("SELECT quantity FROM planned_receipts WHERE id = ?", Long.class, receiptId))
                 .isEqualTo(60L);
+    }
+
+    @Test
+    void overdueUsesSeoulMidnightWithoutWritingOnRead() throws Exception {
+        at("2026-11-05T14:59:59Z"); // 서울 11/5 23:59:59
+        long userId = newUser();
+        long product = registerProduct(userId, "A", "상품A");
+        long receiptId = idOf(create(userId, "{\"productId\":" + product
+                + ",\"quantity\":10,\"expectedOn\":\"2026-11-05\"}")
+                .andExpect(jsonPath("reflected").value(true)));
+        mvc.perform(get(RECEIPTS).with(jwt().jwt(c -> c.subject("" + userId))))
+                .andExpect(jsonPath("items[0].status").value("PENDING"));
+        at("2026-11-05T15:00:00Z"); // UTC는 같은 날짜지만 서울은 11/6
+        mvc.perform(get(RECEIPTS).with(jwt().jwt(c -> c.subject("" + userId))))
+                .andExpect(jsonPath("items[0].status").value("OVERDUE"))
+                .andExpect(jsonPath("items[0].reflected").value(false));
+        assertThat(jdbc.queryForObject("SELECT status FROM planned_receipts WHERE id=?", String.class, receiptId))
+                .isEqualTo("PENDING");
+    }
+
+    @Test
+    void editingOverdueDateReentersCalculationAndCancelStillHidesIt() throws Exception {
+        at("2026-11-06T00:00:00Z");
+        long userId = newUser();
+        long product = registerProduct(userId, "A", "상품A");
+        long receipt = idOf(create(userId, "{\"productId\":" + product
+                + ",\"quantity\":10,\"expectedOn\":\"2026-11-05\"}")
+                .andExpect(jsonPath("reflected").value(false)));
+        update(userId, receipt, "{\"quantity\":12}")
+                .andExpect(jsonPath("status").value("OVERDUE"))
+                .andExpect(jsonPath("reflected").value(false));
+        update(userId, receipt, "{\"expectedOn\":\"2026-11-06\"}")
+                .andExpect(jsonPath("status").value("PENDING"))
+                .andExpect(jsonPath("reflected").value(true));
+        update(userId, receipt, "{\"expectedOn\":\"2026-11-07\"}")
+                .andExpect(jsonPath("status").value("PENDING"));
+        update(userId, receipt, "{\"expectedOn\":\"2026-11-04\"}")
+                .andExpect(jsonPath("status").value("OVERDUE"));
+        mvc.perform(delete(RECEIPTS + "/" + receipt).with(jwt().jwt(c -> c.subject("" + userId))))
+                .andExpect(status().isNoContent());
+        mvc.perform(get(RECEIPTS).with(jwt().jwt(c -> c.subject("" + userId))))
+                .andExpect(jsonPath("total").value(0));
+        update(userId, receipt, "{\"quantity\":1}").andExpect(status().isNotFound());
+    }
+
+    @Test
+    void noDateAndReceivedAreNeverOverdue() throws Exception {
+        at("2026-11-06T00:00:00Z");
+        long userId = newUser();
+        long product = registerProduct(userId, "A", "상품A");
+        long receipt = idOf(create(userId, "{\"productId\":" + product + ",\"quantity\":10}"));
+        update(userId, receipt, "{\"quantity\":12}")
+                .andExpect(jsonPath("status").value("NO_DATE"))
+                .andExpect(jsonPath("reflected").value(false));
+        update(userId, receipt, "{\"expectedOn\":\"2026-11-05\"}")
+                .andExpect(jsonPath("status").value("OVERDUE"));
+        jdbc.update("UPDATE planned_receipts SET status='RECEIVED',received_on='2026-11-05' WHERE id=?", receipt);
+        mvc.perform(get(RECEIPTS).with(jwt().jwt(c -> c.subject("" + userId))))
+                .andExpect(jsonPath("items[0].status").value("RECEIVED"))
+                .andExpect(jsonPath("items[0].reflected").value(false));
+        update(userId, receipt, "{\"expectedOn\":\"2026-11-07\"}").andExpect(status().isConflict());
+        mvc.perform(delete(RECEIPTS + "/" + receipt).with(jwt().jwt(c -> c.subject("" + userId))))
+                .andExpect(status().isConflict());
     }
 
     private ResultActions create(long userId, String body) throws Exception {

@@ -34,6 +34,16 @@ springdoc:
   show-actuator: false
 
 ipgo:
+  billing:
+    enabled: ${IPGO_BILLING_ENABLED:false}
+    worker-enabled: ${IPGO_BILLING_WORKER_ENABLED:false}
+    mode: ${IPGO_BILLING_MODE:TEST}
+    secret-key: ${IPGO_TOSS_SECRET_KEY:}
+    security-key: ${IPGO_TOSS_SECURITY_KEY:}
+    encryption-key: ${IPGO_BILLING_ENCRYPTION_KEY:}
+    lookup-key: ${IPGO_BILLING_LOOKUP_KEY:}
+    merchant-id: ${IPGO_TOSS_MERCHANT_ID:}
+    return-origin: ${IPGO_BILLING_RETURN_ORIGIN:http://localhost:5173}
   insight:
     batch-enabled: ${IPGO_INSIGHT_BATCH_ENABLED:false}
     single-result-enabled: ${IPGO_INSIGHT_SINGLE_RESULT_ENABLED:false}

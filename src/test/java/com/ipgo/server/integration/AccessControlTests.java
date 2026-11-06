@@ -45,7 +45,9 @@ class AccessControlTests extends DatabaseIntegrationTest {
             "POST /api/auth/refresh",
             "POST /api/auth/logout",
             "POST /api/auth/email-verifications",
-            "POST /api/auth/email-verifications/confirm");
+            "POST /api/auth/email-verifications/confirm",
+            // JWT 대신 원본 body의 토스 HMAC 서명을 검증한다.
+            "POST /api/billing/webhooks/toss");
 
     @Autowired MockMvc mvc;
     @Autowired JdbcTemplate jdbc;

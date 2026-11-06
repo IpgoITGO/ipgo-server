@@ -51,6 +51,7 @@ public class EngineCalculationService {
 
     @Transactional
     public Long request(long userId, long warehouseId, String trigger, boolean force) {
+        if (!jobs.enabled()) return null;
         return request(userId, warehouseId, trigger, force, LocalDate.now(clock.withZone(DashboardService.SEOUL)));
     }
 

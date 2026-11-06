@@ -134,7 +134,7 @@ psql -U <관리자> -d <database> -f database/bootstrap/create_roles.sql
 ### AWS DB one-off 작업 이미지
 
 `Dockerfile.database`는 애플리케이션 이미지와 분리된 DB 관리 전용 이미지입니다. `bootstrap`은
-최초 PostgreSQL 역할 생성과 비밀번호 설정, `bootstrap-original-reader`는 기존 계정을 바꾸지 않고 새 원본 조회 계정만 생성합니다. `migrate`는 Flyway V1~V17 적용과 이력 확인,
+최초 PostgreSQL 역할 생성과 비밀번호 설정, `bootstrap-original-reader`는 기존 계정을 바꾸지 않고 새 원본 조회 계정만 생성합니다. `migrate`는 Flyway V1~V18 적용과 이력 확인,
 `verify`는 Spring DML·AI 조회 권한과 금지 권한을 점검합니다. AWS에서는 각 명령을 별도 ECS
 one-off task로 실행하며 상시 서비스에서는 이 이미지를 사용하지 않습니다.
 
@@ -463,6 +463,18 @@ S2·S3 모두 Bearer JWT가 필요하며 CSRF는 요구하지 않습니다. 기�
 
 잘못된 값은 `400 INVALID_INPUT`과 `details.field`(예: `ratePerCbm`, `depth`), 다른 회원 상품은 `403`, 없는 상품은 `404`입니다.
 
+### 내 입고량 (#119)
+
+셀러가 상품 상세에서 "이 수량으로 정하기"를 누른 수량을 상품당 하나 저장합니다(V18). 대시보드(D1)와 상품 상세(K1) 응답은 바꾸지 않고, 화면이 목록을 한 번 받아 상품별로 붙입니다. 새 계산이 끝나도 지우지 않습니다. 화면은 `calculationRunId`가 지금 결과의 `runId`와 다르면 "지난 계산 기준"으로 보여 줍니다.
+
+| API | 동작 |
+|---|---|
+| `GET /api/planned-quantities` | `{ items: [{ productId, quantity, source, decidedAt, calculationRunId }] }`. 상품 ID 순서이고, 정하지 않은 상품은 목록에 없습니다. `decidedAt`은 `+09:00` 시각입니다 |
+| `PUT /api/products/{productId}/planned-quantity` | `{ quantity, source, calculationRunId }`. `quantity`는 0보다 큰 정수, `source`는 `SCENARIO_80`·`SCENARIO_100`·`SCENARIO_120`·`MANUAL`, `calculationRunId`는 내 창고의 끝난(`DONE`) 계산이어야 합니다. 다시 보내면 바꾸고 `decidedAt`을 새로 남깁니다. 응답은 저장한 한 개입니다 |
+| `DELETE /api/products/{productId}/planned-quantity` | 내 입고량을 지우고 `204`를 돌려줍니다. 이미 없어도 `204`입니다 |
+
+잘못된 값은 `400 INVALID_INPUT`과 `details.field`(없거나 끝나지 않은 계산은 `calculationRunId`), 다른 회원의 상품이나 계산은 `403`, 없는 상품은 `404`입니다.
+
 ### 기존 발주 물량 (R1~R3)
 
 이미 발주했지만 아직 도착하지 않은 물량(상품·수량·도착 예정일)을 `planned_receipts`에 저장합니다(BE-07). 도착 예정일이 있으면 `PENDING`(계산에 반영), 없으면 `NO_DATE`(저장만 하고 계산 제외)입니다. 수량은 1 이상 정수입니다.
@@ -641,7 +653,7 @@ scripts/testing/verify-insight-contract.sh /path/to/ipgo-ai
 
 ## Database 변경과 복구
 
-이미 병합된 migration은 Flyway 이력을 보존하기 위해 수정하지 않습니다. 새 DB에서는 승인한 범위의 migration을 순서대로 적용합니다. #90 구현은 V16까지 필요하며 운영 적용은 별도 승인입니다. V4는 `warehouses`·`products`·`inventory_units`, V5는 `upload_files`, V6은 `replenishment_settings`, V7은 `planned_receipts`, V8은 `auth_sessions`·`refresh_tokens`, V9는 `calculation_runs`·`calculation_results`, V10은 일별 수불 2개 표, V11은 계산 출처·시나리오·백테스트·AI 인사이트 4개 표를 추가합니다. V12는 PostgreSQL tenant 무결성 trigger, V13은 FastAPI view와 역할별 권한을 적용하고, V14는 `engine_jobs`·입력 hash·정제 조회 view를 추가합니다. V15의 DB 원본 저장 전환(Server #77·AI #60)은 보류 상태입니다. V16은 입고 사건·배정·업로드 판정 기록을 추가하며 기존 원본 저장 모드를 바꾸지 않습니다. V16을 위해 전체 migration 경로를 실행하기 전 V15의 보류/실제 DB 이력을 함께 확인해야 합니다. V17은 창고 보관 요율 칸과 `product_boxes`를 추가합니다(#111). 기존 행은 바꾸지 않고, 되돌릴 때는 새 칸과 표만 지우면 됩니다. 실제 DB 적용은 V15·V16과 같은 순서 확인과 별도 승인을 따릅니다. 전체 관계와 변경 규칙은 [Database ERD v1](docs/database/erd-v1.md)에 있습니다. Hibernate는 스키마를 자동 수정하지 않고 검증만 수행합니다.
+이미 병합된 migration은 Flyway 이력을 보존하기 위해 수정하지 않습니다. 새 DB에서는 승인한 범위의 migration을 순서대로 적용합니다. #90 구현은 V16까지 필요하며 운영 적용은 별도 승인입니다. V4는 `warehouses`·`products`·`inventory_units`, V5는 `upload_files`, V6은 `replenishment_settings`, V7은 `planned_receipts`, V8은 `auth_sessions`·`refresh_tokens`, V9는 `calculation_runs`·`calculation_results`, V10은 일별 수불 2개 표, V11은 계산 출처·시나리오·백테스트·AI 인사이트 4개 표를 추가합니다. V12는 PostgreSQL tenant 무결성 trigger, V13은 FastAPI view와 역할별 권한을 적용하고, V14는 `engine_jobs`·입력 hash·정제 조회 view를 추가합니다. V15의 DB 원본 저장 전환(Server #77·AI #60)은 보류 상태입니다. V16은 입고 사건·배정·업로드 판정 기록을 추가하며 기존 원본 저장 모드를 바꾸지 않습니다. V16을 위해 전체 migration 경로를 실행하기 전 V15의 보류/실제 DB 이력을 함께 확인해야 합니다. V17은 창고 보관 요율 칸과 `product_boxes`를 추가합니다(#111). 기존 행은 바꾸지 않고, 되돌릴 때는 새 칸과 표만 지우면 됩니다. 실제 DB 적용은 V15·V16과 같은 순서 확인과 별도 승인을 따릅니다. V18은 내 입고량 `product_planned_quantities`를 추가합니다(#119). 되돌릴 때는 이 표만 지우면 됩니다. 전체 관계와 변경 규칙은 [Database ERD v1](docs/database/erd-v1.md)에 있습니다. Hibernate는 스키마를 자동 수정하지 않고 검증만 수행합니다.
 
 초기 PostgreSQL은 administrator가 `database/bootstrap/create_roles.sql`을 먼저 실행한 뒤 `ipgo_migrator`로 Flyway를 적용합니다. 새 DB의 bootstrap SQL은 `ipgo_migrator`·`ipgo_server`·`ipgo_ai_reader`·`ipgo_ai_service_reader` 역할을 만들고 비밀번호는 설정하지 않습니다. 비밀번호는 repository·shell history·Terraform state에 남기지 않고 승인된 Secrets Manager 절차로 설정합니다. Spring runtime은 `ipgo_server`, FastAPI는 `ipgo_ai_reader`를 사용하며 runtime에서는 `SPRING_FLYWAY_ENABLED=false`로 migration 자격 증명을 분리합니다.
 

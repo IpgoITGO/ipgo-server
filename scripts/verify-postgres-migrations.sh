@@ -92,7 +92,7 @@ migration_count="$(docker exec "${database_container}" \
 table_count="$(docker exec "${database_container}" \
   psql -U ipgo_migrator -d ipgo -Atc \
   "SELECT COUNT(*) FROM pg_tables WHERE schemaname = 'public' AND tablename <> 'flyway_schema_history'")"
-if [[ "${migration_count}" != "17" || "${table_count}" != "24" ]]; then
+if [[ "${migration_count}" != "18" || "${table_count}" != "25" ]]; then
   echo "unexpected schema: migrations=${migration_count}, tables=${table_count}" >&2
   exit 1
 fi
@@ -187,5 +187,18 @@ expect_denied ipgo_ai_reader "SELECT * FROM product_boxes"
 expect_denied ipgo_ai_service_reader "SELECT * FROM product_boxes"
 docker exec "${database_container}" psql -v ON_ERROR_STOP=1 -U ipgo_server -d ipgo \
   -c "DELETE FROM product_boxes WHERE product_id = 100" >/dev/null
+
+# V18: 내 입고량은 상품당 1개, 양수·정해진 출처·실제 계산만 받고 AI 역할은 볼 수 없다(#119).
+docker exec -i "${database_container}" psql -v ON_ERROR_STOP=1 -U ipgo_server -d ipgo >/dev/null <<'SQL'
+INSERT INTO product_planned_quantities(product_id,quantity,source,calculation_run_id) VALUES (100,40,'SCENARIO_120',3000);
+UPDATE product_planned_quantities SET quantity = 35, source = 'MANUAL' WHERE product_id = 100;
+SQL
+expect_denied ipgo_server "INSERT INTO product_planned_quantities(product_id,quantity,source,calculation_run_id) VALUES (100,1,'MANUAL',3000)"
+expect_denied ipgo_server "UPDATE product_planned_quantities SET quantity = 0 WHERE product_id = 100"
+expect_denied ipgo_server "UPDATE product_planned_quantities SET source = 'GUESS' WHERE product_id = 100"
+expect_denied ipgo_server "UPDATE product_planned_quantities SET calculation_run_id = 999999 WHERE product_id = 100"
+expect_denied ipgo_ai_reader "SELECT * FROM product_planned_quantities"
+expect_denied ipgo_ai_service_reader "SELECT * FROM product_planned_quantities"
+docker exec "${database_container}" psql -v ON_ERROR_STOP=1 -U ipgo_server -d ipgo   -c "DELETE FROM product_planned_quantities WHERE product_id = 100" >/dev/null
 
 echo "PostgreSQL migrations, tenant integrity, and database roles verified."

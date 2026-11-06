@@ -15,12 +15,34 @@ import com.ipgo.server.exception.BillingException;
 /** JDBC 원장은 짧은 transaction/사용자 row lock으로 직렬화하며 PG 호출은 transaction 밖에서 한다. */
 @Repository
 public class BillingLedger {
+    private static final java.util.concurrent.locks.ReentrantLock[] TEST_KEY_LOCKS=
+            java.util.stream.IntStream.range(0,64).mapToObj(i->new java.util.concurrent.locks.ReentrantLock())
+                    .toArray(java.util.concurrent.locks.ReentrantLock[]::new);
     private final JdbcTemplate jdbc;
     private final TransactionTemplate tx;
     public BillingLedger(JdbcTemplate jdbc, PlatformTransactionManager manager) { this.jdbc=jdbc; tx=new TransactionTemplate(manager); }
     public <T> T transaction(Supplier<T> action) { return tx.execute(s->action.get()); }
     public void lock(long user) {
         if (list("select id from users where id=? for update",user).isEmpty()) throw BillingException.forbidden();
+    }
+    /** 등록/삭제 경합을 막는다. 사용자 row도 잠그는 경로는 user→fingerprint 순서를 지킨다. */
+    public void lockFingerprint(String fingerprint) {
+        if(!org.springframework.transaction.support.TransactionSynchronizationManager.isActualTransactionActive())
+            throw new IllegalStateException("Billing key lock requires transaction");
+        String product=jdbc.execute((org.springframework.jdbc.core.ConnectionCallback<String>)c->c.getMetaData().getDatabaseProductName());
+        if("PostgreSQL".equals(product)) {
+            long key=Long.parseUnsignedLong(fingerprint.substring(0,16),16);
+            jdbc.query("select pg_advisory_xact_lock(?)",ps->ps.setLong(1,key),rs->{});
+        } else if("H2".equals(product)) {
+            // H2는 한 JVM의 검증용이다. PostgreSQL의 여러 인스턴스 간 보장은 실제 advisory lock으로 검사한다.
+            var lock=TEST_KEY_LOCKS[fingerprint.hashCode() & 63]; lock.lock();
+            try {
+                org.springframework.transaction.support.TransactionSynchronizationManager.registerSynchronization(
+                        new org.springframework.transaction.support.TransactionSynchronization() {
+                            @Override public void afterCompletion(int status) { lock.unlock(); }
+                        });
+            } catch(RuntimeException e) { lock.unlock(); throw e; }
+        } else throw new IllegalStateException("Unsupported billing database");
     }
     public int update(String sql,Object... args) { return jdbc.update(sql,args); }
     public List<Row> list(String sql,Object... args) { return jdbc.queryForList(sql,args).stream().map(Row::new).toList(); }

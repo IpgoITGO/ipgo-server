@@ -58,6 +58,13 @@ class TossBillingGatewayTests {
         reset(http); response(502,"not-json");
         assertThatThrownBy(()->g.lookup("order")).isInstanceOfSatisfying(BillingGateway.Failure.class,e->assertThat(e.rejected()).isFalse());
     }
+    @Test void parsesProviderApprovalOffsetAndRejectsMalformedTime() throws Exception {
+        var g=new TossBillingGateway(properties(true),mapper,http);
+        response(200,"{\"approvedAt\":\"2026-01-31T10:00:00+09:00\"}");
+        assertThat(g.lookup("order").approvedAt()).isEqualTo(java.time.Instant.parse("2026-01-31T01:00:00Z"));
+        reset(http); response(200,"{\"approvedAt\":\"invalid\"}");
+        assertThatThrownBy(()->g.lookup("order")).isInstanceOfSatisfying(BillingGateway.Failure.class,e->assertThat(e.rejected()).isFalse());
+    }
     @Test void knownDeclineIsRetryableButUnknownErrorIsNot() throws Exception {
         var g=new TossBillingGateway(properties(true),mapper,http);
         response(403,"{\"code\":\"REJECT_CARD_COMPANY\",\"message\":\"untrusted message\"}");

@@ -107,7 +107,7 @@ public class BillingService {
                 var plan=BillingPolicy.plan(r.planId());
                 if(plan.amount()==0) throw BillingException.invalid();
                 if(!BillingPolicy.VERSION.equals(r.priceVersion())) throw BillingException.conflict("PLAN_PRICE_CHANGED");
-                if(s.time("period_end")!=null && clock.instant().isBefore(s.time("period_end"))) throw BillingException.conflict("SUBSCRIPTION_ALREADY_ACTIVE");
+                if(s.time("period_end")!=null && (!s.flag("cancel_at_period_end") || clock.instant().isBefore(s.time("period_end")))) throw BillingException.conflict("SUBSCRIPTION_ALREADY_ACTIVE");
                 if(!ledger.list("select id from billing_invoices where user_id=? and status='OPEN'",user).isEmpty()) throw BillingException.conflict("BILLING_IN_PROGRESS");
                 amount=plan.amount();
             } else if(r.planId()!=null || r.priceVersion()!=null) throw BillingException.invalid();
@@ -136,6 +136,7 @@ public class BillingService {
             if(!sub(user).text("customer_key").equals(r.customerKey()) || !t.text("state_hash").equals(BillingSecrets.hash(r.state())))
                 throw BillingException.forbidden();
             if(old!=null || "COMPLETED".equals(t.text("status"))) return null;
+            if("CANCELED".equals(t.text("status"))) throw BillingException.conflict("BILLING_SESSION_CANCELED");
             if(!clock.instant().isBefore(t.time("expires_at"))) throw BillingException.conflict("BILLING_SESSION_EXPIRED");
             if(!"OPEN".equals(t.text("status"))) throw BillingException.conflict("BILLING_IN_PROGRESS");
             ledger.update("update billing_sessions set status='ISSUING',auth_hash=? where id=?",BillingSecrets.hash(r.authKey()),id);
@@ -146,23 +147,27 @@ public class BillingService {
         BillingGateway.Issued issued;
         try { issued=gateway.issue(r.authKey(),r.customerKey(),session.text("issue_key")); }
         catch(BillingGateway.Failure e) {
-            locked(user,()->{ ledger.update("update billing_sessions set status=? where id=?",e.rejected()?"REJECTED":"UNKNOWN",id); return null; });
+            locked(user,()->{ ledger.update("update billing_sessions set status=? where id=? and status='ISSUING'",e.rejected()?"REJECTED":"UNKNOWN",id); return null; });
             return session(user,id);
         }
         if(!r.customerKey().equals(issued.customerKey()) || issued.billingKey()==null || issued.billingKey().isBlank()
                 || issued.maskedNumber()==null || !issued.maskedNumber().contains("*")) {
-            locked(user,()->{ ledger.update("update billing_sessions set status='UNKNOWN' where id=?",id); return null; });
+            locked(user,()->{ ledger.update("update billing_sessions set status='UNKNOWN' where id=? and status='ISSUING'",id); return null; });
             return session(user,id);
         }
         locked(user,()->{
             Row current=sub(user);
             Row finishing=owned("billing_sessions",id,user);
-            boolean valid="ISSUING".equals(finishing.text("status"));
+            boolean issuing="ISSUING".equals(finishing.text("status"));
+            boolean valid=issuing && clock.instant().isBefore(finishing.time("expires_at"));
             String method=uuid(),fingerprint=secrets.fingerprint(issued.billingKey());
-            ledger.update("insert into billing_methods(id,user_id,encrypted_key,fingerprint,masked_number,status,created_at) values (?,?,?,?,?,'ACTIVE',?)",
-                    method,user,secrets.encrypt(issued.billingKey()),fingerprint,issued.maskedNumber(),at(clock.instant()));
-            if(!valid) {
-                ledger.update("update billing_methods set status='RETIRED' where id=?",method);
+            ledger.lockFingerprint(fingerprint);
+            boolean deleted=!ledger.list("select event_key from billing_webhook_inbox where event_type='BILLING_DELETED' and entity_fingerprint=?",fingerprint).isEmpty();
+            String methodStatus=deleted?"DELETED":valid?"ACTIVE":"RETIRED";
+            ledger.update("insert into billing_methods(id,user_id,encrypted_key,fingerprint,masked_number,status,created_at) values (?,?,?,?,?,?,?)",
+                    method,user,secrets.encrypt(issued.billingKey()),fingerprint,issued.maskedNumber(),methodStatus,at(clock.instant()));
+            if(!valid || deleted) {
+                if(issuing) ledger.update("update billing_sessions set status=? where id=?",deleted?"REJECTED":"EXPIRED",id);
                 return null;
             }
             // 다른 요청이 만든 세션은 OPEN/ISSUING 동안 차단되므로 수단 교체는 한 번만 발생한다.
@@ -175,7 +180,6 @@ public class BillingService {
                 int cycle=nextCycle(user);
                 String invoice=invoice(user,id,cycle,session.text("plan_id"),session.number("amount"),session.text("price_version"),start,BillingPolicy.boundary(start,1));
                 attempt(user,invoice,method);
-                ledger.update("update billing_subscriptions set cancel_at_period_end=false where user_id=?",user);
             }
             return null;
         });
@@ -188,7 +192,10 @@ public class BillingService {
             String invoice=invoices.isEmpty()?null:invoices.getFirst().text("id");
             Row a=invoice==null?null:lastAttempt(invoice);
             String status=r.text("status");
-            if("ISSUING".equals(status) && !clock.instant().isBefore(r.time("expires_at"))) status="UNKNOWN";
+            if(!clock.instant().isBefore(r.time("expires_at"))) {
+                if("ISSUING".equals(status)) status="UNKNOWN";
+                if("OPEN".equals(status)) status="EXPIRED";
+            }
             return new BillingViews.Session(id,status,invoice,a==null?null:a.text("status"),a==null?null:a.text("error_code"));
         });
     }
@@ -212,6 +219,7 @@ public class BillingService {
         return locked(user,()->{
             if(command(user,"CANCEL",key,"")!=null) return view(sub(user));
             ensureNoFlight(user);
+            ledger.update("update billing_sessions set status='CANCELED' where user_id=? and purpose='START_SUBSCRIPTION' and status in ('OPEN','ISSUING')",user);
             ledger.update("update billing_subscriptions set cancel_at_period_end=true,next_charge_at=null where user_id=?",user);
             ledger.update("update billing_attempts set status='VOID' where user_id=? and status in ('READY','DECLINED')",user);
             ledger.update("update billing_invoices set status='VOID' where user_id=? and status='OPEN'",user);
@@ -233,7 +241,7 @@ public class BillingService {
             Row i=owned("billing_invoices",invoice,user);
             if(command(user,"RETRY:"+invoice,key,"")!=null) return new BillingViews.Accepted(invoice,i.text("status"));
             Row a=lastAttempt(invoice); Row s=sub(user);
-            if(!"OPEN".equals(i.text("status")) || a==null || !"DECLINED".equals(a.text("status")) || s.flag("cancel_at_period_end")
+            if(!"OPEN".equals(i.text("status")) || a==null || !"DECLINED".equals(a.text("status")) || (s.flag("cancel_at_period_end") && i.text("session_id")==null)
                     || !clock.instant().isBefore(i.time("period_end"))) throw BillingException.conflict("BILLING_IN_PROGRESS");
             ensureNoFlight(user); String method=activeMethod(s); attempt(user,invoice,method);
             remember(user,"RETRY:"+invoice,key,"",invoice); return new BillingViews.Accepted(invoice,"OPEN");
@@ -286,11 +294,28 @@ public class BillingService {
             }
             if(fresh.time("lease_until")!=null && clock.instant().isBefore(fresh.time("lease_until"))) return null;
             Row i=owned("billing_invoices",fresh.text("invoice_id"),user); Row s=sub(user);
-            if("READY".equals(fresh.text("status")) && (s.flag("cancel_at_period_end") || !"OPEN".equals(i.text("status"))
+            if("READY".equals(fresh.text("status")) && ((s.flag("cancel_at_period_end") && i.text("session_id")==null) || !"OPEN".equals(i.text("status"))
                     || !clock.instant().isBefore(i.time("period_end")))) {
                 ledger.update("update billing_attempts set status='VOID' where id=?",id); return null;
             }
             boolean initial="READY".equals(fresh.text("status"));
+            if(initial) {
+                if(i.text("session_id")!=null && !clock.instant().isBefore(fresh.time("created_at").plus(Duration.ofMinutes(15)))) {
+                    ledger.update("update billing_attempts set status='VOID',error_code='CHECKOUT_EXPIRED' where id=?",id);
+                    ledger.update("update billing_invoices set status='VOID' where id=?",i.text("id"));
+                    return null;
+                }
+                var active=ledger.list("select id from billing_methods where id=? and user_id=? and status='ACTIVE'",s.text("default_method_id"),user);
+                if(active.isEmpty()) {
+                    ledger.update("update billing_attempts set status='DECLINED',error_code='BILLING_METHOD_REQUIRED' where id=?",id);
+                    return null;
+                }
+                // 아직 PG를 호출하지 않은 READY만 새 기본 수단에 결속한다. 진행/미확정 시도는 그대로 보존한다.
+                if(!active.getFirst().text("id").equals(fresh.text("method_id"))) {
+                    ledger.update("update billing_attempts set method_id=? where id=?",active.getFirst().text("id"),id);
+                    fresh=owned("billing_attempts",id,user);
+                }
+            }
             ledger.update("update billing_attempts set status=?,lease_until=?,last_checked_at=? where id=?",
                     initial?"DISPATCHING":"UNKNOWN",at(clock.instant().plusSeconds(180)),at(clock.instant()),id);
             return fresh;
@@ -304,22 +329,30 @@ public class BillingService {
                     outcome(user,id,false,"PAYMENT_REQUEST_CHANGED"); return;
                 }
                 Row m=ledger.one("select * from billing_methods where id=?",a.text("method_id"));
-                if("DELETED".equals(m.text("status"))) { outcome(user,id,false,"BILLING_METHOD_REQUIRED"); return; }
+                if("DELETED".equals(m.text("status"))) { outcome(user,id,true,"BILLING_METHOD_REQUIRED"); return; }
                 payment=gateway.charge(secrets.decrypt(m.text("encrypted_key")),new BillingGateway.Charge(a.text("order_id"),sub(user).text("customer_key"),i.number("amount"),i.text("order_name")),a.text("idempotency_key"));
             } else payment=gateway.lookup(a.text("order_id"));
-            if(!"DONE".equals(payment.status()) || !a.text("order_id").equals(payment.orderId()) || i.number("amount")!=payment.totalAmount()
-                    || !"KRW".equals(payment.currency()) || !properties.merchantId().equals(payment.merchantId())
-                    || payment.paymentKey()==null || payment.paymentKey().isBlank() || payment.paymentKey().length()>200) {
+            boolean matches=a.text("order_id").equals(payment.orderId()) && i.number("amount")==payment.totalAmount()
+                    && "KRW".equals(payment.currency()) && properties.merchantId().equals(payment.merchantId())
+                    && payment.paymentKey()!=null && !payment.paymentKey().isBlank() && payment.paymentKey().length()<=200;
+            if(matches && "ABORTED".equals(payment.status()) && payment.approvedAt()==null) {
+                outcome(user,id,true,"PAYMENT_REJECTED"); return;
+            }
+            if(!matches || !"DONE".equals(payment.status()) || payment.approvedAt()==null || payment.approvedAt().isAfter(clock.instant().plusSeconds(60))
+                    || payment.approvedAt().isBefore(a.time("created_at").minusSeconds(60))) {
                 outcome(user,id,false,"PAYMENT_OUTCOME_UNKNOWN"); return;
             }
             locked(user,()->{
                 Row current=owned("billing_invoices",i.text("id"),user);
                 if("PAID".equals(current.text("status"))) return null;
                 ledger.update("update billing_attempts set status='SUCCEEDED',payment_key=?,error_code=null,lease_until=null where id=?",payment.paymentKey().toLowerCase(java.util.Locale.ROOT),id);
-                ledger.update("update billing_invoices set status='PAID',paid_at=? where id=?",at(clock.instant()),i.text("id"));
-                Instant anchor=i.text("session_id")!=null?i.time("period_start"):sub(user).time("anchor_at");
-                ledger.update("update billing_subscriptions set status='ACTIVE',plan_id=?,price_version=?,amount=?,period_start=?,period_end=?,anchor_at=?,cycle_no=?,next_charge_at=? where user_id=?",
-                        i.text("plan_id"),i.text("price_version"),i.number("amount"),at(i.time("period_start")),at(i.time("period_end")),at(anchor),i.number("cycle_no"),at(i.time("period_end")),user);
+                boolean first=i.text("session_id")!=null;
+                Instant start=first?payment.approvedAt():i.time("period_start");
+                Instant end=first?BillingPolicy.boundary(start,1):i.time("period_end");
+                ledger.update("update billing_invoices set status='PAID',paid_at=?,period_start=?,period_end=? where id=?",at(payment.approvedAt()),at(start),at(end),i.text("id"));
+                Instant anchor=first?start:sub(user).time("anchor_at");
+                ledger.update("update billing_subscriptions set status='ACTIVE',plan_id=?,price_version=?,amount=?,period_start=?,period_end=?,anchor_at=?,cycle_no=?,next_charge_at=?,cancel_at_period_end=? where user_id=?",
+                        i.text("plan_id"),i.text("price_version"),i.number("amount"),at(start),at(end),at(anchor),i.number("cycle_no"),at(end),first?false:sub(user).flag("cancel_at_period_end"),user);
                 return null;
             });
         } catch(BillingGateway.Failure e) { outcome(user,id,"READY".equals(a.text("status")) && e.rejected(),e.rejected()?"PAYMENT_REJECTED":"PAYMENT_OUTCOME_UNKNOWN"); }
@@ -377,8 +410,9 @@ public class BillingService {
             // 원본 key/본문은 저장하지 않는다. row lock은 실제 소유자를 찾아 획득한다.
             var methods=ledger.list("select user_id from billing_methods where fingerprint=?",fp);
             if(!methods.isEmpty()) ledger.lock(methods.getFirst().number("user_id"));
-            if(!ledger.list("select event_key from billing_webhook_inbox where event_key=?",eventKey).isEmpty()) return null;
-            ledger.update("insert into billing_webhook_inbox(event_key,event_type,entity_fingerprint,received_at) values (?,'BILLING_DELETED',?,?)",eventKey,fp,at(clock.instant()));
+            ledger.lockFingerprint(fp);
+            if(ledger.list("select event_key from billing_webhook_inbox where event_key=?",eventKey).isEmpty())
+                ledger.update("insert into billing_webhook_inbox(event_key,event_type,entity_fingerprint,received_at) values (?,'BILLING_DELETED',?,?)",eventKey,fp,at(clock.instant()));
             ledger.update("update billing_methods set status='DELETED' where fingerprint=?",fp);
             return null;
         });

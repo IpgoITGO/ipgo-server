@@ -26,6 +26,11 @@ BEGIN
                (other_id,'fixture-mid','TEST','TRIALING','trial','fixture',0,CURRENT_TIMESTAMP,'schema-customer-other');
     INSERT INTO billing_methods(id,user_id,encrypted_key,fingerprint,masked_number,status,created_at)
         VALUES ('schema-method',owner_id,'fixture-ciphertext','schema-fingerprint','****0000','ACTIVE',CURRENT_TIMESTAMP);
+    BEGIN
+        UPDATE billing_subscriptions SET default_method_id='schema-method' WHERE user_id=other_id;
+        RAISE EXCEPTION 'cross-owner default billing method accepted';
+    EXCEPTION WHEN foreign_key_violation THEN NULL;
+    END;
     INSERT INTO billing_invoices(id,user_id,cycle_no,plan_id,price_version,amount,order_name,currency,period_start,period_end,status)
         VALUES ('schema-invoice',owner_id,1,'seller','fixture',49000,'fixture monthly','KRW',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP+INTERVAL '1 month','OPEN');
     INSERT INTO billing_attempts(id,invoice_id,user_id,method_id,attempt_no,order_id,idempotency_key,body_hash,status,created_at)

@@ -29,6 +29,8 @@ CREATE TABLE billing_methods (
     created_at TIMESTAMP WITH TIME ZONE NOT NULL,
     UNIQUE(id,user_id)
 );
+ALTER TABLE billing_subscriptions ADD CONSTRAINT fk_billing_default_method_owner
+    FOREIGN KEY(default_method_id,user_id) REFERENCES billing_methods(id,user_id);
 CREATE TABLE billing_sessions (
     id VARCHAR(36) PRIMARY KEY,
     user_id BIGINT NOT NULL REFERENCES billing_subscriptions(user_id),
@@ -40,7 +42,7 @@ CREATE TABLE billing_sessions (
     accepted_at TIMESTAMP WITH TIME ZONE NOT NULL,
     state_hash VARCHAR(64) NOT NULL,
     expires_at TIMESTAMP WITH TIME ZONE NOT NULL,
-    status VARCHAR(24) NOT NULL CHECK (status IN ('OPEN','ISSUING','COMPLETED','REJECTED','UNKNOWN')),
+    status VARCHAR(24) NOT NULL CHECK (status IN ('OPEN','ISSUING','COMPLETED','REJECTED','UNKNOWN','CANCELED','EXPIRED')),
     issue_key VARCHAR(36) NOT NULL UNIQUE,
     auth_hash VARCHAR(64),
     method_id VARCHAR(36),

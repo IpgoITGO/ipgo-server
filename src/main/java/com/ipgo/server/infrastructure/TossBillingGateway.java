@@ -43,7 +43,13 @@ public class TossBillingGateway implements BillingGateway {
     }
     @Override public Payment lookup(String order) { return payment(send("GET","/v1/payments/orders/"+segment(order),null,null)); }
     @Override public void delete(String billingKey) { send("DELETE","/v1/billing/"+segment(billingKey),null,null); }
-    private Payment payment(JsonNode n) { return new Payment(text(n,"paymentKey"),text(n,"orderId"),n.path("totalAmount").asLong(-1),text(n,"currency"),text(n,"status"),text(n,"mId")); }
+    private Payment payment(JsonNode n) {
+        try {
+            String approved=text(n,"approvedAt");
+            java.time.Instant approvedAt=approved.isBlank()?null:java.time.OffsetDateTime.parse(approved).toInstant();
+            return new Payment(text(n,"paymentKey"),text(n,"orderId"),n.path("totalAmount").asLong(-1),text(n,"currency"),text(n,"status"),text(n,"mId"),approvedAt);
+        } catch(java.time.DateTimeException e) { throw new Failure(false,"INVALID_PROVIDER_RESPONSE"); }
+    }
     private JsonNode send(String method,String path,Object body,String key) {
         if(!properties.enabled() || !"TEST".equals(properties.mode()) || !properties.secretKey().startsWith("test_sk_"))
             throw new Failure(false,"BILLING_DISABLED");

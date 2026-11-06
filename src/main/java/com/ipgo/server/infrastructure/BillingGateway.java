@@ -5,7 +5,7 @@ public interface BillingGateway {
         @Override public String toString() { return "Issued[redacted]"; }
     }
     record Charge(String orderId, String customerKey, long amount, String orderName) { }
-    record Payment(String paymentKey, String orderId, long totalAmount, String currency, String status, String merchantId) { }
+    record Payment(String paymentKey, String orderId, long totalAmount, String currency, String status, String merchantId, java.time.Instant approvedAt) { }
     final class Failure extends RuntimeException {
         private final boolean rejected;
         private final String code;

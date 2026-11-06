@@ -33,7 +33,7 @@
 
 동의 버전은 `monthly-2026-11-v1`이다. 첫 구현에서는 consentVersion과 acceptedAt을 저장한다. 앱 멱등 결과는 중복 실행을 막고 현재 원장 상태를 다시 보여주므로 재조회 시 응답 상태는 진행에 따라 달라질 수 있다.
 
-등록 상태: OPEN / ISSUING / COMPLETED / REJECTED / UNKNOWN. COMPLETED는 카드 등록 완료이며 paymentStatus가 SUCCEEDED여야 결제 확정이다. 발급 응답 유실 후 billingKey를 확보하지 못하면 재등록이 필요하다. 복귀 URL 방문만으로 권한을 부여하지 않는다.
+등록 상태: OPEN / ISSUING / COMPLETED / REJECTED / UNKNOWN / CANCELED / EXPIRED. COMPLETED는 카드 등록 완료이며 paymentStatus가 SUCCEEDED여야 결제 확정이다. 발급 응답 유실 후 billingKey를 확보하지 못하면 재등록이 필요하다. 복귀 URL 방문만으로 권한을 부여하지 않는다.
 
 주요 오류는 BILLING_DISABLED(503), INVALID_INPUT(400), FORBIDDEN(403), TRIAL_ENDED/PAYMENT_FAILED/PRODUCT_LIMIT_EXCEEDED(403), BILLING_IN_PROGRESS/PLAN_PRICE_CHANGED/BILLING_CONSENT_REQUIRED/IDEMPOTENCY_KEY_REUSED/BILLING_SESSION_EXPIRED/BILLING_MERCHANT_CHANGED(409)다.
 
@@ -54,6 +54,19 @@ V17은7개 신규 테이블을 추가한다. 고객키·TEST 환경·상점은 b
 PG 승인 timeout은75초, 시도 lease는180초다. PG 승인 후 DB 저장 실패·timeout·재시작은 기존 orderId 조회로 복구한다. 새 orderId로 우회 승인하지 않는다. 미확정 상태가15일을 넘으면 REVIEW_REQUIRED로 격리하며 자동 처리·새 승인·해지를 차단하고 수동 대조를 요구한다. 미납/수단 부재 계정을 due 대상에서 제외해 뒤의 계정 청구를 막지 않는다. provider 응답의 orderId·금액·통화·상점을 대조한 DONE만 PAID로 반영한다. 알 수 없는 PG 오류는 거절로 추정하지 않는다.
 
 결제 작업기는 기존 AI scheduler와 분리한 단일 daemon executor를 사용한다.1분마다 due 청구서 준비·한 시도 처리·옛 수단 폐기를 실행한다. 다중 앱 인스턴스에서도 claim/lease와 DB 제약으로 중복 승인을 방지한다. 여러 달 중단 후 밀린 월을 한꺼번에 청구하지 않는다.
+
+## 검토 후 보완한 결제 계약
+
+- 해지는 미완료 START_SUBSCRIPTION 세션도 취소한다. 늦은 발급 응답/실패가 취소 상태를 덮어쓰지 않으며, 취소·만료 후 받은 키는 기본 수단으로 사용하지 않는다.
+- 기존 유료 구독이 갱신 중이면 START_SUBSCRIPTION을 새로 열 수 없다. 기간이 끝난 해지 구독의 재시작은 가능하지만, 카드 등록만으로 기존 유예/유료 권한을 되살리지 않는다. 첫 결제 승인 후에만 해지 상태를 해제한다.
+- 아직 PG를 호출하지 않은 READY 시도는 청구 직전에 최신 기본 카드를 채택한다. DISPATCHING/UNKNOWN 시도는 기존 카드와 주문을 유지한다. 발송 전 수단이 사라졌으면 PG 호출0의 명확한 실패로 남겨 카드 등록 후 수동 재시도할 수 있다.
+- 첫 결제/첫 결제 재시도의 READY 대기가15분을 넘으면 청구서와 시도를 VOID/CHECKOUT_EXPIRED로 마감한다. 새 동의를 통한 새 등록을 요구하며 지연된 첫 청구를 자동 실행하지 않는다.
+- paidAt은 조회·복구 시각이 아닌 토스 approvedAt이다. 첫 결제의 이용기간·anchor는 실제 승인 시각에서 시작하고, 이후 갱신 anchor는 유지한다. DONE인데 승인 시각이 없거나 주문 생성보다60초 이상 과거/서버 시각보다60초 이상 미래면 UNKNOWN으로 남긴다.
+- 주문·상점·금액·통화·paymentKey가 일치하고 approvedAt이 없는 ABORTED 응답은 확정 실패로 처리한다. 조회만으로 자동 재청구하지 않고 명시적 수동 재시도만 허용한다.
+- 키 삭제 tombstone을 발급 응답보다 먼저 받은 경우에도 반영한다. PostgreSQL에서는 fingerprint의 transaction advisory lock으로 서로 다른 DB connection의 저장/삭제를 직렬화한다. 사용자 row도 잡는 경로는 user→fingerprint 순서다. H2의 transaction 완료까지 유지하는 JVM lock은 로컬 검증용이며 운영 다중 인스턴스 검증을 대신하지 않는다.
+- 기본 수단에도 사용자 소유권 복합 FK를 적용한다. 암호화/lookup 키의 분리는 Base64 표현이 아니라 디코딩한32바이트의 차이로 검사한다.
+
+V17은 미공유·미배포인 로컬 신규 migration이므로 이번 검토에서 보완했다. 이미 적용된 DB의 checksum을 우회하지 않으며, 해당 상태를 발견하면 별도 migration으로 이관해야 한다. 이번에는 폐기용 DB에만 적용했다. 상세 검토·회귀 근거는 [빌링 검토 기록](../verification/billing-ledger-review-2026-11-06.md)을 따른다.
 
 ## 설정과 안전한 기본값
 
@@ -80,7 +93,7 @@ PG 승인 timeout은75초, 시도 lease는180초다. PG 승인 후 DB 저장 실
 ./scripts/verify-billing-ledger.sh
 ```
 
-로컬 최종 검증: H2 관련114건, PostgreSQL 서버 역할의 빌링35건 모두 실패/오류/생략0. bootJar와 diff/shell 구문 검사 통과. 전체 migration SQL·전체30개 테이블(빌링7개 추가)·소유권 FK·partial index·AI 접근 차단을 폐기용 PostgreSQL16에서 확인했다. 기존 Flyway Docker 검증 script의 기대값도17개 migration/30개 table로 갱신했으며, 해당 Docker Flyway script 전체를 별도로 재실행한 결과와는 구분한다.
+최초 구현 검증(후속 수정 전): H2 관련114건, PostgreSQL 서버 역할의 빌링35건 모두 실패/오류/생략0. bootJar와 diff/shell 구문 검사 통과. 전체 migration SQL·전체30개 테이블(빌링7개 추가)·소유권 FK·partial index·AI 접근 차단을 폐기용 PostgreSQL16에서 확인했다. 기존 Flyway Docker 검증 script의 기대값도17개 migration/30개 table로 갱신했으며, 해당 Docker Flyway script 전체를 별도로 재실행한 결과와는 구분한다.
 
 두 번째 명령은 기존 로컬 postgres:16-alpine 이미지·JDK21·의존성 캐시가 필요하다. 독립 내부 Docker network와 임시 DB만 만들고 종료 시 제거한다. 전체 migration SQL을 적용한 뒤 서버 역할로 같은 테스트를 실행하고 AI 역할 접근·FK·partial index를 검사한다. 토스 API 어댑터는 테스트에서 mock HttpClient 또는 가짜 BillingGateway로 교체된다. 실제 키와 실제 토스 테스트 상점 결제는 사용하지 않는다.
 

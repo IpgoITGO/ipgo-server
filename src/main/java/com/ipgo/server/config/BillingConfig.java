@@ -18,7 +18,7 @@ public class BillingConfig {
             try { if (Base64.getDecoder().decode(key).length != 32) throw new IllegalArgumentException(); }
             catch (IllegalArgumentException e) { throw new IllegalStateException("Billing encryption/lookup keys must be 32 bytes"); }
         }
-        if (p.encryptionKey().equals(p.lookupKey())) throw new IllegalStateException("Separate billing storage keys required");
+        if (java.security.MessageDigest.isEqual(Base64.getDecoder().decode(p.encryptionKey()),Base64.getDecoder().decode(p.lookupKey()))) throw new IllegalStateException("Separate billing storage keys required");
         URI u=URI.create(p.returnOrigin());
         if (u.getHost()==null || u.getRawQuery()!=null || u.getFragment()!=null || u.getUserInfo()!=null
                 || (u.getPath()!=null && !u.getPath().isEmpty())

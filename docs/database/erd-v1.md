@@ -21,6 +21,8 @@ erDiagram
     warehouses ||--o{ upload_files : receives
     products ||--o| replenishment_settings : overrides
     products ||--o| product_boxes : measures
+    products ||--o| product_planned_quantities : decides
+    calculation_runs ||--o{ product_planned_quantities : bases
     warehouses ||--o{ planned_receipts : receives
     products ||--o{ planned_receipts : orders
 
@@ -56,6 +58,7 @@ erDiagram
 | 계산 이력 | `run_source_files`, `scenario_results` | V11 | source 복합 PK, result별 scenario type unique |
 | 평가·설명 | `backtest_metrics`, `ai_explanations` | V11 | result별 각각 최대 1행 |
 | 보관 비용 | `warehouses.storage_rate_per_cbm`, `product_boxes` | V19 | 요율·상자 크기 모두 0보다 큼, 상품 삭제 시 상자 cascade (#111) |
+| 내 입고량 | `product_planned_quantities` | V21 | 상품당 1행, 수량 양수, 출처 4종, 기준 계산 FK (#119) |
 
 V12의 PostgreSQL trigger는 다음 교차 연결을 거부합니다.
 

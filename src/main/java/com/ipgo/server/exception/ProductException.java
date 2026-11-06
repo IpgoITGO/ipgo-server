@@ -5,15 +5,27 @@ import org.springframework.http.HttpStatus;
 public class ProductException extends RuntimeException {
     private final HttpStatus status;
     private final String code;
+    private final String field;
 
     ProductException(HttpStatus status, String code, String message) {
+        this(status, code, message, null);
+    }
+
+    private ProductException(HttpStatus status, String code, String message, String field) {
         super(message);
         this.status = status;
         this.code = code;
+        this.field = field;
     }
 
     public HttpStatus status() { return status; }
     public String code() { return code; }
+    // 입력 오류일 때 화면이 칸을 표시할 수 있도록 details.field로 내려 준다. 그 밖에는 null이다.
+    public String field() { return field; }
+
+    public static ProductException invalidField(String field) {
+        return new ProductException(HttpStatus.BAD_REQUEST, "INVALID_INPUT", "입력값의 형식과 길이를 확인해주세요.", field);
+    }
 
     public static ProductException receiptReceived() {
         return new ProductException(HttpStatus.CONFLICT, "RECEIPT_RECEIVED", "입고 완료한 발주는 수정하거나 취소할 수 없어요. 입고 기록을 확인해 주세요.");

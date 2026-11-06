@@ -17,6 +17,7 @@ U2 `receiptMatching`은 해당 업로드 당시의 불변 snapshot이다. 사용
 
 기존 Bearer 인증·쿠키 사용 시 CSRF 정책을 그대로 적용한다. POST decisions는  기존 빌링 쓰기 권한도 검사한다.
 읽기와 preview는 쓰기 권한 만료와 구분한다. DTO/Bean Validation은 생성되는 OpenAPI에도 노출된다.
+OpenAPI 모델에는 `ReceiptCorrection…Request/Response` 고유 이름을 사용해 preview 요청과 응답의 스키마 충돌을 막는다.
 
 | 메서드/경로 | 요청/응답 |
 |---|---|

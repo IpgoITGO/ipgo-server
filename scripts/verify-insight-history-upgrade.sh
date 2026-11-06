@@ -19,7 +19,7 @@ docker network create --internal "$network" >/dev/null
 docker run -d --name "$container" --network "$network" \
   -e POSTGRES_DB=ipgo -e POSTGRES_HOST_AUTH_METHOD=trust postgres:16-alpine >/dev/null
 for attempt in $(seq 1 30); do
-  if docker exec "$container" pg_isready -U postgres -d ipgo >/dev/null 2>&1; then break; fi
+  if docker exec "$container" psql -U postgres -d ipgo -v ON_ERROR_STOP=1 -Atc "SELECT 1" >/dev/null 2>&1; then break; fi
   if [[ "$attempt" = 30 ]]; then echo '임시 PostgreSQL 시작 실패' >&2; exit 1; fi
   sleep 1
 done

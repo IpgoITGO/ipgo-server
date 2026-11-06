@@ -67,3 +67,5 @@ Spring 계산 결과→실제 FastAPI 생성/검사→메타데이터→Spring �
 
 최신 dev 재검토: 전체 PostgreSQL18/31 table 검사와 실제 개발 baseline(V1~14,16)→V18 선택 upgrade 검사가 통과했다. 선택 upgrade는 V15/V17 미생성·기존 설명/스냅샷 보존·가짜 호출 이력 0을 검증한다.
 추가 경합 3건과 billing OFF 호환 검사, 기존 배치 실패 전파 검사를 통과했다. 첫 로컬 확장 검사에서 HTTP stub 도달 횟수 0/기대1인 실패 1건이 있었으며 동일 검사를 기대값 변경 없이 별도 재실행해 통과했다. 원인은 확정하지 않았고 CI 전체 결과와 분리한다.
+
+첫 PR Database CI는 임시 PostgreSQL init 중 pg_isready가 대상 DB 생성 전 성공해 실패했다. 앱 테스트와 전체 migration은 통과한 상태였다. 준비 검사를 대상 DB의 실제 SELECT 1 성공으로 바꿨으며 첫 실패 run42163353405를 보존한다.

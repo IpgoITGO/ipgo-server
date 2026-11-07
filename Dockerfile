@@ -3,6 +3,8 @@ FROM eclipse-temurin:21-jdk-jammy AS build
 WORKDIR /workspace
 COPY gradle gradle
 COPY gradlew build.gradle settings.gradle ./
+COPY scripts/deployment/cache-dependencies.gradle /tmp/cache-dependencies.gradle
+RUN chmod +x gradlew && ./gradlew --no-daemon --init-script /tmp/cache-dependencies.gradle cacheRuntimeDependencies
 COPY src src
 RUN chmod +x gradlew && ./gradlew --no-daemon bootJar
 

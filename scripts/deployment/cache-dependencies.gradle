@@ -1,0 +1,11 @@
+// 소스 변경과 무관한 의존성 다운로드를 Docker 레이어에 보존한다.
+// bootJar에 필요한 파일만 미리 받으며 테스트 결과는 캐시하지 않는다.
+allprojects {
+    tasks.register('cacheRuntimeDependencies') {
+        doLast {
+            ['compileClasspath', 'runtimeClasspath', 'annotationProcessor'].each { name ->
+                configurations.getByName(name).resolve()
+            }
+        }
+    }
+}

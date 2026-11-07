@@ -93,6 +93,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
   id-token: write
 
 concurrency:
@@ -169,6 +170,8 @@ jobs:
           provenance: true
           sbom: true
           tags: ${{ steps.image_lookup.outputs.image }}
+          cache-from: type=gha,scope=server-${{ runner.arch }},timeout=60s
+          cache-to: type=gha,mode=max,scope=server-${{ runner.arch }},timeout=60s,ignore-error=true
       - name: Verify immutable image before deployment
         id: verified_image
         env:
@@ -222,3 +225,12 @@ jobs:
           aws ecs wait services-stable \
             --cluster ipgo-dev-cluster \
             --services "$ECS_SERVICE_NAME"
+      - name: Summarize deployment timing
+        if: ${{ always() && hashFiles('scripts/deployment/summarize_timing.py') != '' }}
+        continue-on-error: true
+        timeout-minutes: 1
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DEPLOY_STATUS: ${{ job.status }}
+          IMAGE_REUSED: ${{ steps.image_lookup.outputs.exists }}
+        run: python3 scripts/deployment/summarize_timing.py

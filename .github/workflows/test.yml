@@ -33,7 +33,15 @@ jobs:
     needs: test
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-      - run: docker build --tag ipgo-server:ci .
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069
+      - name: Build runtime image
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc
+        with:
+          context: .
+          load: true
+          tags: ipgo-server:ci
+          cache-from: type=gha,scope=server-${{ runner.arch }},timeout=60s
+          cache-to: ${{ github.event_name != 'pull_request' && format('type=gha,mode=max,scope=server-{0},timeout=60s,ignore-error=true', runner.arch) || '' }}
 
 
   arm-test:
@@ -48,5 +56,12 @@ jobs:
           cache: gradle
       - name: Verify server and engine transactions on native ARM
         run: ./gradlew --no-daemon --max-workers=2 test
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069
       - name: Build native ARM runtime image
-        run: docker build --tag ipgo-server:arm-check .
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc
+        with:
+          context: .
+          load: true
+          tags: ipgo-server:arm-check
+          cache-from: type=gha,scope=server-${{ runner.arch }},timeout=60s
+          cache-to: ${{ github.event_name != 'pull_request' && format('type=gha,mode=max,scope=server-{0},timeout=60s,ignore-error=true', runner.arch) || '' }}

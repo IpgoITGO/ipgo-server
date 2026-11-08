@@ -961,3 +961,58 @@ ECS 배포 단계는 등록·교체·안정화 대기 합계입니다.
 
 로컬 검증: `python3 -m unittest discover -s scripts/testing -p 'test_*.py' -v`.
 실제 GHA 캐시 저장/복원·native ARM CI·시간 단축 효과는 다음 승인된 실행에서 확인해야 합니다.
+
+## 개발 배포 전후 검증
+
+배포는 기존 수동 승인/정확 SHA 조건을 유지합니다. AWS 인증 전 승인 source SHA의
+`test.yml` **dev push** 실행에서 필수 job이 모두 성공했는지 확인합니다. 최신 실행이
+실패·취소·진행 중이거나 필수 job이 생략/누락되면 과거 성공으로 대체하지 않고 중단합니다.
+검증 도구와 ECR 조회 도구는 dispatch된 workflow SHA에서 임시 디렉터리로 추출하며,
+앱 코드는 승인 source SHA 그대로 유지합니다. ECR 이미지 tag도 승인 source SHA로 계산합니다.
+동일 SHA의 ECR 재사용·digest 검사와 캐시/시간 요약은 유지합니다.
+
+Server source는 정확한 dev 병합 PR과 연결되어야 하며 PR 파일 조회용 `pull-requests: read`를
+사용합니다. 마지막 commit뿐 아니라 PR 전체의 DB 관련 경로(검증 script 포함)를 확인하고,
+변경되었으면 정확 PR head의 `database.yml` verify 성공도 요구합니다. 증거가 없거나 직접 push한
+source로 PR을 확인할 수 없으면 중단합니다. Database CI와 gate는 DB 실행/검증 script·SQL fixture·migration·
+DB build/test 입력의 같은 목록을 사용합니다. 캐시/배포 도구나 일반 Python 도구 검사만 바뀌면
+별도 Database CI를 요구하지 않으며, DB 변경이 섞이면 반드시 해당 검증을 요구합니다.
+
+AWS 인증 후 ECR push/ECS 변경 전에 계정·서울 리전 대상 서비스·실행 task 조회를 확인합니다.
+배포 역할에는 기존 권한 외에 개발 cluster로 제한한 `ecs:ListTasks`·`ecs:DescribeTasks`가
+필요합니다. Infra bootstrap의 두 배포 역할에 읽기 권한 추가안을 준비했으나 실제 적용은
+별도 승인 작업입니다. 실행 task가 없는 경우 DescribeTasks 권한은 이 사전 단계에서
+확인할 수 없으며 이후 검증에서 실패할 수 있습니다.
+
+배포 후 deploy action이 반환한 후보 task definition ARN과 실제 서비스/모든 task의
+revision·승인 이미지·digest·replica 수·rollout 완료를 대조합니다. OCI index와 실행 플랫폼
+manifest digest를 구분하고 다른 플랫폼/attestation digest를 성공으로 처리하지 않습니다.
+API 컨테이너의 기존 HTTP healthCheck와 실제 HEALTHY를 확인합니다. 이전 revision으로
+되돌아간 안정 상태도 성공으로 처리하지 않으며, 새 자동 재배포/롤백을 실행하지 않습니다.
+
+Server를 1개 이상 실행할 때 저장소 변수 `AWS_DEV_SMOKE_URL`에 승인된 공개
+HTTPS `/actuator/health` URL이 필요합니다. 누락/HTTP/인증정보·query 포함 URL은
+AWS 접근 전에 거부합니다. 배포 후 redirect 없이 200/JSON status=UP을 확인합니다.
+
+0개로 내리는 요청은 정지 상태를 확인하고 실제 앱/HTTP 성공으로 표시하지 않습니다.
+AI의 legacy worker는 API와 별도 revision/digest를 검사하며, worker에 healthCheck가
+없으면 앱 HEALTHY를 검증했다고 표시하지 않습니다. one-box 별도 worker는 0개를 유지해야 합니다.
+외부 HTTP의 200/JSON은 경로 응답 검증이며 그 응답 자체가 image digest를 증명하지는 않습니다.
+TLS 검증·redirect 금지를 유지하고 API/CLI 오류 원문이나 token을 로그에 출력하지 않습니다.
+
+검증: `python3 -m unittest discover -s scripts/testing -p 'test_*.py' -v`.
+모의 CI/AWS/HTTP 응답으로 실패·rollback·누락·scale-down을 검사하며 실제 배포 검증과 구분합니다.
+
+### Gradle 캐시 쓰기 범위
+
+일반/ARM test와 Database verify의 setup-java를 같은 고정 SHA로 맞추고,
+`cache-read-only: ${{ github.event_name == 'pull_request' || github.ref != 'refs/heads/dev' }}`를
+사용합니다. PR 및 dev 이외 ref는 읽기 전용이고, dev push/수동 CI는 저장할 수 있습니다.
+의존성/JDK/wrapper 캐시를 다시 만들기 위해 별도 캐시 도구나 언어를 추가하지 않습니다.
+이 설정은 기존 캐시를 삭제하거나 저장 한도/보존기간을 바꾸지 않습니다.
+실제 저장량 감소·hit/시간 효과는 이후 승인된 업무 CI에서 확인해야 합니다.
+
+기존 Server dev314bb98의 PR143 파일/성공CI 조회 snapshot을 오프라인으로 연결하여
+불필요한 Database CI 요구가 제거됨을 확인했습니다. 공개 smoke URL은 문법 검사용
+placeholder만 사용했으며 실제 URL 설정·AWS/HTTP/배포 검증은 실행하지 않았습니다.
+필수 IAM 읽기 권한과 Server AWS_DEV_SMOKE_URL의 적용 전 조건은 그대로 남습니다.

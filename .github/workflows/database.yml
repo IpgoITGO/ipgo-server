@@ -11,10 +11,16 @@ on:
       - "scripts/verify-database-task-image.sh"
       - "scripts/verify-postgres-migrations.sh"
       - "scripts/verify-insight-history-upgrade.sh"
+      - "scripts/verify-billing-ledger.sh"
       - "scripts/testing/verify-receipt-matching.sh"
+      - "scripts/testing/verify-monthly-insight-budget.sh"
+      - "scripts/testing/verify-insight-contract.sh"
+      - "scripts/testing/insight_fake_api.py"
+      - "scripts/testing/billing-ledger-invariants.sql"
       - "src/main/resources/db/migration/**"
       - "src/test/**"
       - "build.gradle"
+      - "settings.gradle"
       - "gradle/**"
       - "gradlew"
       - ".github/workflows/database.yml"
@@ -29,11 +35,12 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad
         with:
           distribution: temurin
           java-version: "21"
           cache: gradle
+          cache-read-only: ${{ github.event_name == 'pull_request' || github.ref != 'refs/heads/dev' }}
       - name: Verify application migrations
         run: ./gradlew test
       - name: Verify PostgreSQL roles and view

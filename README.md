@@ -996,6 +996,13 @@ ECS 변경 직전에 서비스 ARN과 rollout 상태를 재확인합니다. 누�
 재확인 이후 AWS 쓰기까지의 경합을 원자적으로 막는 기능은 아니므로 기존 배포 직렬화와
 승인 경계를 유지합니다.
 
+task 수량 설정 후에는 일반 `services-stable` 대신 정확 후보 ARN의 단일 PRIMARY,
+`COMPLETED`, 승인 수량·pending 0을 읽어 확인합니다. 진행 중 rollout·이전 deployment 정리·
+실행 수량 안정화만 5초 간격으로 최대 60초 대기합니다. 기존 AWS 읽기 한 호출의
+30초 timeout은 유지하며 진행 중 호출 때문에 대기 예산을 넘길 수 있어 workflow step에도
+2분 상한을 둡니다. 롤백·다른 후보·FAILED·원하는 수량 변경·조회 오류는 즉시 중단합니다.
+대기 성공 뒤에도 아래의 엄격한 후검증을 새로 수행하며 실패를 자동 재배포로 숨기지 않습니다.
+
 배포 후 deploy action이 반환한 후보 task definition ARN과 실제 서비스/모든 task의
 revision·승인 이미지·digest·replica 수·rollout 완료를 대조합니다. OCI index와 실행 플랫폼
 manifest digest를 구분하고 다른 플랫폼/attestation digest를 성공으로 처리하지 않습니다.

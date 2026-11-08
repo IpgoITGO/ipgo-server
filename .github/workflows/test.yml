@@ -26,6 +26,7 @@ jobs:
           distribution: temurin
           java-version: "21"
           cache: gradle
+          cache-read-only: ${{ github.event_name == 'pull_request' || github.ref != 'refs/heads/dev' }}
       - run: ./gradlew --no-daemon test
 
   container:
@@ -54,6 +55,7 @@ jobs:
           distribution: temurin
           java-version: "21"
           cache: gradle
+          cache-read-only: ${{ github.event_name == 'pull_request' || github.ref != 'refs/heads/dev' }}
       - name: Verify server and engine transactions on native ARM
         run: ./gradlew --no-daemon --max-workers=2 test
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069

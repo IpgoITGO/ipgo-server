@@ -428,6 +428,42 @@ class RuntimeVerificationTests(unittest.TestCase):
         self.smoke.assert_called_once_with(self.env["DEPLOYMENT_SMOKE_URL"])
         self.assertTrue(set(self.calls) <= M.READ_OPERATIONS)
 
+    def test_workflow_waits_for_transient_candidate_before_strict_post(self):
+        text = (ROOT / ".github/workflows/deploy-dev.yml").read_text()
+        tail = text.split("Set approved task count", 1)[1]
+        commands = re.findall(r'verify_deployment\.py" (wait-rollout|post) --service server', tail)
+        pending = copy.deepcopy(self.service)
+        pending["deployments"][0]["rolloutState"] = "IN_PROGRESS"
+        now = [0]
+
+        def sleep(seconds):
+            now[0] += seconds
+
+        def read(service, operation, **params):
+            if operation == "describe-services":
+                self.calls.append((service, operation))
+                return {"services": [pending if now[0] < 5 else self.service]}
+            return self.read(service, operation, **params)
+
+        clock = Mock(monotonic=lambda: now[0], sleep=sleep)
+        with (
+            patch.dict(M.os.environ, self.env, clear=True),
+            patch.object(M, "aws_read", read),
+            patch.object(M, "http_json", self.smoke),
+            patch.object(M, "time", clock, create=True),
+        ):
+            for command in commands:
+                with (
+                    patch.object(M.sys, "argv", ["verify", command, "--service", "server"]),
+                    contextlib.redirect_stdout(io.StringIO()),
+                    contextlib.redirect_stderr(io.StringIO()) as error,
+                ):
+                    self.assertEqual(M.main(), 0, error.getvalue())
+        self.assertEqual(commands, ["wait-rollout", "post"])
+        self.assertEqual(now[0], 5)
+        self.smoke.assert_called_once_with(self.env["DEPLOYMENT_SMOKE_URL"])
+        self.assertTrue(set(self.calls) <= M.READ_OPERATIONS)
+
     def test_index_digest_reported_by_ecs_is_supported(self):
         self.task["containers"][0]["imageDigest"] = ROOT_DIGEST
         self.assertEqual(self.check()["external_http"], "passed")
@@ -647,6 +683,152 @@ class RuntimeVerificationTests(unittest.TestCase):
         self.assertIn("rejected", err.getvalue())
 
 
+class RolloutWaitTests(unittest.TestCase):
+    def setUp(self):
+        fixture = RuntimeVerificationTests()
+        fixture.setUp()
+        self.env = fixture.env
+        self.ready = fixture.service
+        self.now = 0
+        self.delay = 0
+        self.calls = []
+        self.sleeps = []
+
+    def sleep(self, seconds):
+        self.sleeps.append(seconds)
+        self.now += seconds
+
+    def wait(self, states):
+        queue = list(states)
+        last = states[-1]
+
+        def read(service, operation, **params):
+            self.calls.append((service, operation))
+            self.assertEqual((service, operation), ("ecs", "describe-services"))
+            self.assertEqual(params, {"cluster": M.CLUSTER, "services": [self.env["ECS_SERVICE_NAME"]]})
+            self.now += self.delay
+            state = queue.pop(0) if queue else last
+            if isinstance(state, Exception):
+                raise state
+            return copy.deepcopy(state if "services" in state else {"services": [state]})
+
+        clock = Mock(monotonic=lambda: self.now, sleep=self.sleep)
+        with patch.object(M, "time", clock):
+            return M.wait_rollout(self.env, "server", read)
+
+    def pending(self):
+        state = copy.deepcopy(self.ready)
+        state["deployments"][0]["rolloutState"] = "IN_PROGRESS"
+        return state
+
+    def test_completed_candidate_never_sleeps(self):
+        self.assertEqual(self.wait([self.ready]), {"candidate_rollout_completed": True, "observations": 1})
+        self.assertEqual(self.sleeps, [])
+
+    def test_waits_for_rollout_and_replica_counts(self):
+        pending = self.pending()
+        counts = copy.deepcopy(self.ready)
+        counts.update(runningCount=0, pendingCount=1)
+        self.assertEqual(self.wait([pending, counts, self.ready])["observations"], 3)
+        self.assertEqual(self.sleeps, [5, 5])
+
+    def test_completed_primary_waits_for_previous_deployment_cleanup(self):
+        cleaning = copy.deepcopy(self.ready)
+        previous = copy.deepcopy(cleaning["deployments"][0])
+        previous.update(status="ACTIVE", taskDefinition=previous["taskDefinition"].rsplit(":", 1)[0] + ":29")
+        cleaning["deployments"].append(previous)
+        self.assertEqual(self.wait([cleaning, self.ready])["observations"], 2)
+
+    def test_rollback_during_wait_is_immediately_fatal(self):
+        old = copy.deepcopy(self.ready)
+        old["taskDefinition"] = old["taskDefinition"].rsplit(":", 1)[0] + ":29"
+        with self.assertRaisesRegex(M.GateError, "possible rollback"):
+            self.wait([self.pending(), old, self.ready])
+        self.assertEqual(len(self.calls), 2)
+        self.assertEqual(self.sleeps, [5])
+
+    def test_failed_missing_or_unknown_primary_state_is_not_retried(self):
+        for value in ["FAILED", None, "UNRECOGNIZED"]:
+            with self.subTest(state=value):
+                self.calls.clear()
+                state = copy.deepcopy(self.ready)
+                state["deployments"][0]["rolloutState"] = value
+                with self.assertRaises(M.GateError):
+                    self.wait([state, self.ready])
+                self.assertEqual(len(self.calls), 1)
+                self.assertEqual(self.sleeps, [])
+
+    def test_primary_identity_and_evidence_fail_without_retry(self):
+        cases = []
+        for field, value in [("desiredCount", 2), ("serviceName", "wrong"), ("status", "DRAINING")]:
+            state = copy.deepcopy(self.ready)
+            state[field] = value
+            cases.append(state)
+        missing = copy.deepcopy(self.ready)
+        missing["deployments"] = []
+        duplicate = copy.deepcopy(self.ready)
+        duplicate["deployments"] *= 2
+        wrong = copy.deepcopy(self.ready)
+        wrong["deployments"][0]["taskDefinition"] += "0"
+        foreign = copy.deepcopy(self.ready)
+        foreign["deployments"].append(
+            {"status": "ACTIVE", "taskDefinition": "arn:aws:ecs:wrong:000000000000:task-definition/other:1"}
+        )
+        cases += [missing, duplicate, wrong, foreign, {"services": [], "failures": [{"reason": "MISSING"}]}]
+        for state in cases:
+            with self.subTest(state=state):
+                self.calls.clear()
+                with self.assertRaises(M.GateError):
+                    self.wait([state, self.ready])
+                self.assertEqual(len(self.calls), 1)
+                self.assertEqual(self.sleeps, [])
+
+    def test_invalid_expected_arn_fails_before_any_aws_read(self):
+        self.env["EXPECTED_TASK_DEFINITION"] = "unapproved"
+        with self.assertRaises(M.GateError):
+            self.wait([self.ready])
+        self.assertEqual(self.calls, [])
+
+    def test_aws_error_is_not_retried(self):
+        errors = [
+            OSError("synthetic connection failure"),
+            M.subprocess.CalledProcessError(254, ["aws"], stderr="synthetic AccessDenied"),
+            M.subprocess.TimeoutExpired(["aws"], 30),
+        ]
+        for error in errors:
+            with self.subTest(error=type(error).__name__):
+                self.calls.clear()
+                with self.assertRaises(type(error)):
+                    self.wait([error, self.ready])
+                self.assertEqual(len(self.calls), 1)
+                self.assertEqual(self.sleeps, [])
+
+    def test_timeout_is_bounded_without_real_sleep(self):
+        with self.assertRaisesRegex(M.GateError, "timed out"):
+            self.wait([self.pending()])
+        self.assertEqual(self.now, 60)
+        self.assertLessEqual(len(self.calls), 13)
+        self.assertTrue(all(seconds <= 5 for seconds in self.sleeps))
+
+    def test_completed_response_after_deadline_cannot_pass(self):
+        self.delay = 61
+        with self.assertRaisesRegex(M.GateError, "timed out"):
+            self.wait([self.ready])
+        self.assertEqual(len(self.calls), 1)
+        self.assertEqual(self.sleeps, [])
+
+    def test_cli_does_not_echo_aws_error_payload(self):
+        with (
+            patch.dict(M.os.environ, self.env, clear=True),
+            patch.object(M, "aws_read", side_effect=OSError("synthetic denied payload")) as read,
+            patch.object(M.sys, "argv", ["verify", "wait-rollout", "--service", "server"]),
+            contextlib.redirect_stderr(io.StringIO()) as error,
+        ):
+            self.assertEqual(M.main(), 1)
+        self.assertEqual(read.call_count, 1)
+        self.assertNotIn("synthetic denied payload", error.getvalue())
+
+
 class WorkflowVerificationTests(unittest.TestCase):
     def test_database_trigger_patterns_cover_executed_scripts(self):
         workflow = ROOT / ".github/workflows/database.yml"
@@ -673,6 +855,9 @@ class WorkflowVerificationTests(unittest.TestCase):
             text.index("Build and push immutable image"),
         )
         self.assertLess(text.index("Set approved task count"), text.index(" post --service"))
+        self.assertLess(text.index("Set approved task count"), text.index(" wait-rollout --service"))
+        self.assertLess(text.index(" wait-rollout --service"), text.index(" post --service"))
+        self.assertNotIn("aws ecs wait services-stable", text)
         self.assertIn('git show "$WORKFLOW_SHA:scripts/deployment/verify_deployment.py"', text)
         self.assertIn(
             "EXPECTED_TASK_DEFINITION: ${{ steps.deploy-app.outputs.task-definition-arn }}",

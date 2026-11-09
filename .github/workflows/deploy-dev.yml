@@ -233,6 +233,7 @@ jobs:
           service: ${{ env.ECS_SERVICE_NAME }}
           cluster: ipgo-dev-cluster
           wait-for-service-stability: true
+          wait-max-delay-seconds: 15
       - name: Set approved task count
         env:
           DESIRED_COUNT: ${{ inputs.desired_count }}

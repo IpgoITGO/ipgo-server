@@ -55,6 +55,9 @@ class InstallTest(unittest.TestCase):
     @patch('psycopg.connect')
     def test_success_keeps_credentials_out_of_result(self,connect,client):
         connect.return_value.__enter__.return_value.cursor.return_value.__enter__.return_value.fetchone.return_value = ({'oldRowsUnchanged': True, 'privilegeBoundaryOk': True},)
+        from psycopg.errors import InsufficientPrivilege
+        probe_cursor=connect.return_value.__enter__.return_value.cursor.return_value.__enter__.return_value
+        probe_cursor.execute.side_effect=lambda query: None if query=='SELECT d0_ops.preflight(NULL)' else (_ for _ in ()).throw(InsufficientPrivilege())
         db,c=self.database()
         result=install(self.manifest,db)
         self.assertEqual({'status':'INSTALLED','operationId':self.manifest['operationId'],'businessWrites':0},result)
@@ -66,5 +69,15 @@ class InstallTest(unittest.TestCase):
         db,c=self.database()
         c.execute.side_effect=[None,None,RuntimeError('response-lost'),None]
         with self.assertRaises(RuntimeError):
+            install(self.manifest,db)
+        self.assertEqual('ALTER ROLE ipgo_d0_bootstrap NOLOGIN',c.execute.call_args.args[0])
+
+    @patch.dict('os.environ',env)
+    @patch('boto3.client')
+    @patch('psycopg.connect')
+    def test_unexpected_direct_db_permission_deactivates_login(self,connect,client):
+        connect.return_value.__enter__.return_value.cursor.return_value.__enter__.return_value.fetchone.return_value=({'oldRowsUnchanged':True,'privilegeBoundaryOk':True},)
+        db,c=self.database()
+        with self.assertRaisesRegex(GateError,'INSTALL_DENY_PROBE_ALLOWED'):
             install(self.manifest,db)
         self.assertEqual('ALTER ROLE ipgo_d0_bootstrap NOLOGIN',c.execute.call_args.args[0])

@@ -38,6 +38,22 @@ def install(manifest, database):
                 c.execute('SELECT d0_ops.preflight(NULL)')
                 state = c.fetchone()[0]
                 require(state['oldRowsUnchanged'] is True and state['privilegeBoundaryOk'] is True, 'INSTALL_PROBE')
+            for query in (
+                'SELECT id FROM public.users LIMIT 0',
+                'SELECT password_hash FROM public.users LIMIT 0',
+                'UPDATE public.users SET id=id WHERE false',
+                'DELETE FROM public.users WHERE false',
+                'CREATE TABLE public.d0_deny_probe(id integer)',
+                'SET LOCAL ROLE ipgo_server',
+            ):
+                try:
+                    # 예상 밖 허용도 영구 변경하지 않도록 항상 rollback한다.
+                    with probe.transaction(force_rollback=True):
+                        with probe.cursor() as c:
+                            c.execute(query)
+                except psycopg.errors.InsufficientPrivilege:
+                    continue
+                require(False, 'INSTALL_DENY_PROBE_ALLOWED')
         return {'status': 'INSTALLED', 'operationId': manifest['operationId'], 'businessWrites': 0}
     except Exception:
         if activated:

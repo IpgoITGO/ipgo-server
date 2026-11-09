@@ -27,7 +27,7 @@ def baseline(ecs, cfg):
 
 def dispatch(ecs, logs, manifest, cfg, encoded, *, clock=time.monotonic, wait=time.sleep, audit=lambda *_: None):
     baseline(ecs, cfg)
-    overrides = {'containerOverrides': [{'name': 'runner', 'command': [manifest['kind']],
+    overrides = {'cpu': '256', 'memory': '512', 'containerOverrides': [{'name': 'runner', 'command': [manifest['kind']],
                  'environment': [{'name': 'D0_SIGNED_MANIFEST', 'value': encoded}]}]}
     require(len(json.dumps(overrides).encode()) <= 8192, 'OVERRIDES_SIZE')
     token = hashlib.sha256((manifest['operationId'] + ':' + manifest['kind']).encode()).hexdigest()

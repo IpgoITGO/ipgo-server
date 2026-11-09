@@ -73,7 +73,7 @@ owner도 password/email SELECT 권한은 없다. RDS와 비슷한 CREATEROLE 관
 ## 설치 실패와 복구
 
 installer는 새 역할이 이미 LOGIN이면 비밀번호를 갱신하지 않는다. 새 Secret Put 성공 후에만
-새 bootstrap 로그인을 활성화하며 TLS verify-full 제한 로그인 probe를 수행한다.
+새 bootstrap 로그인을 활성화하며 TLS verify-full 제한 로그인 probe를 수행한다. 직접 users/password 조회·UPDATE·DELETE·public CREATE·기존 Server role 전환은 실제 InsufficientPrivilege 거부를 확인하며, 예상 밖 허용도 rollback 후 실패시킨다.
 활성화 실패/응답 유실/probe 실패 시 새 bootstrap만 NOLOGIN으로 되돌리기를 시도한다.
 DB 연결까지 유실되면 비활성화 성공을 보장할 수 없다. `INSTALL_DEACTIVATION_UNCONFIRMED`로 중단하고
 별도 관리자 확인을 받아 새 로그인 비활성화 여부를 확인한다. 기존 계정/역할은 초기화하지 않는다.

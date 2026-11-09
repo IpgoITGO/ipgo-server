@@ -14,7 +14,7 @@ docker network create --internal "$d0_network" >/dev/null
 docker run -d --name "$d0_name" --label com.ipgo.disposable-test=d0 --network "$d0_network" \
   -e POSTGRES_HOST_AUTH_METHOD=trust -e POSTGRES_DB=ipgo postgres:16-alpine >/dev/null
 for d0_attempt in {1..30}; do
-  if docker exec "$d0_name" pg_isready -U postgres -d ipgo >/dev/null; then break; fi
+  if docker exec "$d0_name" pg_isready -h 127.0.0.1 -U postgres -d ipgo >/dev/null; then break; fi
   sleep 1
 done
 docker exec -i "$d0_name" psql -X -v ON_ERROR_STOP=1 -U postgres -d ipgo \

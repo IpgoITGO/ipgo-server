@@ -25,3 +25,6 @@ HELP.md
 
 # Uploaded originals and local metadata
 /storage/
+
+# D0 Python helper bytecode
+__pycache__/

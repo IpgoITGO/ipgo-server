@@ -1,0 +1,96 @@
+name: D0 synthetic preparation
+on:
+  pull_request:
+    branches: [dev]
+    paths:
+      - "scripts/d0/**"
+      - "scripts/testing/verify-d0-ops.sh"
+      - "database/bootstrap/create_d0_ops.sql"
+      - "Dockerfile.d0"
+      - ".github/workflows/d0-validation.yml"
+  workflow_dispatch:
+    inputs:
+      expected_sha:
+        description: "Approved complete workflow/helper SHA"
+        required: true
+        type: string
+      mode:
+        type: choice
+        required: true
+        default: read-only
+        options: [read-only, prepare]
+      confirmation:
+        description: "D0_READ_ONLY or PREPARE_D0 after reviewing signed manifest"
+        required: true
+        type: string
+permissions:
+  contents: read
+concurrency:
+  group: d0-synthetic-preparation
+  cancel-in-progress: false
+jobs:
+  local-checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - run: |
+          python3 -m venv "$RUNNER_TEMP/d0-venv"
+          "$RUNNER_TEMP/d0-venv/bin/pip" install -r scripts/d0/requirements.txt
+          "$RUNNER_TEMP/d0-venv/bin/python" -m unittest discover -s scripts/d0 -p 'test_*.py' -v
+      - run: |
+          docker pull postgres:16-alpine
+          bash scripts/testing/verify-d0-ops.sh
+      - run: |
+          docker build -f Dockerfile.d0 -t ipgo-d0:ci .
+          docker run --rm --network none --read-only --entrypoint python ipgo-d0:ci \
+            -I -c "import cryptography,psycopg,openpyxl,boto3; from pathlib import Path; assert Path('/opt/scripts/d0/public-key.pem').read_text().startswith('-----BEGIN PUBLIC KEY'); print('D0 image imports/key verified')"
+  run:
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/dev' && vars.D0_ENABLED == 'true'
+    needs: local-checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    environment: d0-validation
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+    env:
+      EXPECTED_SHA: ${{ inputs.expected_sha }}
+      D0_MODE: ${{ inputs.mode }}
+      CONFIRMATION: ${{ inputs.confirmation }}
+      D0_ENABLED: ${{ vars.D0_ENABLED }}
+      D0_RUNTIME_JSON: ${{ vars.D0_RUNTIME_JSON }}
+      D0_SIGNED_MANIFEST: ${{ secrets.D0_SIGNED_MANIFEST }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - run: |
+          python3 -m venv "$RUNNER_TEMP/d0-venv"
+          "$RUNNER_TEMP/d0-venv/bin/pip" install -r scripts/d0/requirements.txt
+      - name: Verify protected environment before OIDC
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: '"$RUNNER_TEMP/d0-venv/bin/python" scripts/d0/environment_gate.py'
+      - id: gate
+        run: '"$RUNNER_TEMP/d0-venv/bin/python" scripts/d0/gate.py'
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd
+        with:
+          aws-region: ap-northeast-2
+          role-to-assume: ${{ steps.gate.outputs.role_arn }}
+          allowed-account-ids: ${{ steps.gate.outputs.account_id }}
+          role-duration-seconds: 900
+          role-session-name: ipgo-d0-${{ github.run_id }}
+          mask-aws-account-id: true
+      - run: '"$RUNNER_TEMP/d0-venv/bin/python" scripts/d0/dispatch.py'
+      - if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: d0-result-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/d0-result.json
+            ${{ runner.temp }}/d0-task-receipt.jsonl
+          if-no-files-found: ignore

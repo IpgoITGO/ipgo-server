@@ -1,0 +1,17 @@
+FROM python:3.14-slim@sha256:9aaa474097d094040649f2162a627c0049b408f52138d980916788d80f04802f
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 TMPDIR=/var/scratch
+WORKDIR /opt
+COPY scripts/d0/requirements.txt /opt/d0-requirements.txt
+RUN pip install --no-cache-dir -r /opt/d0-requirements.txt \
+    && mkdir -p /var/scratch /opt/d0-certs \
+    && chmod 1777 /var/scratch
+ADD --checksum=sha256:90a6f1a7978a1b1b096dca6c57511ca48d3b8cf052f8e704baf358f34ea2f21b \
+    https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem /opt/d0-certs/global-bundle.pem
+COPY scripts/d0/contract.py scripts/d0/fixture.py scripts/d0/runtime.py scripts/d0/install.py \
+     scripts/d0/entrypoint.py scripts/d0/public-key.pem /opt/scripts/d0/
+COPY database/bootstrap/create_d0_ops.sql /opt/database/bootstrap/create_d0_ops.sql
+RUN chmod -R a+rX /opt && chmod -R a-w /opt
+VOLUME ["/var/scratch"]
+USER 10001:10001
+ENTRYPOINT ["python", "-I", "/opt/scripts/d0/entrypoint.py"]
+CMD ["read-only"]

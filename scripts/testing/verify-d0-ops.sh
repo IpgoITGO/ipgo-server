@@ -25,11 +25,11 @@ while IFS= read -r d0_migration; do
 done < <(printf '%s\n' "$d0_root"/src/main/resources/db/migration/V*.sql | sort -V)
 # RDS master와 같은 비-superuser CREATEROLE/기존 migrator 관리 권한으로 설치한다.
 docker exec "$d0_name" psql -X -v ON_ERROR_STOP=1 -U postgres -d ipgo -c \
-  "CREATE ROLE d0_local_admin LOGIN CREATEROLE CREATEDB; GRANT ipgo_migrator TO d0_local_admin WITH ADMIN TRUE, INHERIT TRUE, SET FALSE; GRANT CREATE ON DATABASE ipgo TO d0_local_admin;" >/dev/null
+  "CREATE ROLE d0_local_admin LOGIN CREATEROLE CREATEDB; GRANT ipgo_migrator TO d0_local_admin WITH ADMIN TRUE, INHERIT FALSE, SET FALSE; GRANT CONNECT ON DATABASE ipgo TO d0_local_admin;" >/dev/null
 docker exec -i "$d0_name" psql -X -v ON_ERROR_STOP=1 -U d0_local_admin -d ipgo \
   < "$d0_root/database/bootstrap/create_d0_ops.sql" >/dev/null
 docker exec "$d0_name" psql -X -v ON_ERROR_STOP=1 -U postgres -d ipgo -c \
-  "DO \$\$ BEGIN IF NOT EXISTS(SELECT 1 FROM pg_auth_members m JOIN pg_roles r ON r.oid=m.roleid JOIN pg_roles u ON u.oid=m.member WHERE r.rolname='ipgo_d0_owner' AND u.rolname='d0_local_admin' AND m.admin_option AND NOT m.inherit_option AND NOT m.set_option) OR NOT EXISTS(SELECT 1 FROM pg_auth_members m JOIN pg_roles r ON r.oid=m.roleid JOIN pg_roles u ON u.oid=m.member WHERE r.rolname='ipgo_migrator' AND u.rolname='d0_local_admin' AND m.admin_option AND m.inherit_option AND NOT m.set_option) THEN RAISE EXCEPTION 'D0_ADMIN_MEMBERSHIP_NOT_RESTORED'; END IF; END \$\$;" >/dev/null
+  "DO \$\$ BEGIN IF NOT EXISTS(SELECT 1 FROM pg_auth_members m JOIN pg_roles r ON r.oid=m.roleid JOIN pg_roles u ON u.oid=m.member WHERE r.rolname='ipgo_d0_owner' AND u.rolname='d0_local_admin' AND m.admin_option AND NOT m.inherit_option AND NOT m.set_option) OR NOT EXISTS(SELECT 1 FROM pg_auth_members m JOIN pg_roles r ON r.oid=m.roleid JOIN pg_roles u ON u.oid=m.member WHERE r.rolname='ipgo_migrator' AND u.rolname='d0_local_admin' AND m.admin_option AND NOT m.inherit_option AND NOT m.set_option) THEN RAISE EXCEPTION 'D0_ADMIN_MEMBERSHIP_NOT_RESTORED'; END IF; END \$\$;" >/dev/null
 docker exec "$d0_name" psql -X -v ON_ERROR_STOP=1 -U postgres -d ipgo \
   -c 'ALTER ROLE ipgo_d0_bootstrap LOGIN' >/dev/null
 python3 "$d0_root/scripts/d0/verify_database.py" "$d0_name"

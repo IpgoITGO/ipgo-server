@@ -56,7 +56,7 @@ python scripts/d0/sign_manifest.py --manifest /protected/manifest.json \
 `database/bootstrap/create_d0_ops.sql`은 Flyway 자동 migration에 포함하지 않는 최초 설치 전용이다.
 새 NOLOGIN owner와 bootstrap 역할, `d0_ops` schema, operations 원장과 함수 3개를 추가한다.
 owner는 users의 계정 생성용 5컬럼 INSERT/제한 SELECT/sequence와 검증용 업무 테이블 SELECT만 갖는다.
-owner도 password/email SELECT 권한은 없다. RDS와 비슷한 CREATEROLE 관리자 검증을 포함한다. 설치 시 새 owner에 대한 관리자 membership의 SET/INHERIT만 트랜잭션 안에서 잠시 켰다가 원래 옵션으로 복원한다. bootstrap은 CONNECT/USAGE/세 함수 EXECUTE만 가진다.
+owner도 password/email SELECT 권한은 없다. RDS와 비슷한 CREATEROLE 관리자 검증을 포함한다. 설치 시 관리자 자신의 새 owner 및 기존 migrator membership의 SET/INHERIT만 트랜잭션 안에서 잠시 켰다가 원래 옵션으로 복원한다. bootstrap은 CONNECT/USAGE/세 함수 EXECUTE만 가진다.
 고정 search_path/UTC와 qualified SQL을 사용한다. PUBLIC 실행권한을 취소하고 기존 역할 권한은 바꾸지 않는다.
 기존 PUBLIC grant 등으로 bootstrap에 직접 접근 권한이 생기면 effective privilege 검사에서 중단한다.
 

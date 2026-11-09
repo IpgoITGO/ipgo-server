@@ -19,19 +19,22 @@ BEGIN
     RAISE EXCEPTION 'D0_ROLE_BOUNDARY';
   END IF;
 END $install$;
--- CREATEROLE은 superuser가 아니다. 새 owner의 membership 옵션만 transaction 안에서
--- 잠시 사용하고 원래 옵션으로 되돌린다. 기존 migrator/server/reader 권한은 바꾸지 않는다.
+-- CREATEROLE은 superuser가 아니다. 관리자 자신의 owner/migrator membership 옵션을
+-- transaction 안에서만 사용하고 원래 옵션으로 복원한다. Server/AI/조회 역할은 변경하지 않는다.
 DO $owner_access$
 DECLARE original_set boolean; original_inherit boolean; had_membership boolean;
+ role_name text; saved jsonb='{}';
 BEGIN
- SELECT m.set_option,m.inherit_option INTO original_set,original_inherit
-   FROM pg_auth_members m JOIN pg_roles r ON r.oid=m.roleid JOIN pg_roles u ON u.oid=m.member
-   WHERE r.rolname='ipgo_d0_owner' AND u.rolname=current_user;
- had_membership:=FOUND;
- PERFORM set_config('d0.owner_member',had_membership::text,true);
- PERFORM set_config('d0.owner_set',coalesce(original_set,false)::text,true);
- PERFORM set_config('d0.owner_inherit',coalesce(original_inherit,false)::text,true);
- EXECUTE format('GRANT ipgo_d0_owner TO %I WITH INHERIT TRUE, SET TRUE',current_user);
+ FOREACH role_name IN ARRAY ARRAY['ipgo_d0_owner','ipgo_migrator'] LOOP
+   SELECT m.set_option,m.inherit_option INTO original_set,original_inherit
+     FROM pg_auth_members m JOIN pg_roles r ON r.oid=m.roleid JOIN pg_roles u ON u.oid=m.member
+     WHERE r.rolname=role_name AND u.rolname=current_user;
+   had_membership:=FOUND;
+   saved:=saved||jsonb_build_object(role_name,jsonb_build_object('member',had_membership,
+     'set',coalesce(original_set,false),'inherit',coalesce(original_inherit,false)));
+   EXECUTE format('GRANT %I TO %I WITH INHERIT TRUE, SET TRUE',role_name,current_user);
+ END LOOP;
+ PERFORM set_config('d0.install_memberships',saved::text,true);
 END $owner_access$;
 DO $connect$
 BEGIN
@@ -207,12 +210,15 @@ GRANT USAGE ON SCHEMA d0_ops TO ipgo_d0_bootstrap;
 GRANT EXECUTE ON FUNCTION d0_ops.preflight(uuid),d0_ops.seed_user(uuid,date,text,text),
  d0_ops.record_step(uuid,text,jsonb) TO ipgo_d0_bootstrap;
 DO $restore_owner_access$
+DECLARE entry record;
 BEGIN
- IF current_setting('d0.owner_member')::boolean THEN
-   EXECUTE format('GRANT ipgo_d0_owner TO %I WITH INHERIT %s, SET %s',current_user,
-     current_setting('d0.owner_inherit'),current_setting('d0.owner_set'));
- ELSE
-   EXECUTE format('REVOKE ipgo_d0_owner FROM %I',current_user);
- END IF;
+ FOR entry IN SELECT * FROM jsonb_each(current_setting('d0.install_memberships')::jsonb) LOOP
+   IF (entry.value->>'member')::boolean THEN
+     EXECUTE format('GRANT %I TO %I WITH INHERIT %s, SET %s',entry.key,current_user,
+       entry.value->>'inherit',entry.value->>'set');
+   ELSE
+     EXECUTE format('REVOKE %I FROM %I',entry.key,current_user);
+   END IF;
+ END LOOP;
 END $restore_owner_access$;
 COMMIT;

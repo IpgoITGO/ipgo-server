@@ -13,6 +13,8 @@ PUBLIC_KEY = Path(__file__).with_name('public-key.pem')
 CLIENT_SHA = '6c515b993b52b65b5c59da9dcacd6011288420c9'
 ASSET_PATH = '/assets/index-CHslFJ9p.js'
 ASSET_SHA = 'c42f08bff10c5329e1a6b06615e9925b5e915f92c5da7794b01a3a4250a0aa79'
+SERVER_TD = 32
+AI_TD = 19
 API_ORIGIN = 'https://ipgo-dev-api.iwhya.kr'
 KEYS = {'scope', 'operationId', 'kind', 'd0Date', 'd1Date', 'dbHost', 'dbName',
         'fixtureSha256', 'keyFingerprint', 'clientSha', 'serverTd', 'aiTd',
@@ -53,12 +55,12 @@ def load_public(path=PUBLIC_KEY):
 def validate(manifest, *, day=None, public_key=None):
     require(isinstance(manifest, dict) and set(manifest) == KEYS, 'MANIFEST_FIELDS')
     require(manifest['scope'] == SCOPE, 'MANIFEST_SCOPE')
-    require(manifest['kind'] in ('install', 'read-only', 'prepare'), 'MANIFEST_KIND')
+    require(manifest['kind'] in ('install', 'deactivate', 'read-only', 'prepare'), 'MANIFEST_KIND')
     require(isinstance(manifest['accountId'], str) and re.fullmatch('[0-9]{12}', manifest['accountId']), 'ACCOUNT_ID')
     for name in ('workflowSha', 'helperSha'):
         require(isinstance(manifest[name], str) and re.fullmatch('[a-f0-9]{40}', manifest[name]), 'SOURCE_SHA')
     account = manifest['accountId']
-    family = 'install' if manifest['kind'] == 'install' else 'validation'
+    family = 'install' if manifest['kind'] in ('install', 'deactivate') else 'validation'
     require(re.fullmatch(f'arn:aws:ecs:ap-northeast-2:{account}:task-definition/ipgo-dev-d0-{family}:[1-9][0-9]*',
                          manifest['taskDefinitionArn']), 'TASK_REVISION')
     require(re.fullmatch(f'{account}[.]dkr[.]ecr[.]ap-northeast-2[.]amazonaws[.]com/ipgo-dev/database@sha256:[a-f0-9]{{64}}',
@@ -80,8 +82,8 @@ def validate(manifest, *, day=None, public_key=None):
     for name in ('fixtureSha256', 'keyFingerprint'):
         require(isinstance(manifest[name], str) and re.fullmatch('[a-f0-9]{64}', manifest[name]), 'MANIFEST_HASH')
     require(manifest['clientSha'] == CLIENT_SHA and type(manifest['serverTd']) is int
-            and manifest['serverTd'] == 31 and type(manifest['aiTd']) is int
-            and manifest['aiTd'] == 17, 'BASELINE_MISMATCH')
+            and manifest['serverTd'] == SERVER_TD and type(manifest['aiTd']) is int
+            and manifest['aiTd'] == AI_TD, 'BASELINE_MISMATCH')
     if public_key is not None:
         require(manifest['keyFingerprint'] == fingerprint(public_key), 'KEY_FINGERPRINT')
     return manifest

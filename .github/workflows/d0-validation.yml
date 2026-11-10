@@ -8,6 +8,14 @@ on:
       - "database/bootstrap/create_d0_ops.sql"
       - "Dockerfile.d0"
       - ".github/workflows/d0-validation.yml"
+  push:
+    branches: [dev]
+    paths:
+      - "scripts/d0/**"
+      - "database/bootstrap/create_d0_ops.sql"
+      - "scripts/testing/verify-d0-ops.sh"
+      - "Dockerfile.d0"
+      - ".github/workflows/d0-validation.yml"
   workflow_dispatch:
     inputs:
       expected_sha:
@@ -42,7 +50,7 @@ jobs:
           "$RUNNER_TEMP/d0-venv/bin/python" -m unittest discover -s scripts/d0 -p 'test_*.py' -v
       - run: |
           docker pull postgres:16-alpine
-          bash scripts/testing/verify-d0-ops.sh
+          D0_TEST_PYTHON="$RUNNER_TEMP/d0-venv/bin/python" bash scripts/testing/verify-d0-ops.sh
       - run: |
           docker build -f Dockerfile.d0 -t ipgo-d0:ci .
           docker run --rm --network none --read-only --entrypoint python ipgo-d0:ci \

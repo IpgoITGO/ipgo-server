@@ -5,34 +5,33 @@ SET LOCAL statement_timeout = '30s';
 SELECT pg_advisory_xact_lock(hashtextextended('ipgo:d0:installation',0));
 DO $install$
 BEGIN
-  IF NOT EXISTS(SELECT 1 FROM pg_roles WHERE rolname='ipgo_d0_owner') THEN
-    CREATE ROLE ipgo_d0_owner NOLOGIN NOCREATEDB NOCREATEROLE NOINHERIT;
+  IF EXISTS(SELECT 1 FROM pg_roles WHERE rolname IN ('ipgo_d0_owner','ipgo_d0_bootstrap'))
+     OR EXISTS(SELECT 1 FROM pg_namespace WHERE nspname='d0_ops') THEN
+    RAISE EXCEPTION 'D0_PREEXISTING_OBJECT_REVIEW_REQUIRED';
   END IF;
-  IF NOT EXISTS(SELECT 1 FROM pg_roles WHERE rolname='ipgo_d0_bootstrap') THEN
-    CREATE ROLE ipgo_d0_bootstrap NOLOGIN NOCREATEDB NOCREATEROLE NOINHERIT;
+  IF current_setting('d0.install_operation_id',true) IS NULL
+     OR current_setting('d0.install_operation_id')::uuid IS NULL THEN
+    RAISE EXCEPTION 'D0_INSTALL_OPERATION_REQUIRED';
   END IF;
-  IF EXISTS(SELECT 1 FROM pg_roles WHERE rolname IN ('ipgo_d0_owner','ipgo_d0_bootstrap')
-            AND (rolsuper OR rolcreatedb OR rolcreaterole OR rolreplication OR rolbypassrls
-                 OR (rolname='ipgo_d0_owner' AND rolcanlogin)))
-     OR EXISTS(SELECT 1 FROM pg_auth_members m JOIN pg_roles r ON r.oid=m.member
-               WHERE r.rolname IN ('ipgo_d0_owner','ipgo_d0_bootstrap')) THEN
-    RAISE EXCEPTION 'D0_ROLE_BOUNDARY';
-  END IF;
+  CREATE ROLE ipgo_d0_owner NOLOGIN NOCREATEDB NOCREATEROLE NOINHERIT;
+  CREATE ROLE ipgo_d0_bootstrap NOLOGIN NOCREATEDB NOCREATEROLE NOINHERIT;
+  EXECUTE format('COMMENT ON ROLE ipgo_d0_bootstrap IS %L',
+    'ipgo:d0:install:'||current_setting('d0.install_operation_id'));
 END $install$;
 -- CREATEROLE은 superuser가 아니다. 관리자 자신의 owner/migrator membership 옵션을
 -- transaction 안에서만 사용하고 원래 옵션으로 복원한다. Server/AI/조회 역할은 변경하지 않는다.
 DO $owner_access$
-DECLARE original_set boolean; original_inherit boolean; had_membership boolean;
+DECLARE original_set boolean; original_inherit boolean; original_admin boolean; had_membership boolean;
  role_name text; saved jsonb='{}';
 BEGIN
  FOREACH role_name IN ARRAY ARRAY['ipgo_d0_owner','ipgo_migrator'] LOOP
-   SELECT m.set_option,m.inherit_option INTO original_set,original_inherit
+   SELECT m.set_option,m.inherit_option,m.admin_option INTO original_set,original_inherit,original_admin
      FROM pg_auth_members m JOIN pg_roles r ON r.oid=m.roleid JOIN pg_roles u ON u.oid=m.member
-     WHERE r.rolname=role_name AND u.rolname=current_user;
+     WHERE r.rolname=role_name AND u.rolname=current_user AND m.grantor=current_user::regrole;
    had_membership:=FOUND;
    saved:=saved||jsonb_build_object(role_name,jsonb_build_object('member',had_membership,
-     'set',coalesce(original_set,false),'inherit',coalesce(original_inherit,false)));
-   EXECUTE format('GRANT %I TO %I WITH INHERIT TRUE, SET TRUE',role_name,current_user);
+     'set',coalesce(original_set,false),'inherit',coalesce(original_inherit,false),'admin',coalesce(original_admin,false)));
+   EXECUTE format('GRANT %I TO %I WITH INHERIT TRUE, SET TRUE GRANTED BY %I',role_name,current_user,current_user);
  END LOOP;
  PERFORM set_config('d0.install_memberships',saved::text,true);
 END $owner_access$;
@@ -40,7 +39,7 @@ DO $connect$
 BEGIN
   EXECUTE format('GRANT CONNECT ON DATABASE %I TO ipgo_d0_bootstrap',current_database());
 END $connect$;
-CREATE SCHEMA IF NOT EXISTS d0_ops AUTHORIZATION ipgo_d0_owner;
+CREATE SCHEMA d0_ops AUTHORIZATION ipgo_d0_owner;
 REVOKE ALL ON SCHEMA d0_ops FROM PUBLIC;
 GRANT USAGE ON SCHEMA public TO ipgo_d0_owner;
 GRANT INSERT(email,password_hash,company_name,manager_name,business_reg_no),
@@ -49,7 +48,7 @@ GRANT USAGE ON SEQUENCE public.users_id_seq TO ipgo_d0_owner;
 GRANT SELECT ON public.warehouses,public.products,public.upload_files,public.calculation_runs,
  public.calculation_results,public.ai_explanations,public.ai_explanation_calls,
  public.engine_jobs,public.planned_receipts TO ipgo_d0_owner;
-CREATE TABLE IF NOT EXISTS d0_ops.operations(
+CREATE TABLE d0_ops.operations(
  operation_id uuid PRIMARY KEY,
  scope text NOT NULL CHECK(scope='ipgo-d0-receipts-v1'),
  d0_date date NOT NULL,
@@ -64,7 +63,7 @@ CREATE TABLE IF NOT EXISTS d0_ops.operations(
 );
 ALTER TABLE d0_ops.operations OWNER TO ipgo_d0_owner;
 
-CREATE OR REPLACE FUNCTION d0_ops.preflight(p_operation uuid DEFAULT NULL) RETURNS jsonb
+CREATE FUNCTION d0_ops.preflight(p_operation uuid DEFAULT NULL) RETURNS jsonb
 LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,d0_ops SET TimeZone='UTC' AS $function$
 DECLARE
  op d0_ops.operations%ROWTYPE; result jsonb; snapshots jsonb='{}'; entry jsonb;
@@ -123,7 +122,7 @@ BEGIN
  RETURN result;
 END $function$;
 
-CREATE OR REPLACE FUNCTION d0_ops.seed_user(p_operation uuid,p_day date,p_hash text,p_sealed text) RETURNS jsonb
+CREATE FUNCTION d0_ops.seed_user(p_operation uuid,p_day date,p_hash text,p_sealed text) RETURNS jsonb
 LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,d0_ops SET TimeZone='UTC' AS $function$
 DECLARE op d0_ops.operations%ROWTYPE; uid bigint; before_state jsonb;
 BEGIN
@@ -154,7 +153,7 @@ BEGIN
  RETURN jsonb_build_object('userId',uid,'state','SEEDED','replayed',false,'sealedCredentials',p_sealed);
 END $function$;
 
-CREATE OR REPLACE FUNCTION d0_ops.record_step(p_operation uuid,p_step text,p_evidence jsonb) RETURNS jsonb
+CREATE FUNCTION d0_ops.record_step(p_operation uuid,p_step text,p_evidence jsonb) RETURNS jsonb
 LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,d0_ops SET TimeZone='UTC' AS $function$
 DECLARE op d0_ops.operations%ROWTYPE; chain text[]:=ARRAY['SEEDED','UPLOADED','RECEIPT_80','RECEIPT_40','RECEIPT_100','VERIFIED'];
  current_position integer; state jsonb; valid_receipts bigint;
@@ -214,10 +213,10 @@ DECLARE entry record;
 BEGIN
  FOR entry IN SELECT * FROM jsonb_each(current_setting('d0.install_memberships')::jsonb) LOOP
    IF (entry.value->>'member')::boolean THEN
-     EXECUTE format('GRANT %I TO %I WITH INHERIT %s, SET %s',entry.key,current_user,
-       entry.value->>'inherit',entry.value->>'set');
+     EXECUTE format('GRANT %I TO %I WITH ADMIN %s, INHERIT %s, SET %s GRANTED BY %I',entry.key,current_user,
+       entry.value->>'admin',entry.value->>'inherit',entry.value->>'set',current_user);
    ELSE
-     EXECUTE format('REVOKE %I FROM %I',entry.key,current_user);
+     EXECUTE format('REVOKE %I FROM %I GRANTED BY %I',entry.key,current_user,current_user);
    END IF;
  END LOOP;
 END $restore_owner_access$;

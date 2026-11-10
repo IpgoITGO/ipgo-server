@@ -11,14 +11,15 @@ def verify_install_job(env):
     require(env.get('GITHUB_REPOSITORY') == 'IpgoITGO/ipgo-infra', 'INSTALL_REPOSITORY')
     require(env.get('GITHUB_EVENT_NAME') == 'workflow_dispatch' and env.get('GITHUB_REF') == 'refs/heads/dev'
             and env.get('GITHUB_RUN_ATTEMPT') == '1', 'INSTALL_MANUAL_DEV_ONLY')
-    require(env.get('D0_INSTALL_ENABLED') == 'true' and env.get('CONFIRMATION') == 'INSTALL_D0', 'INSTALL_DISABLED')
+    require(env.get('D0_INSTALL_ENABLED') == 'true' and env.get('OPERATION', 'install') in ('install', 'deactivate')
+            and env.get('CONFIRMATION') == ('DEACTIVATE_D0' if env.get('OPERATION') == 'deactivate' else 'INSTALL_D0'), 'INSTALL_DISABLED')
     require(re.fullmatch('[a-f0-9]{40}', env.get('EXPECTED_SHA', ''))
             and env['EXPECTED_SHA'] == env.get('GITHUB_SHA'), 'INSTALL_SOURCE_SHA')
     encoded = env.get('D0_SIGNED_MANIFEST', '')
     require(0 < len(encoded) <= 6500, 'ENVELOPE_SIZE')
     manifest = verify_envelope(json.loads(base64.b64decode(encoded, validate=True)))
     cfg = json.loads(env['D0_INSTALL_JSON'])
-    require(manifest['kind'] == 'install' and manifest['workflowSha'] == env['EXPECTED_SHA']
+    require(manifest['kind'] == env.get('OPERATION', 'install') and manifest['workflowSha'] == env['EXPECTED_SHA']
             and manifest['helperSha'] == env.get('HELPER_SHA')
             and manifest['accountId'] == env.get('AWS_ACCOUNT_ID'), 'INSTALL_SIGNATURE_SCOPE')
     required = {'task_definition_arn','secret_arn','task_role_arn','execution_role_arn','log_group',
@@ -38,7 +39,8 @@ def verify_install_job(env):
 if __name__ == '__main__':
     manifest, _ = verify_install_job(os.environ)
     from runtime import verify_client
-    verify_client()
+    if manifest['kind'] == 'install':
+        verify_client()
     with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
         output.write('account_id=' + manifest['accountId'] + '\n')
     print('설치 서명/대상 검증 완료. 자격증명 출력 없음.')

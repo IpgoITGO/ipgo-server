@@ -1,6 +1,6 @@
 # Ipgo Server
 
-D0 전용 합성 자료 준비의 비활성 OIDC 경로·권한·적용 및 복구 절차는 [D0 운영](docs/development/d0-oidc.md)을 따릅니다. 실제 IAM·DB 적용과 D0 실행은 별도 승인입니다.
+D0 전용 합성 자료 준비의 비활성 OIDC 경로·권한·적용 및 복구 절차는 [D0 운영](docs/development/d0-oidc.md)을 따릅니다. TD32·TD19 고정 검사, 최초 설치 충돌 검사와 서명된 신규 로그인 차단 경로도 같은 문서를 따릅니다. 실제 IAM·DB 적용과 D0 실행은 별도 승인입니다.
 
 지속 LLM의 선택적 월 상한·승인된 무상한 모드·V22·적용/중단 절차는 [월별 비용 제한](docs/decisions/0017-insight-monthly-budget.md)을 따릅니다. 구현과 실제 개발 반영은 구분합니다.
 

@@ -367,6 +367,52 @@ class EngineRealFlowIntegrationTests {
         assertThat(jobs.find(u.getJobId()).status()).isEqualTo("DONE");
     }
 
+    private String failureWith(UploadFile u, Map<String, Object> error) {
+        return mapper.writeValueAsString(Map.of("contractVersion", "1", "jobId", u.getJobId(),
+                "jobType", "CLEAN", "status", "FAILED", "error", error));
+    }
+
+    @Test void sellerFixableCleaningFailureKeepsEngineReasonForTheUploadResult() throws Exception {
+        long owner = user(); var u = upload(owner);
+        results.accept(failureWith(u, Map.of("code", "INVALID_SOURCE",
+                "message", "전월 잔여 재고의 재고관리단위가 이번 자료에 없어요\n(3개)",
+                "details", Map.of("reason", "PREVIOUS_MONTH_MISMATCH"))));
+        var error = records.result(owner, u.getId()).error();
+        assertThat(error.code()).isEqualTo("INVALID_SOURCE");
+        // 서버 고정 안내는 그대로 두고, 엔진 문장은 한 줄로 정리해 reason에 담는다(#164).
+        assertThat(error.message()).isEqualTo("수불부 형식을 확인하고 다시 올려 주세요.");
+        assertThat(error.reason()).isEqualTo("전월 잔여 재고의 재고관리단위가 이번 자료에 없어요 (3개)");
+        assertThat(error.details().reason()).isEqualTo("PREVIOUS_MONTH_MISMATCH");
+    }
+
+    @Test void engineOutageAndOddValuesNeverReachTheSeller() throws Exception {
+        long owner = user();
+        var outage = upload(owner);
+        results.accept(failureWith(outage, Map.of("code", "ENGINE_UNAVAILABLE",
+                "message", "psycopg.OperationalError: connection to 10.0.0.5 failed",
+                "details", Map.of("reason", "DB_DOWN"))));
+        var hidden = records.result(owner, outage.getId()).error();
+        assertThat(hidden.code()).isEqualTo("ENGINE_UNAVAILABLE");
+        assertThat(hidden.reason()).isNull();
+        assertThat(hidden.details()).isNull();
+
+        long other = user();
+        var odd = upload(other);
+        results.accept(failureWith(odd, Map.of("code", "INVALID_SOURCE", "message", "가".repeat(400),
+                "details", Map.of("reason", "not a code"))));
+        var trimmed = records.result(other, odd.getId()).error();
+        assertThat(trimmed.reason()).hasSize(300);
+        assertThat(trimmed.details()).isNull();
+
+        long third = user();
+        var plain = upload(third);
+        results.accept(failure(plain));
+        var legacy = records.result(third, plain.getId()).error();
+        // 엔진이 아직 이유를 보내지 않으면(ai#94 전) reason · details 없이 지금처럼 동작한다.
+        assertThat(legacy.reason()).isNull();
+        assertThat(legacy.details()).isNull();
+    }
+
     @Test void failureAndExpiryAreTerminal() throws Exception {
         var first = upload(user()); results.accept(failure(first));
         assertThat(jobs.find(first.getJobId()).status()).isEqualTo("FAILED");

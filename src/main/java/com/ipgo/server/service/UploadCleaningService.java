@@ -129,10 +129,17 @@ public class UploadCleaningService {
 
     @Transactional
     public Outcome fail(long uploadId, String jobId, Failure failure) {
+        return fail(uploadId, jobId, failure, null, null);
+    }
+
+    // reason · detailReason은 셀러 입력 문제일 때 엔진이 보낸 이유 문장과 구분 코드다(#164). 없으면 null.
+    @Transactional
+    public Outcome fail(long uploadId, String jobId, Failure failure, String reason, String detailReason) {
         Objects.requireNonNull(failure);
         UploadFile upload = lock(uploadId, jobId);
         if (!upload.isProcessing()) return Outcome.ALREADY_FINISHED;
-        upload.fail(new UploadProcessingReport.Failure(failure.name(), failure.message));
+        upload.fail(new UploadProcessingReport.Failure(failure.name(), failure.message, reason,
+                detailReason == null ? null : new UploadProcessingReport.FailureDetails(detailReason)));
         return Outcome.APPLIED;
     }
 

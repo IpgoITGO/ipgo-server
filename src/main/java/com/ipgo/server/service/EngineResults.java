@@ -50,9 +50,15 @@ public class EngineResults {
                 if (current) calculations.request(warehouses.findById(job.warehouseId()).orElseThrow().getUserId(),
                         job.warehouseId(), "UPLOAD", false);
             } else {
-                String code = message.path("error").path("code").asText();
-                cleaning.fail(job.targetId(), job.id(), Set.of("INVALID_SOURCE","INVALID_INPUT","RESULT_TOO_LARGE").contains(code)
-                        ? UploadCleaningService.Failure.INVALID_SOURCE : UploadCleaningService.Failure.ENGINE_UNAVAILABLE);
+                JsonNode error = message.path("error");
+                String code = error.path("code").asText();
+                if (Set.of("INVALID_SOURCE","INVALID_INPUT","RESULT_TOO_LARGE").contains(code)) {
+                    // 셀러가 고칠 수 있는 입력 문제만 엔진 문장을 남긴다. 엔진 장애 문구는 저장하지 않는다(#164).
+                    cleaning.fail(job.targetId(), job.id(), UploadCleaningService.Failure.INVALID_SOURCE,
+                            sellerReason(error.path("message")), detailReason(error.path("details").path("reason")));
+                } else {
+                    cleaning.fail(job.targetId(), job.id(), UploadCleaningService.Failure.ENGINE_UNAVAILABLE);
+                }
             }
         } else {
             if (success) writer.complete(job, message.get("result")); else writer.fail(job);
@@ -77,4 +83,21 @@ public class EngineResults {
         return jobs.find(id);
     }
     private static void require(boolean valid) { if (!valid) throw new IllegalArgumentException("Invalid engine envelope"); }
+
+    static final int MAX_REASON_LENGTH = 300;
+
+    // 화면에 그대로 보여 줄 문장이라 줄바꿈 · 제어 문자를 공백으로 바꾸고 길이를 제한한다. 비어 있으면 null.
+    static String sellerReason(JsonNode node) {
+        if (node == null || !node.isString()) return null;
+        String text = node.asText().replaceAll("\\p{Cntrl}", " ").replaceAll("\\s+", " ").strip();
+        if (text.isEmpty()) return null;
+        return text.length() > MAX_REASON_LENGTH ? text.substring(0, MAX_REASON_LENGTH) : text;
+    }
+
+    // 구분 코드는 영문 대문자 · 숫자 · 밑줄만 받는다(예: PREVIOUS_MONTH_MISMATCH). 그 밖은 버린다.
+    static String detailReason(JsonNode node) {
+        if (node == null || !node.isString()) return null;
+        String text = node.asText();
+        return text.matches("[A-Z][A-Z0-9_]{0,49}") ? text : null;
+    }
 }

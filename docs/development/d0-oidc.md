@@ -133,3 +133,8 @@ RunTask 응답 유실은 REQUESTED/clientToken·operation/tag로 기존 task를 
 PG16에서 신규 객체 충돌/transaction rollback·비-superuser membership 복원·실제 행 hash·권한 거부·
 신규 로그인 세션 종료/다른 Server 세션 보존을 검사한다. Secret API는 mock이며 TLS 인수만 확인한 probe를
 로컬 socket으로 대체한다. 실제 RDS verify-full TLS·SecretsManager·OIDC·Task 등록/복구 성공을 뜻하지 않는다.
+
+복구는 월말에도 현재 KST 날짜·다음날 날짜·정확 baseline/서명을 검사한다. 월경계 거부만
+kind=deactivate에서 제외하며 install/read-only/prepare 제한은 유지한다. 새 복구 승인에는 새 서명 봉투를 사용한다.
+복구 clientToken은 operation/kind에 봉투 hash까지 결합해 이전 STOPPED task의 성공 로그를 새 확인으로 재사용하지 않는다.
+같은 봉투의 응답 유실 재전송은 같은 token으로 중복 방지하며, 원래 task 확인·별도 승인 원칙은 유지한다.

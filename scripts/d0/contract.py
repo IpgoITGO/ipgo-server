@@ -75,7 +75,8 @@ def validate(manifest, *, day=None, public_key=None):
     except (TypeError, ValueError, AttributeError):
         raise GateError('MANIFEST_DATE_OR_ID') from None
     require(d0 == (day or today()) and d1 == d0 + timedelta(days=1), 'KST_DATE_MISMATCH')
-    require(d0.month == d1.month and d0.year == d1.year, 'MONTH_BOUNDARY_REVIEW_REQUIRED')
+    require(manifest['kind'] == 'deactivate' or (d0.month == d1.month and d0.year == d1.year),
+            'MONTH_BOUNDARY_REVIEW_REQUIRED')
     require(isinstance(manifest['dbHost'], str) and re.fullmatch(
         r'[a-z0-9-]+\.[a-z0-9]+\.ap-northeast-2\.rds\.amazonaws\.com', manifest['dbHost']), 'DB_HOST')
     require(isinstance(manifest['dbName'], str) and re.fullmatch(r'[a-z][a-z0-9_]{0,62}', manifest['dbName']), 'DB_NAME')

@@ -75,6 +75,19 @@ class ContractTest(unittest.TestCase):
                 with self.subTest(kind=kind,key=key,value=value),self.assertRaisesRegex(GateError,'BASELINE'):
                     verify_envelope(self.envelope(wrong),day=date(2026,11,9),public_key=self.public)
 
+    def test_only_recovery_can_cross_month_end_but_still_requires_current_day(self):
+        for kind in ('install','deactivate','read-only','prepare'):
+            m=self.manifest();m.update(kind=kind,d0Date='2026-11-30',d1Date='2026-12-01')
+            if kind in ('install','deactivate'):
+                m['taskDefinitionArn']=m['taskDefinitionArn'].replace('d0-validation:','d0-install:')
+            if kind=='deactivate':
+                self.assertEqual(m,verify_envelope(self.envelope(m),day=date(2026,11,30),public_key=self.public))
+                with self.assertRaisesRegex(GateError,'KST_DATE'):
+                    verify_envelope(self.envelope(m),day=date(2026,12,1),public_key=self.public)
+            else:
+                with self.assertRaisesRegex(GateError,'MONTH_BOUNDARY'):
+                    verify_envelope(self.envelope(m),day=date(2026,11,30),public_key=self.public)
+
     def test_fixture_is_deterministic_single_sku_and_conserved(self):
         import openpyxl
         m = self.manifest()

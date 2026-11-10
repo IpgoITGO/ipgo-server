@@ -476,12 +476,12 @@ storage/uploads/<인증된 사용자 ID>/<보관 UUID>/
 
 ### 입고 조건 (S1~S3)
 
-미확정 입고 주기 제안(#92)은 정제 보고서의 `estimatedReviewCycleDays`를 조회합니다.
-같은 창고의 **기간별 최신 revision을 먼저 선택한 뒤 DONE만 후보**로 남기고,
-자료 기간이 가장 최근인 보고서의 값을 사용합니다. 그 값이 null이면 과거 양수 값으로
-대체하지 않습니다. 처리 중/실패한 revision의 같은 기간 이전 값도 되살리지 않습니다.
-AI는 파일 내 SKU별 입고일 3개 이상에서 간격 중앙값들의 중앙값(0.5 올림)을 제안하며,
-자료가 부족하면 null입니다. 월 경계·누적 추정과 과거 null 보고서의 자동 재처리는 하지 않습니다.
+미확정 입고 주기 제안(#92 · #166)은 **최근 12개월의 날짜별 입고 기록**(`product_daily_stocks`)으로 서버가 계산합니다.
+같은 창고의 **기간별 최신 revision을 먼저 선택한 뒤 DONE만 후보**로 남기고, 그 업로드들의 마지막 수불 날짜부터 12개월을 봅니다.
+처리 중/실패한 revision의 같은 기간 이전 값은 되살리지 않습니다. 파일에서 검산 제외된 상품은 그 파일 기록을 쓰지 않습니다.
+규칙은 AI `estimate_review_cycle_days`와 같습니다: 상품마다 입고일(입고 수량 > 0, 같은 날은 하루) 3개 이상이면 간격 중앙값,
+그 값들의 중앙값을 0.5 올림합니다. 월 경계를 넘어 합치므로 한 달에 1~2번 들어오는 상품도 셉니다. 자료가 부족하면 null입니다.
+정제 보고서의 파일별 `estimatedReviewCycleDays`는 기록으로만 남고 제안에는 쓰지 않습니다.
 S1·P1·K1 표시는 상품별 저장값 → 창고 확정값 → 제안값 순서이며,
 GET은 설정 저장·계산을 시작하지 않습니다. S2로 확정한 조건과 과거 계산 snapshot은
 새 정제/재업로드로 바뀌지 않습니다. 기존 JSONB 보고서를 사용하며 신규 migration은 없습니다.
@@ -491,7 +491,7 @@ GET은 설정 저장·계산을 시작하지 않습니다. S2로 확정한 조�
 
 | API | 동작 |
 |---|---|
-| `GET /api/replenishment-settings` (S1) | 기본값 조회. 셀러가 저장하기 전에는 `confirmed: false`와 제안값(리드타임 5일, 입고 단위 1개, `reviewCycleSource: "ESTIMATED"`)을 돌려줍니다. 저장 뒤에는 `confirmed: true`, `"DEFAULT"` |
+| `GET /api/replenishment-settings` (S1) | 기본값 조회. 셀러가 저장하기 전에는 `confirmed: false`와 제안값(리드타임 5일, 입고 단위 1개, `reviewCycleSource: "ESTIMATED"`)을 돌려줍니다. 입고 주기를 추정했으면 `reviewCycleBasis: { from, to, productCount }`(본 기간과 센 상품 수)를 같이 줍니다(#166). 저장 뒤에는 `confirmed: true`, `"DEFAULT"`, `reviewCycleBasis: null` |
 | `PUT /api/replenishment-settings` (S2) | `{leadTimeDays, reviewCycleDays, orderUnitQty, recalculate}`. 세 칸 모두 필수. 응답의 `runId`는 선행 조건을 충족한 계산 번호이며, 조건 미충족·엔진 비활성 때는 null |
 | `PUT /api/products/{productId}/replenishment-settings` (S3) | `{leadTimeDays, reviewCycleDays, orderUnitQty, unitCost}`. 입고 조건 세 칸은 보낸 값으로 모두 바꾸며, 비우면 기본값을 따릅니다. `unitCost`(0 이상)는 보낸 경우에만 바꿉니다. 다른 회원 상품 `403`, 없는 상품 `404` |
 

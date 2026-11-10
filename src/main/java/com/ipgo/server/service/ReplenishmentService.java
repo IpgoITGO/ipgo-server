@@ -34,7 +34,17 @@ public class ReplenishmentService {
     @Transactional(readOnly = true)
     public DefaultSettings defaults(long userId) {
         var warehouse = warehouses.findDefault(userId);
-        return DefaultSettings.from(warehouse, suggestions.defaults(warehouse));
+        if (warehouse.isEmpty() || warehouse.get().hasConfirmedDefaults()) {
+            return DefaultSettings.from(warehouse, suggestions.defaults(warehouse), null);
+        }
+        // 확인 전에는 최근 12개월 입고 기록으로 추정한 주기와 그 근거를 같이 보여 준다(#166).
+        var estimate = suggestions.estimate(warehouse.get());
+        var stored = com.ipgo.server.dto.response.ProductSettings.defaults(warehouse);
+        var values = new com.ipgo.server.dto.response.ProductSettings(stored.leadTimeDays(), estimate.reviewCycleDays(),
+                stored.orderUnitQty());
+        var basis = estimate.reviewCycleDays() == null ? null
+                : new DefaultSettings.ReviewCycleBasis(estimate.from(), estimate.to(), estimate.productCount());
+        return DefaultSettings.from(warehouse, values, basis);
     }
 
     @Transactional

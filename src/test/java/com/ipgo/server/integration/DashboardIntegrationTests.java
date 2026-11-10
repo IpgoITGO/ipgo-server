@@ -239,6 +239,42 @@ class DashboardIntegrationTests extends DatabaseIntegrationTest {
     }
 
     @Test
+    void detailTrendAddsLastYearOutboundOnTheSameMonthAndDay() throws Exception {
+        long userId = newUser();
+        long warehouse = warehouseOf(userId);
+        long product = product(userId, "8800000000001", "케어트릿 120g");
+        long lastYear = upload(warehouse, LocalDate.of(2025, 10, 1), "DONE");
+        long lastYearFixed = upload(warehouse, LocalDate.of(2025, 10, 1), "DONE");
+        long failed = upload(warehouse, LocalDate.of(2025, 10, 1), "FAILED");
+        long thisYear = upload(warehouse, LocalDate.of(2026, 10, 1), "DONE");
+        daily(product, lastYear, LocalDate.of(2025, 10, 1), "20.000", "3.000", true);
+        daily(product, lastYear, LocalDate.of(2025, 10, 2), "17.000", "9.000", true);
+        // 같은 날짜를 다시 올린 작년 값을 쓰고, 실패한 업로드는 보지 않는다. 출고는 올림이다.
+        daily(product, lastYearFixed, LocalDate.of(2025, 10, 2), "17.000", "4.200", true);
+        daily(product, failed, LocalDate.of(2025, 10, 3), "0.000", "99.000", true);
+        daily(product, thisYear, LocalDate.of(2026, 10, 1), "10.000", "2.000", true);
+        daily(product, thisYear, LocalDate.of(2026, 10, 2), "8.000", "2.000", true);
+        daily(product, thisYear, LocalDate.of(2026, 10, 3), "6.000", "2.000", true);
+
+        get(userId, detail(product) + "?from=2026-10-01&to=2026-10-03")
+                .andExpect(jsonPath("trend.length()").value(3))
+                .andExpect(jsonPath("trend[0].lastYearOutboundQty").value(3))
+                .andExpect(jsonPath("trend[1].lastYearOutboundQty").value(5))
+                // 작년 기록이 없으면 null이다.
+                .andExpect(jsonPath("trend[2].lastYearOutboundQty").value(org.hamcrest.Matchers.nullValue()));
+        // 작년 기간만 조회하면 그 전 해 기록이 없으니 모두 null이다.
+        get(userId, detail(product) + "?from=2025-10-01&to=2025-10-02")
+                .andExpect(jsonPath("trend[0].outboundQty").value(3))
+                .andExpect(jsonPath("trend[0].lastYearOutboundQty").value(org.hamcrest.Matchers.nullValue()));
+    }
+
+    @Test
+    void lastYearOfLeapDayIsFebruary28() {
+        org.assertj.core.api.Assertions.assertThat(com.ipgo.server.service.ProductDetailService.lastYearOf(LocalDate.of(2028, 2, 29)))
+                .isEqualTo(LocalDate.of(2027, 2, 28));
+    }
+
+    @Test
     void asksForReuploadWhenAsOfDateIsTooOld() throws Exception {
         long userId = newUser();
         long product = product(userId, "8800000000001", "케어트릿 120g");

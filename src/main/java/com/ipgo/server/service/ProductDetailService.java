@@ -16,9 +16,12 @@ import com.ipgo.server.repository.ProductRepository;
 import com.ipgo.server.repository.ReplenishmentSettingRepository;
 import com.ipgo.server.util.DisplayQuantities;
 
+import java.math.BigDecimal;
 import java.time.Clock;
 import java.time.LocalDate;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import tools.jackson.databind.JsonNode;
 
@@ -93,6 +96,7 @@ public class ProductDetailService {
     }
 
     // 정제가 끝난(DONE) 업로드의 상품 일별 수불. 같은 날짜가 덮어쓰기로 여러 번 올라왔으면 가장 최근 업로드를 쓴다.
+    // 날짜마다 작년 같은 월·일의 출고를 같이 붙인다(#158). 작년 기록이 없으면 null이다.
     private List<ProductDetail.Trend> trend(long productId, LocalDate from, LocalDate to) {
         LocalDate end = to != null ? to : jdbc.queryForObject("""
                 SELECT MAX(s.stock_date) FROM product_daily_stocks s
@@ -101,6 +105,18 @@ public class ProductDetailService {
                 """, LocalDate.class, productId);
         if (end == null) return List.of();
         LocalDate start = from != null ? from : end.minusDays(DEFAULT_TREND_DAYS - 1);
+        Map<LocalDate, Long> lastYearOutbound = new HashMap<>();
+        for (DailyStock day : dailyStocks(productId, lastYearOf(start), lastYearOf(end))) {
+            lastYearOutbound.put(day.date(), DisplayQuantities.demand(day.outbound()));
+        }
+        return dailyStocks(productId, start, end).stream().map(day -> new ProductDetail.Trend(day.date(),
+                DisplayQuantities.stock(day.closing()), DisplayQuantities.demand(day.outbound()), day.valid(),
+                lastYearOutbound.get(lastYearOf(day.date())))).toList();
+    }
+
+    private record DailyStock(LocalDate date, BigDecimal closing, BigDecimal outbound, boolean valid) { }
+
+    private List<DailyStock> dailyStocks(long productId, LocalDate start, LocalDate end) {
         return jdbc.query("""
                 SELECT s.stock_date, s.closing_qty, s.outbound_qty, s.is_valid_observation
                 FROM product_daily_stocks s
@@ -110,9 +126,13 @@ public class ProductDetailService {
                       JOIN upload_files u ON u.id = l.upload_file_id
                       WHERE l.product_id = s.product_id AND l.stock_date = s.stock_date AND u.status = 'DONE')
                 ORDER BY s.stock_date
-                """, (rs, i) -> new ProductDetail.Trend(rs.getObject(1, LocalDate.class),
-                        DisplayQuantities.stock(rs.getBigDecimal(2)), DisplayQuantities.demand(rs.getBigDecimal(3)),
-                        rs.getBoolean(4)), productId, start, end);
+                """, (rs, i) -> new DailyStock(rs.getObject(1, LocalDate.class), rs.getBigDecimal(2),
+                        rs.getBigDecimal(3), rs.getBoolean(4)), productId, start, end);
+    }
+
+    // 엔진 계산식 A와 같은 "작년 같은 날": 같은 월·일. minusYears는 2/29를 작년 2/28로 맞춘다.
+    public static LocalDate lastYearOf(LocalDate day) {
+        return day.minusYears(1);
     }
 
     private ProductDetail.Settings settings(Product product, Optional<Warehouse> warehouse,

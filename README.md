@@ -395,7 +395,7 @@ Bearer 인증이 없으면 401, 다른 회원 자료면 403, 없는 업로드면
 
 DONE이면 `asOfDate`와 `validation`의 `checkedSkuCount`, `targetSkuCount`, `excludedSkus`가 채워집니다.
 제외 항목은 서버가 확인한 `productId`, `skuBarcode`, `skuName`, `date`, `reason`을 포함합니다.
-FAILED이면 `error.code`와 안전한 `error.message`를 반환합니다. 처리 중·실패의 기준일과 검증 집계는 null입니다.
+FAILED이면 `error.code`와 안전한 `error.message`를 반환합니다. 셀러가 고칠 수 있는 정제 실패(`INVALID_SOURCE`)는 엔진이 찾은 실제 이유를 `error.reason`(한 줄, 최대 300자)에, 구분 코드를 `error.details.reason`(예: `PREVIOUS_MONTH_MISMATCH`)에 같이 줍니다(#164). 엔진이 이유를 보내지 않았거나 엔진 장애(`ENGINE_UNAVAILABLE`)면 둘 다 `null`이고, 장애 문구는 저장하지 않습니다. 처리 중·실패의 기준일과 검증 집계는 null입니다.
 
 정제 결과 저장 경계는 상품·LOT·일별 수불·보고서·상태를 한 트랜잭션에서 저장하고, 잘못된 jobId나
 다른 업로드의 행을 거절합니다. 같은 결과의 중복 전달과 같은 창고의 동시 처리를 잠금으로 보호합니다.

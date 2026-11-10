@@ -28,7 +28,7 @@ class ContractTest(unittest.TestCase):
              'kind': 'prepare', 'd0Date': '2026-11-09', 'd1Date': '2026-11-10',
              'dbHost': 'ipgo-dev.abcdefgh.ap-northeast-2.rds.amazonaws.com', 'dbName': 'ipgo',
              'fixtureSha256': '0' * 64, 'keyFingerprint': fingerprint(self.public),
-             'clientSha': CLIENT_SHA, 'serverTd': 31, 'aiTd': 17, 'accountId': '123456789012',
+             'clientSha': CLIENT_SHA, 'serverTd': 32, 'aiTd': 19, 'accountId': '123456789012',
              'workflowSha': 'a' * 40, 'helperSha': 'a' * 40,
              'imageUri': '123456789012.dkr.ecr.ap-northeast-2.amazonaws.com/ipgo-dev/database@sha256:' + 'a' * 64,
              'taskDefinitionArn': 'arn:aws:ecs:ap-northeast-2:123456789012:task-definition/ipgo-dev-d0-validation:7',
@@ -54,7 +54,7 @@ class ContractTest(unittest.TestCase):
             e['manifest'][key] = value
             with self.subTest(key=key), self.assertRaisesRegex(GateError, 'SIGNATURE'):
                 verify_envelope(e, day=date(2026, 11, 9), public_key=self.public)
-        for key, value in [('sql', 'delete'), ('serverTd', 32), ('aiTd', True), ('dbHost', 'attacker.invalid'),
+        for key, value in [('sql', 'delete'), ('serverTd', 31), ('aiTd', True), ('dbHost', 'attacker.invalid'),
                            ('d1Date', '2026-11-11')]:
             m = self.manifest()
             m[key] = value
@@ -63,6 +63,17 @@ class ContractTest(unittest.TestCase):
         other = rsa.generate_private_key(public_exponent=65537, key_size=3072)
         with self.assertRaisesRegex(GateError, 'FINGERPRINT'):
             verify_envelope(self.envelope(self.manifest()), day=date(2026, 11, 9), public_key=other.public_key())
+
+    def test_all_signed_kinds_require_exact_32_19_and_correct_td_family(self):
+        for kind in ('install','deactivate','read-only','prepare'):
+            m=self.manifest();m['kind']=kind
+            if kind in ('install','deactivate'):
+                m['taskDefinitionArn']=m['taskDefinitionArn'].replace('d0-validation:', 'd0-install:')
+            self.assertEqual(m,verify_envelope(self.envelope(m),day=date(2026,11,9),public_key=self.public))
+            for key,value in [('serverTd',31),('aiTd',17),('serverTd',33),('aiTd',20)]:
+                wrong=dict(m,**{key:value})
+                with self.subTest(kind=kind,key=key,value=value),self.assertRaisesRegex(GateError,'BASELINE'):
+                    verify_envelope(self.envelope(wrong),day=date(2026,11,9),public_key=self.public)
 
     def test_fixture_is_deterministic_single_sku_and_conserved(self):
         import openpyxl

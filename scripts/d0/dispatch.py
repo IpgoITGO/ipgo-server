@@ -6,7 +6,7 @@ import signal
 import time
 from pathlib import Path
 
-from contract import GateError, require
+from contract import GateError, require, SERVER_TD, AI_TD
 from gate import verify_job
 
 
@@ -16,7 +16,7 @@ def baseline(ecs, cfg):
     require(not r.get('failures') and len(r['services']) == 2, 'SERVICE_READ')
     require({s['serviceName'] for s in r['services']} == {'ipgo-dev-onebox-server', 'ipgo-dev-onebox-ai-api'}, 'SERVICE_NAMES')
     for service in r['services']:
-        td = 31 if service['serviceName'] == 'ipgo-dev-onebox-server' else 17
+        td = SERVER_TD if service['serviceName'] == 'ipgo-dev-onebox-server' else AI_TD
         account = cfg['cluster_arn'].split(':')[4]
         expected = f"arn:aws:ecs:ap-northeast-2:{account}:task-definition/{service['serviceName']}:{td}"
         require(service['taskDefinition'] == expected and service['desiredCount'] == 1
@@ -26,7 +26,8 @@ def baseline(ecs, cfg):
 
 
 def dispatch(ecs, logs, manifest, cfg, encoded, *, clock=time.monotonic, wait=time.sleep, audit=lambda *_: None):
-    baseline(ecs, cfg)
+    if manifest['kind'] != 'deactivate':
+        baseline(ecs, cfg)
     overrides = {'cpu': '256', 'memory': '512', 'containerOverrides': [{'name': 'runner', 'command': [manifest['kind']],
                  'environment': [{'name': 'D0_SIGNED_MANIFEST', 'value': encoded}]}]}
     require(len(json.dumps(overrides).encode()) <= 8192, 'OVERRIDES_SIZE')
@@ -38,7 +39,7 @@ def dispatch(ecs, logs, manifest, cfg, encoded, *, clock=time.monotonic, wait=ti
         clientToken=token, startedBy='ipgo-d0-' + manifest['operationId'][:8],
         networkConfiguration={'awsvpcConfiguration': {'subnets': cfg['subnet_ids'],
             'securityGroups': cfg['security_group_ids'], 'assignPublicIp': 'ENABLED'}},
-        tags=[{'key': 'Purpose', 'value': 'd0-install' if manifest['kind'] == 'install' else 'd0-synthetic'},
+        tags=[{'key': 'Purpose', 'value': 'd0-install' if manifest['kind'] in ('install', 'deactivate') else 'd0-synthetic'},
               {'key': 'OperationId', 'value': manifest['operationId']}],
         overrides=overrides)
     require(not response.get('failures') and len(response.get('tasks', [])) == 1, 'TASK_START')
@@ -61,7 +62,7 @@ def dispatch(ecs, logs, manifest, cfg, encoded, *, clock=time.monotonic, wait=ti
                         and containers[0].get('imageDigest') == cfg['image_uri'].split('@')[1], 'TASK_FAILED')
                 break
             wait(3)
-        stream = ('d0-install' if manifest['kind'] == 'install' else 'd0') + '/runner/' + arn.rsplit('/', 1)[1]
+        stream = ('d0-install' if manifest['kind'] in ('install', 'deactivate') else 'd0') + '/runner/' + arn.rsplit('/', 1)[1]
         result = None
         for _ in range(10):
             events = logs.get_log_events(logGroupName=cfg['log_group'], logStreamName=stream,
@@ -71,16 +72,18 @@ def dispatch(ecs, logs, manifest, cfg, encoded, *, clock=time.monotonic, wait=ti
                     value = json.loads(event['message'])
                 except ValueError:
                     continue
-                if isinstance(value, dict) and value.get('status') in ('INSTALLED', 'VERIFIED', 'READ_ONLY_OK', 'ALREADY_SEEDED', 'FAILED'):
+                if isinstance(value, dict) and value.get('status') in ('INSTALLED', 'DEACTIVATED', 'VERIFIED', 'READ_ONLY_OK', 'ALREADY_SEEDED', 'FAILED'):
                     result = value
             if result is not None:
                 break
             wait(2)
-        expected_status = {'install': 'INSTALLED', 'prepare': 'VERIFIED', 'read-only': 'READ_ONLY_OK'}[manifest['kind']]
+        expected_status = {'install': 'INSTALLED', 'deactivate': 'DEACTIVATED', 'prepare': 'VERIFIED', 'read-only': 'READ_ONLY_OK'}[manifest['kind']]
         require(result is not None and result['status'] == expected_status,
                 'RESULT_NOT_VERIFIED')
-        if manifest['kind'] == 'install':
+        if manifest['kind'] in ('install', 'deactivate'):
             require(result.get('businessWrites') == 0 and result.get('operationId') == manifest['operationId'], 'INSTALL_RESULT')
+            if manifest['kind'] == 'install':
+                require(result.get('existingRowsUnchanged') is True, 'INSTALL_BUSINESS_ROWS_NOT_VERIFIED')
         else:
             require(result.get('llmCalls') == 0, 'UNEXPECTED_D0_LLM')
         if manifest['kind'] == 'prepare':
@@ -93,7 +96,8 @@ def dispatch(ecs, logs, manifest, cfg, encoded, *, clock=time.monotonic, wait=ti
             import base64
             sealed = base64.b64decode(result.get('sealedCredentials', ''), validate=True)
             require(len(sealed) >= 384, 'SEALED_RESULT')
-        baseline(ecs, cfg)
+        if manifest['kind'] != 'deactivate':
+            baseline(ecs, cfg)
         allowed = {'status', 'operationId', 'userId', 'productId', 'uploadId', 'receiptIds', 'sealedCredentials',
                    'llmCalls', 'incrementalLlmUsd', 'existingRowsUnchanged', 'baseline', 'businessWrites'}
         require(set(result) <= allowed, 'RESULT_FIELDS')

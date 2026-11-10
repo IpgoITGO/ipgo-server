@@ -67,7 +67,7 @@ class FakeEcs:
     def describe_services(self, **args):
         return {'services': [{'serviceName': name, 'taskDefinition': f'arn:aws:ecs:ap-northeast-2:123456789012:task-definition/{name}:{td}', 'desiredCount': 1,
                               'runningCount': 1, 'pendingCount': 0, 'deployments': [{'rolloutState': 'COMPLETED'}]}
-                             for name, td in [('ipgo-dev-onebox-server', 31), ('ipgo-dev-onebox-ai-api', 17)]]}
+                             for name, td in [('ipgo-dev-onebox-server', 32), ('ipgo-dev-onebox-ai-api', 19)]]}
 
     def run_task(self, **args):
         self.runs.append(args)
@@ -108,6 +108,30 @@ class DispatchTest(unittest.TestCase):
         self.assertEqual(configuration()['task_definition_arn'], call['taskDefinition'])
         self.assertEqual(64, len(call['clientToken']))
         self.assertEqual([], ecs.stops)
+
+    def test_old_or_drifted_services_stop_before_run_task(self):
+        from unittest.mock import patch
+        for td in (31,33):
+            ecs=FakeEcs();reply=ecs.describe_services()
+            reply['services'][0]['taskDefinition']=reply['services'][0]['taskDefinition'].rsplit(':',1)[0]+':'+str(td)
+            with patch.object(ecs,'describe_services',return_value=reply),self.assertRaisesRegex(GateError,'BASELINE'):
+                dispatch(ecs,FakeLogs(),self.manifest,configuration(),'signed-envelope')
+            self.assertEqual([],ecs.runs)
+
+    def test_recovery_uses_install_task_and_does_not_require_healthy_app(self):
+        from unittest.mock import patch
+        ecs=FakeEcs();m=dict(self.manifest,kind='deactivate')
+        class RecoveryLogs:
+            def get_log_events(self,**kw):
+                self.args=kw
+                return {'events':[{'message':json.dumps({'status':'DEACTIVATED','operationId':m['operationId'],'businessWrites':0})}]}
+        logs=RecoveryLogs()
+        with patch.object(ecs,'describe_services',side_effect=AssertionError('recovery must remain available')):
+            result=dispatch(ecs,logs,m,configuration(),'signed-envelope')
+        self.assertEqual('DEACTIVATED',result['status'])
+        self.assertEqual(['deactivate'],ecs.runs[0]['overrides']['containerOverrides'][0]['command'])
+        self.assertEqual('d0-install',ecs.runs[0]['tags'][0]['value'])
+        self.assertTrue(logs.args['logStreamName'].startswith('d0-install/'))
 
     def test_failed_exit_digest_or_log_payload_never_starts_another_task(self):
         for ecs, logs in [(FakeEcs(fail=True), FakeLogs()), (FakeEcs(digest='sha256:' + 'b' * 64), FakeLogs()),

@@ -209,7 +209,7 @@ def prepare(manifest, database, api, *, wait=time.sleep, clock=time.monotonic, p
 
 
 def main():
-    require(len(sys.argv) == 2 and sys.argv[1] in ('install', 'read-only', 'prepare'), 'MODE')
+    require(len(sys.argv) == 2 and sys.argv[1] in ('install', 'deactivate', 'read-only', 'prepare'), 'MODE')
     signal.signal(signal.SIGALRM, lambda *_: (_ for _ in ()).throw(GateError('TASK_DEADLINE')))
     signal.signal(signal.SIGTERM, lambda *_: (_ for _ in ()).throw(GateError('TASK_STOPPED')))
     signal.alarm(600)
@@ -221,11 +221,11 @@ def main():
         raise GateError('ENVELOPE_ENCODING') from None
     manifest = verify_envelope(envelope)
     require(manifest['kind'] == sys.argv[1], 'MODE_SIGNATURE_MISMATCH')
-    db = Database(manifest, install=sys.argv[1] == 'install')
+    db = Database(manifest, install=sys.argv[1] in ('install', 'deactivate'))
     try:
-        if sys.argv[1] == 'install':
-            from install import install
-            output = install(manifest, db)
+        if sys.argv[1] in ('install', 'deactivate'):
+            from install import install, deactivate
+            output = (install if sys.argv[1] == 'install' else deactivate)(manifest, db)
         else:
             verify_client()
             if sys.argv[1] == 'read-only':

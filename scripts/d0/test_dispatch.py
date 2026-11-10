@@ -133,6 +133,17 @@ class DispatchTest(unittest.TestCase):
         self.assertEqual('d0-install',ecs.runs[0]['tags'][0]['value'])
         self.assertTrue(logs.args['logStreamName'].startswith('d0-install/'))
 
+    def test_newly_signed_recovery_has_distinct_token_but_same_envelope_is_idempotent(self):
+        m=dict(self.manifest,kind='deactivate')
+        class Logs:
+            def get_log_events(self,**kw):
+                return {'events':[{'message':json.dumps({'status':'DEACTIVATED','operationId':m['operationId'],'businessWrites':0})}]}
+        tokens=[]
+        for encoded in ('approval-one','approval-one','approval-two'):
+            ecs=FakeEcs();dispatch(ecs,Logs(),m,configuration(),encoded)
+            tokens.append(ecs.runs[0]['clientToken'])
+        self.assertEqual(tokens[0],tokens[1]);self.assertNotEqual(tokens[0],tokens[2])
+
     def test_failed_exit_digest_or_log_payload_never_starts_another_task(self):
         for ecs, logs in [(FakeEcs(fail=True), FakeLogs()), (FakeEcs(digest='sha256:' + 'b' * 64), FakeLogs()),
                           (FakeEcs(), FakeLogs(status='ALREADY_SEEDED')),

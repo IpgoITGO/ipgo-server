@@ -31,7 +31,11 @@ def dispatch(ecs, logs, manifest, cfg, encoded, *, clock=time.monotonic, wait=ti
     overrides = {'cpu': '256', 'memory': '512', 'containerOverrides': [{'name': 'runner', 'command': [manifest['kind']],
                  'environment': [{'name': 'D0_SIGNED_MANIFEST', 'value': encoded}]}]}
     require(len(json.dumps(overrides).encode()) <= 8192, 'OVERRIDES_SIZE')
-    token = hashlib.sha256((manifest['operationId'] + ':' + manifest['kind']).encode()).hexdigest()
+    request = manifest['operationId'] + ':' + manifest['kind']
+    if manifest['kind'] == 'deactivate':
+        # 새로 서명/승인한 복구는 실제 재확인한다. 같은 봉투의 응답 유실 재전송은 중복 방지한다.
+        request += ':' + hashlib.sha256(encoded.encode()).hexdigest()
+    token = hashlib.sha256(request.encode()).hexdigest()
     audit('REQUESTED', {'operationId': manifest['operationId'], 'clientToken': token,
                         'taskDefinitionArn': cfg['task_definition_arn']})
     response = ecs.run_task(cluster=cfg['cluster_arn'], taskDefinition=cfg['task_definition_arn'],

@@ -8,6 +8,14 @@ on:
       - "database/bootstrap/create_d0_ops.sql"
       - "Dockerfile.d0"
       - ".github/workflows/d0-validation.yml"
+  push:
+    branches: [dev]
+    paths:
+      - "scripts/d0/**"
+      - "database/bootstrap/create_d0_ops.sql"
+      - "scripts/testing/verify-d0-ops.sh"
+      - "Dockerfile.d0"
+      - ".github/workflows/d0-validation.yml"
   workflow_dispatch:
     inputs:
       expected_sha:

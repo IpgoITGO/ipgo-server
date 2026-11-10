@@ -15,5 +15,7 @@ class WorkflowTest(unittest.TestCase):
         self.assertIn('environment: d0-validation',run)
         self.assertLess(run.index('environment_gate.py'),run.index('configure-aws-credentials'))
         self.assertLess(run.index('scripts/d0/gate.py'),run.index('configure-aws-credentials'))
-        self.assertNotIn('push:',text)
+        self.assertIn('  push:',local)
+        self.assertIn('    branches: [dev]',local)
+        self.assertIn("github.event_name == 'workflow_dispatch'",run)
         self.assertNotIn('cancel-in-progress: true',text)

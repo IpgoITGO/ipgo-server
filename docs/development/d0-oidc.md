@@ -6,7 +6,7 @@
 
 ## 경로와 권한
 
-`d0-validation.yml`의 PR job은 로컬 Python·폐기 PostgreSQL·컨테이너 검사만 한다.
+`d0-validation.yml`의 PR 및 dev push job은 로컬 Python·폐기 PostgreSQL·컨테이너 검사만 한다.
 수동 dev 실행만 별도 `d0-validation` environment와 새 `ipgo-dev-d0-runner-oidc`를 사용한다.
 승인자 1명 이상, 자기승인 금지, custom branch policy `dev` 하나를 실제 GitHub API로 읽고
 서명·날짜·SHA를 확인한 뒤에만 15분 OIDC 세션을 얻는다. 정책 조회 실패도 중단이다.

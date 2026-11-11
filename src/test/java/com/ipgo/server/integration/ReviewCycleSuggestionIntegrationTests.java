@@ -47,34 +47,61 @@ class ReviewCycleSuggestionIntegrationTests extends DatabaseIntegrationTest {
     }
     @AfterEach void cleanup() { UploadTestDatabase.clear(jdbc); }
 
-    @Test void latestPeriodNotLastArrivalPopulatesS1P1K1WithoutWritesOrCalculation() throws Exception {
-        done(warehouse,"2026-10",1,7);
-        done(warehouse,"2026-09",1,14); // 오래된 자료를 나중에 올려도 최신 기간을 우선한다
-        s1(7,"ESTIMATED",false);
+    @Test void inboundDaysAcrossMonthsPopulateS1P1K1WithoutWritesOrCalculation() throws Exception {
+        // #166: 한 달에 1~2번 들어와도 여러 달을 합쳐 3번 이상이면 추정한다. 9/1 · 9/8 · 10/6 → 간격 7 · 28 → 중앙값 17.5 → 18
+        done(warehouse,"2026-10",1,6);
+        done(warehouse,"2026-09",1,1,8); // 오래된 자료를 나중에 올려도 기간 순서와 관계없이 합친다
+        s1(18,"ESTIMATED",false);
+        mvc.perform(get("/api/replenishment-settings").with(jwt().jwt(j -> j.subject(""+owner))))
+                .andExpect(jsonPath("reviewCycleBasis.from").value("2025-11-01"))
+                .andExpect(jsonPath("reviewCycleBasis.to").value("2026-10-31"))
+                .andExpect(jsonPath("reviewCycleBasis.productCount").value(1));
         mvc.perform(get("/api/products").with(jwt().jwt(j -> j.subject(""+owner))))
-                .andExpect(status().isOk()).andExpect(jsonPath("items[0].settings.reviewCycleDays").value(7))
+                .andExpect(status().isOk()).andExpect(jsonPath("items[0].settings.reviewCycleDays").value(18))
                 .andExpect(jsonPath("items[0].overridden").isEmpty());
         mvc.perform(get("/api/products/{id}/detail",product).with(jwt().jwt(j -> j.subject(""+owner))))
-                .andExpect(status().isOk()).andExpect(jsonPath("settings.reviewCycleDays").value(7))
+                .andExpect(status().isOk()).andExpect(jsonPath("settings.reviewCycleDays").value(18))
                 .andExpect(jsonPath("settings.reviewCycleSource").value("ESTIMATED"));
         assertThat(jdbc.queryForObject("SELECT default_review_cycle_days FROM warehouses WHERE id = ?",Integer.class,warehouse)).isNull();
         for (String table : List.of("replenishment_settings","calculation_runs"))
             assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM "+table,Long.class)).isZero();
     }
-    @Test void latestCompletedNullDoesNotResurrectOlderPositiveEstimate() throws Exception {
-        done(warehouse,"2026-09",1,14); done(warehouse,"2026-10",1,null);
+    @Test void fewerThanThreeInboundDaysOrOlderThanTwelveMonthsGivesNoEstimate() throws Exception {
+        done(warehouse,"2025-10",1,1,8,15); // 마지막 날(2026-10-31)에서 12개월보다 앞이라 빠진다
+        done(warehouse,"2026-10",1,1,20);
+        s1(null,"ESTIMATED",false);
+        mvc.perform(get("/api/replenishment-settings").with(jwt().jwt(j -> j.subject(""+owner))))
+                .andExpect(jsonPath("reviewCycleBasis").isEmpty());
+    }
+    @Test void medianAcrossProductsIsRoundedLikeTheEngine() throws Exception {
+        jdbc.update("INSERT INTO products(user_id,sku_barcode,sku_name) VALUES (?,'B','상품B')", owner);
+        long second = jdbc.queryForObject("SELECT id FROM products WHERE user_id = ? AND sku_barcode = 'B'", Long.class, owner);
+        var upload = pending(warehouse,"2026-10",1);
+        finish(upload,null,1,8,15);                  // A: 7
+        inbound(upload,second,1,11,21,30);           // B: 10 · 10 · 9 → 10
+        s1(9,"ESTIMATED",false);                     // (7 + 10) / 2 = 8.5 → 9
+        mvc.perform(get("/api/replenishment-settings").with(jwt().jwt(j -> j.subject(""+owner))))
+                .andExpect(jsonPath("reviewCycleBasis.productCount").value(2));
+    }
+    @Test void excludedProductOfAFileIsNotCounted() throws Exception {
+        var upload = pending(warehouse,"2026-10",1);
+        inbound(upload,product,1,8,15);
+        upload.complete(upload.getPeriodEnd(), new UploadProcessingReport(upload.getPeriodEnd(),
+                new UploadProcessingReport.Validation(1,0,List.of(new UploadProcessingReport.ExcludedSku(product,"A","상품A",
+                        LocalDate.of(2026,10,3),"검산 불일치"))),null,null));
+        uploads.saveAndFlush(upload);
         s1(null,"ESTIMATED",false);
     }
     @Test void higherRevisionWinsEvenWhenOlderRevisionCompletesLater() throws Exception {
-        done(warehouse,"2026-10",2,9); done(warehouse,"2026-10",1,7);
+        done(warehouse,"2026-10",2,1,10,19); done(warehouse,"2026-10",1,1,8,15);
         s1(9,"ESTIMATED",false);
     }
     @Test void processingRevisionDoesNotUseItsSupersededReportButCanUseOtherCompletedPeriod() throws Exception {
-        done(warehouse,"2026-09",1,14); done(warehouse,"2026-10",1,7);
+        done(warehouse,"2026-09",1,1,15,29); done(warehouse,"2026-10",1,1,8,15);
         pending(warehouse,"2026-10",2); s1(14,"ESTIMATED",false);
     }
     @Test void failedRevisionDoesNotUseItsSupersededReport() throws Exception {
-        done(warehouse,"2026-10",1,7);
+        done(warehouse,"2026-10",1,1,8,15);
         var failed = pending(warehouse,"2026-10",2);
         failed.fail(new UploadProcessingReport.Failure("INVALID_SOURCE","시험 실패")); uploads.saveAndFlush(failed);
         s1(null,"ESTIMATED",false);
@@ -83,12 +110,18 @@ class ReviewCycleSuggestionIntegrationTests extends DatabaseIntegrationTest {
         long other=UploadTestDatabase.newUser(jdbc,UUID.randomUUID()+"@example.test");
         jdbc.update("INSERT INTO warehouses(user_id,name) VALUES (?,'다른 창고')",other);
         long otherWarehouse=jdbc.queryForObject("SELECT id FROM warehouses WHERE user_id = ?",Long.class,other);
-        done(otherWarehouse,"2026-10",1,8); s1(null,"ESTIMATED",false);
+        jdbc.update("INSERT INTO products(user_id,sku_barcode,sku_name) VALUES (?,'A','상품A')", other);
+        long otherProduct=jdbc.queryForObject("SELECT id FROM products WHERE user_id = ?",Long.class,other);
+        var upload=pending(otherWarehouse,"2026-10",1);
+        inbound(upload,otherProduct,1,9,17);
+        upload.complete(upload.getPeriodEnd(),new UploadProcessingReport(upload.getPeriodEnd(),new UploadProcessingReport.Validation(1,1,List.of()),8,null));
+        uploads.saveAndFlush(upload);
+        s1(null,"ESTIMATED",false);
     }
     @Test void confirmedDefaultsAndProductOverridesSurviveNewReports() throws Exception {
         replenishment.saveDefaults(owner,new DefaultSettingsRequest(5,11,1L,false));
         jdbc.update("INSERT INTO replenishment_settings(product_id,lead_time_days,review_cycle_days,order_unit_qty,updated_at) VALUES (?,NULL,19,NULL,CURRENT_TIMESTAMP)",product);
-        done(warehouse,"2026-10",1,7); s1(11,"DEFAULT",true);
+        done(warehouse,"2026-10",1,1,8,15); s1(11,"DEFAULT",true);
         mvc.perform(get("/api/products").with(jwt().jwt(j -> j.subject(""+owner))))
                 .andExpect(jsonPath("items[0].settings.reviewCycleDays").value(19));
         mvc.perform(get("/api/products/{id}/detail",product).with(jwt().jwt(j -> j.subject(""+owner))))
@@ -128,10 +161,23 @@ class ReviewCycleSuggestionIntegrationTests extends DatabaseIntegrationTest {
     private UploadFile pending(long w,String month,int rev) {
         return uploads.saveAndFlush(new UploadFile(w,month+".xlsx",UUID.randomUUID().toString(),"a".repeat(64),rev,new UploadPeriod(YearMonth.parse(month))));
     }
-    private void done(long w,String month,int rev,Integer cycle) { finish(pending(w,month,rev),cycle); }
-    private void finish(UploadFile upload,Integer cycle) {
+    private void done(long w,String month,int rev,int... inboundDays) { finish(pending(w,month,rev),null,inboundDays); }
+    // 업로드를 정제 완료로 바꾸고, 그 달의 inboundDays 날짜에 상품 A의 입고 기록을 남긴다.
+    private void finish(UploadFile upload,Integer reportCycle,int... inboundDays) {
+        inbound(upload,product,inboundDays);
         LocalDate end=upload.getPeriodEnd();
-        upload.complete(end,new UploadProcessingReport(end,new UploadProcessingReport.Validation(1,1,List.of()),cycle,null));
+        // 실제 정제 결과처럼 그 달 마지막 날 기록도 남긴다(입고 0). 12개월 기간의 끝을 정한다.
+        if (java.util.Arrays.stream(inboundDays).noneMatch(d -> d == end.getDayOfMonth())) jdbc.update("""
+                INSERT INTO product_daily_stocks(product_id,upload_file_id,stock_date,opening_qty,inbound_qty,outbound_qty,
+                    adjustment_qty,closing_qty,is_valid_observation) VALUES (?,?,?,5,0,0,0,5,TRUE)
+                """,product,upload.getId(),end);
+        upload.complete(end,new UploadProcessingReport(end,new UploadProcessingReport.Validation(1,1,List.of()),reportCycle,null));
         uploads.saveAndFlush(upload);
+    }
+    private void inbound(UploadFile upload,long productId,int... days) {
+        for (int day : days) jdbc.update("""
+                INSERT INTO product_daily_stocks(product_id,upload_file_id,stock_date,opening_qty,inbound_qty,outbound_qty,
+                    adjustment_qty,closing_qty,is_valid_observation) VALUES (?,?,?,0,5,0,0,5,TRUE)
+                """,productId,upload.getId(),upload.getPeriodStart().withDayOfMonth(day));
     }
 }

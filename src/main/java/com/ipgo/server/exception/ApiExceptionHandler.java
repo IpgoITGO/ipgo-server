@@ -50,6 +50,12 @@ public class ApiExceptionHandler {
         return ResponseEntity.status(exception.status()).body(new ApiError(exception.code(), exception.getMessage()));
     }
 
+    @ExceptionHandler(AccountException.class)
+    ResponseEntity<ApiError> account(AccountException exception) {
+        return ResponseEntity.status(exception.status()).body(new ApiError(exception.code(), exception.getMessage(),
+                exception.field() == null ? null : new ApiError.FieldDetails(exception.field())));
+    }
+
     @ExceptionHandler(ProductException.class)
     ResponseEntity<ApiError> product(ProductException exception) {
         return ResponseEntity.status(exception.status()).body(new ApiError(exception.code(), exception.getMessage(),

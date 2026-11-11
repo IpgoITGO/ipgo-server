@@ -92,7 +92,7 @@ migration_count="$(docker exec "${database_container}" \
 table_count="$(docker exec "${database_container}" \
   psql -U ipgo_migrator -d ipgo -Atc \
   "SELECT COUNT(*) FROM pg_tables WHERE schemaname = 'public' AND tablename <> 'flyway_schema_history'")"
-if [[ "${migration_count}" != "23" || "${table_count}" != "36" ]]; then
+if [[ "${migration_count}" != "24" || "${table_count}" != "36" ]]; then
   echo "unexpected schema: migrations=${migration_count}, tables=${table_count}" >&2
   exit 1
 fi
@@ -215,5 +215,14 @@ UPDATE warehouses SET expiry_imminent_days = NULL WHERE id = 10;
 SQL
 expect_denied ipgo_server "UPDATE warehouses SET expiry_imminent_days = 0 WHERE id = 10"
 expect_denied ipgo_server "UPDATE warehouses SET expiry_imminent_days = 366 WHERE id = 10"
+
+# V24: 서버 역할은 탈퇴한 회원의 개인정보를 지우고 탈퇴 시각을 남길 수 있다(#172). AI 역할은 회원 표를 볼 수 없다.
+docker exec -i "${database_container}" psql -v ON_ERROR_STOP=1 -U ipgo_server -d ipgo >/dev/null <<'SQL'
+INSERT INTO users(id,email,password_hash) VALUES (900,'withdraw-check@example.test','test-only-hash');
+UPDATE users SET email='withdrawn-900@withdrawn.invalid', company_name=NULL, manager_name=NULL,
+    business_reg_no=NULL, withdrawn_at=CURRENT_TIMESTAMP WHERE id=900;
+DELETE FROM users WHERE id=900;
+SQL
+expect_denied ipgo_ai_reader "SELECT withdrawn_at FROM users"
 
 echo "PostgreSQL migrations, tenant integrity, and database roles verified."

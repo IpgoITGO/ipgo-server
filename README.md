@@ -265,6 +265,20 @@ IPGO_TEST_DB_USERNAME=ipgo IPGO_TEST_DB_PASSWORD=<임시 비밀번호> ./gradlew
 | 401 | `REFRESH_TOKEN_REUSED` | 이전 리프레시 토큰 재사용으로 로그인 폐기. 재로그인 |
 | 403 | `FORBIDDEN` | 인증 관련 POST의 CSRF 누락·오류 또는 리소스 소유권 위반 |
 
+### 회원 탈퇴 (#172)
+
+| API | 동작 |
+|---|---|
+| `POST /api/account/withdraw` | `{ password }`. 현재 비밀번호가 맞으면 `204`와 refresh 쿠키 삭제. 틀리면 `400 WRONG_PASSWORD`(`details.field: password`), 비었으면 `400 INVALID_INPUT` |
+
+탈퇴하면 다음 순서로 처리합니다.
+
+1. 결제 기능이 켜져 있으면 해지(`BillingService.cancel`)와 같은 처리로 다음 결제를 멈춥니다. 결제가 진행 중이면 그 오류(`409`)를 그대로 돌려주고 탈퇴하지 않습니다. 결제가 꺼져 있어도 예전 구독의 다음 청구일을 지웁니다.
+2. 모든 로그인 세션을 폐기합니다. 서버가 요청마다 세션을 확인하므로 이미 받은 access token도 바로 `401`이 됩니다.
+3. 개인정보를 지웁니다. 이메일은 `withdrawn-{회원번호}@withdrawn.invalid`, 비밀번호는 아무도 모르는 값, 회사명·담당자명·사업자번호는 비우고 `withdrawn_at`(V24)을 남깁니다. 원래 이메일은 바로 비므로 같은 이메일로 다시 가입할 수 있고, 새 계정이라 옛 데이터는 보이지 않습니다.
+
+회원 행은 지우지 않습니다. 법으로 보관하는 결제 원장(V17)과 최소 30일 보관하는 DB 원본(V15)이 회원·업로드를 가리키기 때문입니다. 수불부·상품·계산 결과는 로그인할 수 없는 탈퇴 계정에 남고, 보관 기간이 지난 뒤 정리하는 작업은 후속입니다.
+
 ## 이메일 인증과 SMTP 설정
 
 인증 코드는 6자리이며 발송 요청 시점부터 10분간 유효합니다. 같은 이메일은 60초에 한 번 재발송할 수 있고, 새 발송에 성공하면 이전 코드와 가입 토큰은 무효가 됩니다. 코드를 5회 틀리면 해당 코드가 무효가 되며 재발송이 필요합니다. 형식 자체가 잘못된 요청은 입력 오류로 처리합니다.
@@ -722,7 +736,7 @@ scripts/testing/verify-insight-contract.sh /path/to/ipgo-ai
 
 ## Database 변경과 복구
 
-이미 병합된 migration은 Flyway 이력을 보존하기 위해 수정하지 않습니다. 새 DB에서는 승인한 범위의 migration을 순서대로 적용합니다. #90 구현은 V16까지 필요하며 운영 적용은 별도 승인입니다. V4는 `warehouses`·`products`·`inventory_units`, V5는 `upload_files`, V6은 `replenishment_settings`, V7은 `planned_receipts`, V8은 `auth_sessions`·`refresh_tokens`, V9는 `calculation_runs`·`calculation_results`, V10은 일별 수불 2개 표, V11은 계산 출처·시나리오·백테스트·AI 인사이트 4개 표를 추가합니다. V12는 PostgreSQL tenant 무결성 trigger, V13은 FastAPI view와 역할별 권한을 적용하고, V14는 `engine_jobs`·입력 hash·정제 조회 view를 추가합니다. V15의 DB 원본 저장 전환(Server #77·AI #60)은 보류 상태입니다. V16은 입고 사건·배정·업로드 판정 기록을 추가하며 기존 원본 저장 모드를 바꾸지 않습니다. V16을 위해 전체 migration 경로를 실행하기 전 V15의 보류/실제 DB 이력을 함께 확인해야 합니다. V19는 창고 보관 요율 칸과 `product_boxes`를 추가합니다(#111). 기존 행은 바꾸지 않고, 되돌릴 때는 새 칸과 표만 지우면 됩니다. V21은 내 입고량 `product_planned_quantities`를 추가합니다(#119, V20은 #137 입고 정정). 되돌릴 때는 이 표만 지우면 됩니다. V23은 `inventory_units.expiry_date`와 `warehouses.expiry_imminent_days` 칸을 추가합니다(#168, V22는 인사이트 월 사용량). 기존 행은 NULL로 남고, 되돌릴 때는 두 칸만 지우면 됩니다. 실제 DB 적용은 V15~V18과 같은 순서 확인과 별도 승인을 따릅니다. 전체 관계와 변경 규칙은 [Database ERD v1](docs/database/erd-v1.md)에 있습니다. Hibernate는 스키마를 자동 수정하지 않고 검증만 수행합니다.
+이미 병합된 migration은 Flyway 이력을 보존하기 위해 수정하지 않습니다. 새 DB에서는 승인한 범위의 migration을 순서대로 적용합니다. #90 구현은 V16까지 필요하며 운영 적용은 별도 승인입니다. V4는 `warehouses`·`products`·`inventory_units`, V5는 `upload_files`, V6은 `replenishment_settings`, V7은 `planned_receipts`, V8은 `auth_sessions`·`refresh_tokens`, V9는 `calculation_runs`·`calculation_results`, V10은 일별 수불 2개 표, V11은 계산 출처·시나리오·백테스트·AI 인사이트 4개 표를 추가합니다. V12는 PostgreSQL tenant 무결성 trigger, V13은 FastAPI view와 역할별 권한을 적용하고, V14는 `engine_jobs`·입력 hash·정제 조회 view를 추가합니다. V15의 DB 원본 저장 전환(Server #77·AI #60)은 보류 상태입니다. V16은 입고 사건·배정·업로드 판정 기록을 추가하며 기존 원본 저장 모드를 바꾸지 않습니다. V16을 위해 전체 migration 경로를 실행하기 전 V15의 보류/실제 DB 이력을 함께 확인해야 합니다. V19는 창고 보관 요율 칸과 `product_boxes`를 추가합니다(#111). 기존 행은 바꾸지 않고, 되돌릴 때는 새 칸과 표만 지우면 됩니다. V21은 내 입고량 `product_planned_quantities`를 추가합니다(#119, V20은 #137 입고 정정). 되돌릴 때는 이 표만 지우면 됩니다. V23은 `inventory_units.expiry_date`와 `warehouses.expiry_imminent_days` 칸을 추가합니다(#168, V22는 인사이트 월 사용량). 기존 행은 NULL로 남고, 되돌릴 때는 두 칸만 지우면 됩니다. V24는 회원 탈퇴 시각 `users.withdrawn_at` 칸을 추가합니다(#172). 기존 행은 NULL로 남고, 되돌릴 때는 이 칸만 지우면 됩니다. 실제 DB 적용은 V15~V18과 같은 순서 확인과 별도 승인을 따릅니다. 전체 관계와 변경 규칙은 [Database ERD v1](docs/database/erd-v1.md)에 있습니다. Hibernate는 스키마를 자동 수정하지 않고 검증만 수행합니다.
 
 초기 PostgreSQL은 administrator가 `database/bootstrap/create_roles.sql`을 먼저 실행한 뒤 `ipgo_migrator`로 Flyway를 적용합니다. 새 DB의 bootstrap SQL은 `ipgo_migrator`·`ipgo_server`·`ipgo_ai_reader`·`ipgo_ai_service_reader` 역할을 만들고 비밀번호는 설정하지 않습니다. 비밀번호는 repository·shell history·Terraform state에 남기지 않고 승인된 Secrets Manager 절차로 설정합니다. Spring runtime은 `ipgo_server`, FastAPI는 `ipgo_ai_reader`를 사용하며 runtime에서는 `SPRING_FLYWAY_ENABLED=false`로 migration 자격 증명을 분리합니다.
 

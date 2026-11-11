@@ -307,6 +307,19 @@ SMTP 연결·읽기·쓰기 제한은 각각 5초입니다. SMTP 설정이 없�
 
 공개 운영 전에는 이메일별 제한 외에 IP·전체 발송량 제한과 메일 서비스 한도를 설정해야 합니다. 만료 상태는 요청 시 검사하며, 만료된 행은 현재 자동 삭제하지 않습니다. `email_verifications`의 보관 기간과 정리 작업도 운영 전에 정해야 합니다. 이메일 중복 조회는 요청한 명세에 따라 가입 여부를 알려줍니다.
 
+### 아이디 찾기와 비밀번호 재설정 (#173)
+
+로그인 전에 쓰는 API라 인증 없이 열려 있고, CSRF는 다른 인증 POST와 같습니다. 코드·토큰은 회원가입과 같은 `email_verifications` 행을 씁니다(새 표 없음). 가입 인증은 가입하지 않은 이메일에만, 비밀번호 재설정은 가입한 이메일에만 동작해서 두 흐름이 같은 행을 동시에 쓰지 않습니다. 탈퇴 계정(`@withdrawn.invalid`)은 찾지 않습니다.
+
+| API | 동작 |
+|---|---|
+| `POST /api/auth/find-id` | `{ businessNumber }`. 하이픈·공백을 빼고 숫자 10자리를 봅니다. 같은 번호의 계정이 여럿이면 가장 최근 가입 계정의 `{ maskedEmail }`(앞 두 글자만, 예: `se***@a.com`)을 줍니다. 없으면 `404 NOT_FOUND`, 10자리가 아니면 `400 INVALID_INPUT`(`details.field: businessNumber`) |
+| `POST /api/auth/password-reset/code` | `{ email }`. **항상 `204`**입니다. 가입한 이메일이면 "Ipgo 비밀번호 재설정" 메일로 6자리 코드(10분)를 보내고, 없는 이메일이나 1분 안 재요청은 조용히 아무것도 하지 않습니다. 메일 서버 장애만 `503 EMAIL_DELIVERY_UNAVAILABLE`입니다 |
+| `POST /api/auth/password-reset/verify` | `{ email, code }` → `{ resetToken }`(30분, 한 번만). 틀림·만료·5번 실패·가입하지 않은 이메일은 모두 `400 INVALID_CODE`(`details.field: code`)입니다 |
+| `POST /api/auth/password-reset` | `{ resetToken, newPassword }` → `204`. 비밀번호 규칙은 가입과 같고 틀리면 `400 INVALID_INPUT`(`details.field: newPassword`), 토큰이 없거나 만료·사용됐으면 `400 INVALID_TOKEN`입니다. 바꾸면 그 계정의 모든 로그인 세션을 폐기합니다 |
+
+아이디 찾기는 사업자등록번호만 알면 가린 이메일을 보여 주므로, 공개 운영 전에는 IP별 요청 제한을 함께 두어야 합니다.
+
 ### 개발용 Gmail (#82)
 
 개발·시연에서는 팀 공용 Gmail 계정(`ipgoITgo@gmail.com`)으로 인증 메일을 보냅니다. 받는 사람은 Gmail이 아니어도 되며 사용자는 아래 값을 알 필요가 없습니다.

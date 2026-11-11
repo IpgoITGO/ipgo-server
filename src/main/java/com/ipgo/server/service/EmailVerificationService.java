@@ -99,7 +99,7 @@ public class EmailVerificationService {
         state.consumeToken();
     }
 
-    private static String hash(String value) {
+    static String hash(String value) {
         try {
             return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(value.getBytes(StandardCharsets.UTF_8)));
         } catch (NoSuchAlgorithmException exception) {

@@ -1,12 +1,15 @@
 import copy
+import contextlib
 import hashlib
 import importlib.util
 import json
+import io
 from pathlib import Path
 import stat
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 import zipfile
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -127,6 +130,39 @@ class RuntimeArtifactTests(unittest.TestCase):
         self.assertIn('file: ${{ steps.runtime.outputs.dockerfile }}', workflow)
         self.assertIn('provenance: true', workflow)
         self.assertIn('sbom: true', workflow)
+
+    def test_download_timeout_is_bounded_has_no_retry_and_redacts_response(self):
+        (self.root / 'approved-ci.json').write_text('{}')
+        error = io.StringIO()
+        with patch.dict(M.os.environ, {'COMPUTE_MODE': 'onebox', 'RUNNER_TEMP': str(self.root)}, clear=True), \
+                patch.object(M.sys, 'argv', ['runtime_artifact.py', 'fetch', '--output', str(self.root / 'cli-out')]), \
+                patch.object(M, 'select_artifact', return_value=(self.artifact, self.run)), \
+                patch.object(M.subprocess, 'run', side_effect=M.subprocess.TimeoutExpired(
+                    ['gh', 'api'], 120, output=b'synthetic-sensitive-response')) as download, \
+                contextlib.redirect_stderr(error):
+            self.assertEqual(M.main(), 1)
+        self.assertEqual(download.call_count, 1)
+        self.assertEqual(download.call_args.kwargs['timeout'], 120)
+        self.assertTrue(download.call_args.kwargs['check'])
+        self.assertIn('archive_download', error.getvalue())
+        self.assertNotIn('synthetic-sensitive-response', error.getvalue())
+        self.assertFalse((self.root / 'cli-out').exists())
+
+    def test_successful_cli_download_still_verifies_archive_and_jar(self):
+        (self.root / 'approved-ci.json').write_text('{}')
+        output = io.StringIO()
+
+        def download(*args, **kwargs):
+            kwargs['stdout'].write(self.archive.read_bytes())
+            return M.subprocess.CompletedProcess(args[0], 0)
+
+        with patch.dict(M.os.environ, {'COMPUTE_MODE': 'onebox', 'RUNNER_TEMP': str(self.root)}, clear=True), \
+                patch.object(M.sys, 'argv', ['runtime_artifact.py', 'fetch', '--output', str(self.root / 'cli-out')]), \
+                patch.object(M, 'select_artifact', return_value=(self.artifact, self.run)), \
+                patch.object(M.subprocess, 'run', side_effect=download), contextlib.redirect_stdout(output):
+            self.assertEqual(M.main(), 0)
+        self.assertTrue(json.loads(output.getvalue())['runtime_artifact_reused'])
+        self.assertEqual((self.root / 'cli-out/app.jar').read_bytes(), (self.package / 'app.jar').read_bytes())
 
     def test_ci_tests_package_once_build_same_jar_and_only_upload_from_dev_push(self):
         workflow = (ROOT / '.github/workflows/test.yml').read_text()

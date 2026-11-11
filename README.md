@@ -1,6 +1,6 @@
 # Ipgo Server
 
-개발 배포의 검사한 JAR 재사용·원본/해시 검증·이전 버전 복구 경로는 [빌드 재사용 절차](docs/development/runtime-reuse.md)를 따릅니다. 실제 배포 전에는 변경과 승인 SHA를 별도로 확인합니다.
+개발 배포의 검사한 JAR 재사용·원본/해시 검증·전송 상한/실패 단계·이전 버전 복구 경로는 [빌드 재사용 절차](docs/development/runtime-reuse.md)를 따릅니다. 실제 배포 전에는 변경과 승인 SHA를 별도로 확인합니다.
 
 D0 전용 합성 자료 준비의 비활성 OIDC 경로·권한·적용 및 복구 절차는 [D0 운영](docs/development/d0-oidc.md)을 따릅니다. TD32·TD19 고정 검사, 최초 설치 충돌 검사와 서명된 신규 로그인 차단 경로도 같은 문서를 따릅니다. 실제 IAM·DB 적용과 D0 실행은 별도 승인입니다.
 

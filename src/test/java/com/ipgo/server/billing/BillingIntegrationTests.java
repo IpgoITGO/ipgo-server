@@ -624,4 +624,47 @@ class BillingIntegrationTests extends DatabaseIntegrationTest {
         }
         verify(gateway,times(1)).cancel(anyString(),anyString(),anyString());
     }
+
+    @Test void confirmedRefundAllowsNewCheckoutButNotResume() {
+        String invoice=paidInvoice();
+        when(gateway.lookup(anyString())).thenReturn(refundPayment(invoice,"DONE",500));
+        when(gateway.cancel(anyString(),anyString(),anyString())).thenReturn(refundPayment(invoice,"CANCELED",0));
+        refunds.cancel(user,invoice,UUID.randomUUID().toString(),"test");
+        assertThatThrownBy(()->service.resume(user,UUID.randomUUID().toString(),BillingPolicy.CONSENT)).isInstanceOf(BillingException.class);
+        activate();
+        assertThat(service.subscription(user).entitlements().canCalculate()).isTrue();
+        assertThat(jdbc.queryForObject("select count(*) from billing_invoices where user_id=? and status='PAID'",Integer.class,user)).isEqualTo(1);
+    }
+    @Test void pendingRefundBlocksWithdrawalInTheSameUserLock() {
+        String invoice=paidInvoice();
+        when(gateway.lookup(anyString())).thenThrow(new BillingGateway.Failure(false,"TIMEOUT"));
+        refunds.cancel(user,invoice,UUID.randomUUID().toString(),"test");
+        assertThatThrownBy(()->ledger.transaction(()->{service.stopForWithdrawal(user);return null;})).isInstanceOf(BillingException.class);
+    }
+    @Test void withdrawnAccountCannotStartRefund() {
+        String invoice=paidInvoice();
+        jdbc.update("update users set withdrawn_at=? where id=?",java.sql.Timestamp.from(now),user);
+        assertThatThrownBy(()->refunds.cancel(user,invoice,UUID.randomUUID().toString(),"test")).isInstanceOf(BillingException.class);
+        verify(gateway,never()).lookup(anyString());
+    }
+    @Test void databaseFailureAfterCancelRecoversFromProviderWithoutSecondCancel() {
+        String invoice=paidInvoice();
+        when(gateway.lookup(anyString())).thenReturn(refundPayment(invoice,"DONE",500),refundPayment(invoice,"CANCELED",0));
+        when(gateway.cancel(anyString(),anyString(),anyString())).thenReturn(refundPayment(invoice,"CANCELED",0));
+        String sql="update billing_refunds set status='CANCELED',canceled_at=?,lease_until=null where id=?";
+        doThrow(new org.springframework.dao.DataAccessResourceFailureException("fixture storage failure")).doCallRealMethod().when(ledger).update(eq(sql),any(Object[].class));
+        assertThatThrownBy(()->refunds.cancel(user,invoice,UUID.randomUUID().toString(),"test")).isInstanceOf(org.springframework.dao.DataAccessResourceFailureException.class);
+        assertThat(service.subscription(user).entitlements().canCalculate()).isTrue();
+        now=START.plusSeconds(181); refunds.processOne();
+        assertThat(service.invoices(user,null).items().getFirst().refundStatus()).isEqualTo("CANCELED");
+        verify(gateway,times(1)).cancel(anyString(),anyString(),anyString());
+    }
+    @Test void refundOlderThanIdempotencyWindowRequiresReviewEvenForManualRetry() {
+        String invoice=paidInvoice();
+        when(gateway.lookup(anyString())).thenThrow(new BillingGateway.Failure(false,"TIMEOUT"));
+        refunds.cancel(user,invoice,UUID.randomUUID().toString(),"test");
+        now=START.plus(Duration.ofDays(15));
+        assertThat(refunds.cancel(user,invoice,UUID.randomUUID().toString(),"test").status()).isEqualTo("REVIEW_REQUIRED");
+        verify(gateway,times(1)).lookup(anyString());
+    }
 }

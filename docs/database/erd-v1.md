@@ -59,6 +59,7 @@ erDiagram
 | 평가·설명 | `backtest_metrics`, `ai_explanations` | V11 | result별 각각 최대 1행 |
 | 보관 비용 | `warehouses.storage_rate_per_cbm`, `product_boxes` | V19 | 요율·상자 크기 모두 0보다 큼, 상품 삭제 시 상자 cascade (#111) |
 | 내 입고량 | `product_planned_quantities` | V21 | 상품당 1행, 수량 양수, 출처 4종, 기준 계산 FK (#119) |
+| 유통기한 | `inventory_units.expiry_date`, `warehouses.expiry_imminent_days` | V23 | LOT별 유통기한(없으면 NULL), 임박 기준 1~365일(NULL이면 30일) (#168) |
 
 V12의 PostgreSQL trigger는 다음 교차 연결을 거부합니다.
 

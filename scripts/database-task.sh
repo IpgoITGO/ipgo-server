@@ -67,7 +67,7 @@ run_migrate() {
   export FLYWAY_PASSWORD="${DB_PASSWORD}"
   flyway \
     -connectRetries=12 \
-    -target=22 \
+    -target=23 \
     -validateMigrationNaming=true \
     migrate
 
@@ -75,7 +75,7 @@ run_migrate() {
     --tuples-only --no-align \
     --command="
       SELECT CASE
-        WHEN COUNT(*) = 22 AND MAX(version::integer) = 22 THEN 'ok'
+        WHEN COUNT(*) = 23 AND MAX(version::integer) = 23 THEN 'ok'
         ELSE 'invalid'
       END
       FROM flyway_schema_history
@@ -85,7 +85,7 @@ run_migrate() {
     echo "unexpected Flyway state after migration" >&2
     exit 1
   fi
-  echo "Flyway V1-V22 migration verified."
+  echo "Flyway V1-V23 migration verified."
 }
 
 run_bootstrap_original_reader() {

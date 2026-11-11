@@ -59,6 +59,15 @@ public final class UploadTestDatabase {
         }
     }
 
+    public static void expirySchema(JdbcTemplate jdbc) {
+        // 기존 harness의 V11 뒤에 portable V23을 적용한다(#168). 테스트 DB는 클래스끼리 공유되므로 한 번만 적용한다.
+        if (jdbc.queryForObject("SELECT COUNT(*) FROM information_schema.columns WHERE LOWER(table_name) = 'inventory_units' AND LOWER(column_name) = 'expiry_date'", Integer.class) == 0) {
+            new org.springframework.jdbc.datasource.init.ResourceDatabasePopulator(
+                    new org.springframework.core.io.ClassPathResource("db/migration/V23__add_inventory_expiry_dates.sql"))
+                    .execute(java.util.Objects.requireNonNull(jdbc.getDataSource()));
+        }
+    }
+
     public static void clear(JdbcTemplate jdbc) {
         try (var connection = java.util.Objects.requireNonNull(jdbc.getDataSource()).getConnection()) {
             if (connection.getMetaData().getDatabaseProductName().equals("PostgreSQL")) {

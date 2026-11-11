@@ -39,6 +39,9 @@ public record ProductDetail(Product product, String needStatus, LocalDate asOfDa
     public record Range(Long low, Long high) {
     }
 
-    public record Trend(LocalDate date, Long closingQty, Long outboundQty, boolean isValidObservation) {
+    // lastYearOutboundQty: 작년 같은 월·일(2/29는 2/28)의 출고. 계산식 A의 "작년 같은 기간"을 화면에 겹쳐 그리는 용도(#158).
+    // 작년 기록이 없으면 null이다.
+    public record Trend(LocalDate date, Long closingQty, Long outboundQty, boolean isValidObservation,
+            Long lastYearOutboundQty) {
     }
 }

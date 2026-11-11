@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import java.sql.Timestamp;
 import java.time.Instant;
+import java.time.temporal.ChronoUnit;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -69,9 +70,10 @@ class EngineJobsJdbcTests {
     @CsvSource({"CLEAN,PENDING,1200", "CLEAN,SENT,1200", "CALCULATE,PENDING,300", "CALCULATE,SENT,300"})
     void sentPersistsTypedTimestampAndPreservesRetryPolicy(String type, String status, long delay) {
         insert("job", type, status, Instant.now());
-        Instant before = Instant.now();
+        // DB stores microseconds (PostgreSQL rounds), so widen both ends to whole microseconds.
+        Instant before = Instant.now().truncatedTo(ChronoUnit.MICROS);
         jobs.sent("job");
-        Instant after = Instant.now();
+        Instant after = Instant.now().truncatedTo(ChronoUnit.MICROS).plus(1, ChronoUnit.MICROS);
         Instant next = jdbc.queryForObject("SELECT next_attempt_at FROM engine_jobs", Timestamp.class).toInstant();
         assertThat(next).isBetween(before.plusSeconds(delay), after.plusSeconds(delay));
         assertThat(jdbc.queryForObject("SELECT status FROM engine_jobs", String.class)).isEqualTo("SENT");

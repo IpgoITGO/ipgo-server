@@ -7,6 +7,8 @@ plugins {
 group = 'com.ipgo'
 version = '0.0.1-SNAPSHOT'
 
+apply from: 'gradle/compile-cache.gradle'
+
 java {
 	toolchain {
 		languageVersion = JavaLanguageVersion.of(21)

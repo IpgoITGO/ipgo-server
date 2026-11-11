@@ -1,0 +1,23 @@
+import org.gradle.api.tasks.compile.JavaCompile
+import org.gradle.api.tasks.testing.Test
+
+// CI opts in with --build-cache. Only Java compiler outputs may be reused.
+tasks.configureEach { task ->
+    if (!(task instanceof JavaCompile)) {
+        task.outputs.doNotCacheIf('Only Java compilation outputs may be cached') { true }
+    }
+}
+
+tasks.withType(JavaCompile).configureEach {
+    inputs.property('compileCachePlatform',
+            "${System.getProperty('os.name')}/${System.getProperty('os.arch')}")
+    inputs.property('compileCacheJavaRuntime', javaCompiler.map { compiler ->
+        compiler.metadata.javaRuntimeVersion
+    })
+}
+
+// Test results must never replace execution, including H2 and external DB tests.
+tasks.withType(Test).configureEach {
+    outputs.upToDateWhen { false }
+    outputs.doNotCacheIf('Tests must execute on every invocation') { true }
+}

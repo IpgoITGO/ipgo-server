@@ -1,5 +1,7 @@
 # Ipgo Server
 
+개발 배포의 검사한 JAR 재사용·원본/해시 검증·전송 상한/실패 단계·이전 버전 복구 경로는 [빌드 재사용 절차](docs/development/runtime-reuse.md)를 따릅니다. 실제 배포 전에는 변경과 승인 SHA를 별도로 확인합니다.
+
 D0 전용 합성 자료 준비의 비활성 OIDC 경로·권한·적용 및 복구 절차는 [D0 운영](docs/development/d0-oidc.md)을 따릅니다. TD32·TD19 고정 검사, 최초 설치 충돌 검사와 서명된 신규 로그인 차단 경로도 같은 문서를 따릅니다. 실제 IAM·DB 적용과 D0 실행은 별도 승인입니다.
 
 지속 LLM의 선택적 월 상한·승인된 무상한 모드·V22·적용/중단 절차는 [월별 비용 제한](docs/decisions/0017-insight-monthly-budget.md)을 따릅니다. 구현과 실제 개발 반영은 구분합니다.
@@ -321,6 +323,19 @@ SMTP 연결·읽기·쓰기 제한은 각각 5초입니다. SMTP 설정이 없�
 
 공개 운영 전에는 이메일별 제한 외에 IP·전체 발송량 제한과 메일 서비스 한도를 설정해야 합니다. 만료 상태는 요청 시 검사하며, 만료된 행은 현재 자동 삭제하지 않습니다. `email_verifications`의 보관 기간과 정리 작업도 운영 전에 정해야 합니다. 이메일 중복 조회는 요청한 명세에 따라 가입 여부를 알려줍니다.
 
+### 아이디 찾기와 비밀번호 재설정 (#173)
+
+로그인 전에 쓰는 API라 인증 없이 열려 있고, CSRF는 다른 인증 POST와 같습니다. 코드·토큰은 회원가입과 같은 `email_verifications` 행을 씁니다(새 표 없음). 가입 인증은 가입하지 않은 이메일에만, 비밀번호 재설정은 가입한 이메일에만 동작해서 두 흐름이 같은 행을 동시에 쓰지 않습니다. 탈퇴 계정(`@withdrawn.invalid`)은 찾지 않습니다.
+
+| API | 동작 |
+|---|---|
+| `POST /api/auth/find-id` | `{ businessNumber }`. 하이픈·공백을 빼고 숫자 10자리를 봅니다. 같은 번호의 계정이 여럿이면 가장 최근 가입 계정의 `{ maskedEmail }`(앞 두 글자만, 예: `se***@a.com`)을 줍니다. 없으면 `404 NOT_FOUND`, 10자리가 아니면 `400 INVALID_INPUT`(`details.field: businessNumber`) |
+| `POST /api/auth/password-reset/code` | `{ email }`. **항상 `204`**입니다. 가입한 이메일이면 "Ipgo 비밀번호 재설정" 메일로 6자리 코드(10분)를 보내고, 없는 이메일이나 1분 안 재요청은 조용히 아무것도 하지 않습니다. 메일 서버 장애만 `503 EMAIL_DELIVERY_UNAVAILABLE`입니다 |
+| `POST /api/auth/password-reset/verify` | `{ email, code }` → `{ resetToken }`(30분, 한 번만). 틀림·만료·5번 실패·가입하지 않은 이메일은 모두 `400 INVALID_CODE`(`details.field: code`)입니다 |
+| `POST /api/auth/password-reset` | `{ resetToken, newPassword }` → `204`. 비밀번호 규칙은 가입과 같고 틀리면 `400 INVALID_INPUT`(`details.field: newPassword`), 토큰이 없거나 만료·사용됐으면 `400 INVALID_TOKEN`입니다. 바꾸면 그 계정의 모든 로그인 세션을 폐기합니다 |
+
+아이디 찾기는 사업자등록번호만 알면 가린 이메일을 보여 주므로, 공개 운영 전에는 IP별 요청 제한을 함께 두어야 합니다.
+
 ### 개발용 Gmail (#82)
 
 개발·시연에서는 팀 공용 Gmail 계정(`ipgoITgo@gmail.com`)으로 인증 메일을 보냅니다. 받는 사람은 Gmail이 아니어도 되며 사용자는 아래 값을 알 필요가 없습니다.
@@ -632,8 +647,8 @@ qty는 숫자형 JSON 정수1 이상이어야 합니다. 문자열·소수·누�
 999,999,999,999,999 이하로 제한합니다. 같은 올림 수량은 저장된 CUSTOM을 재사용하고, 다른 수량은
 결과당 CUSTOM 한 행만 갱신합니다. 기본 추천량·P80/P100/P120·원본 입력·기존 설명은 보존합니다.
 
-최신 실행이 DONE이고 상품이 활성 상태인 OK/NOT_NEEDED 결과만 받습니다. 기준일7일 초과·새 revision·
-미완료 자료·다른 최신 실행·원래 입력 누락은409 `SCENARIO_STALE`입니다. 동시 다른 수량 요청은
+화면에 보이는 마지막 DONE 실행의 결과이고 상품이 활성 상태인 OK/NOT_NEEDED 결과만 받습니다. 그 뒤에 실패(FAILED)한
+실행만 있으면 받습니다(#174). 기준일7일 초과·새 revision·미완료 자료·뒤의 대기/진행 중/새 DONE 실행·원래 입력 누락은409 `SCENARIO_STALE`입니다. 동시 다른 수량 요청은
 먼저 저장한 결과를 유지하고 뒤늦은 응답에409 `SCENARIO_CHANGED`를 반환합니다. 화면에서 확인 후
 재시도하며 자동으로 이전 성공을 덮어쓰지 않습니다.
 

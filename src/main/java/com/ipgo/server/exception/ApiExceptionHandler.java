@@ -66,7 +66,7 @@ public class ApiExceptionHandler {
     ResponseEntity<ApiError> invalidField(MethodArgumentNotValidException exception) {
         var field = exception.getBindingResult().getFieldErrors().stream()
                 .map(error -> error.getField()).sorted().findFirst().orElse(null);
-        String message = "password".equals(field)
+        String message = "password".equals(field) || "newPassword".equals(field)
                 ? "비밀번호는 8~16자로 영문 대문자, 소문자, 숫자, 특수기호를 각각 1개 이상 포함해야 하며, 공백 없이 ASCII 문자만 사용할 수 있습니다."
                 : "입력값의 형식과 길이를 확인해주세요.";
         return ResponseEntity.badRequest().body(new ApiError("INVALID_INPUT", message,
@@ -102,5 +102,12 @@ public class ApiExceptionHandler {
     @ExceptionHandler(UsernameNotFoundException.class)
     ResponseEntity<ApiError> missingUser() {
         return ResponseEntity.status(401).body(new ApiError("UNAUTHENTICATED", "로그인이 필요합니다."));
+    }
+
+    // #173 아이디 찾기 · 비밀번호 재설정
+    @ExceptionHandler(AccountRecoveryException.class)
+    ResponseEntity<ApiError> accountRecovery(AccountRecoveryException exception) {
+        return ResponseEntity.status(exception.status()).body(new ApiError(exception.code(), exception.getMessage(),
+                exception.field() == null ? null : new ApiError.FieldDetails(exception.field())));
     }
 }

@@ -198,7 +198,19 @@ class CustomScenarioIntegrationTests extends DatabaseIntegrationTest {
         jdbc.update("UPDATE calculation_runs SET selection_snapshot=CAST(? AS JSONB) WHERE id=?",JSON.writeValueAsString(snapshot),run);
         jdbc.update("UPDATE products SET is_active=FALSE WHERE id=?",product);
         create(owner,13).andExpect(status().isConflict());jdbc.update("UPDATE products SET is_active=TRUE WHERE id=?",product);
-        newRun("FAILED");create(owner,13).andExpect(status().isConflict());assertThat(CALLS.get()).isZero();
+        newRun("DONE");create(owner,13).andExpect(status().isConflict());assertThat(CALLS.get()).isZero();
+    }
+    @Test void laterFailedRunKeepsShownResultButPendingRunStillBlocks() throws Exception {
+        // #174: 화면은 마지막 DONE 결과를 보여 주므로 뒤에 실패한 계산만 있으면 그 결과로 비교할 수 있다.
+        newRun("FAILED");newRun("FAILED");
+        create(owner,13).andExpect(status().isCreated()).andExpect(jsonPath("qty").value(24));
+        assertThat(CALLS.get()).isEqualTo(1);assertBasePreserved();
+        for (String pending:List.of("QUEUED","RUNNING")) {
+            long next=newRun(pending);
+            create(owner,37).andExpect(status().isConflict()).andExpect(jsonPath("code").value("SCENARIO_STALE"));
+            jdbc.update("UPDATE calculation_runs SET status='FAILED' WHERE id=?",next);
+        }
+        assertThat(CALLS.get()).isEqualTo(1);assertThat(customQty()).isEqualTo(24);
     }
     @Test void rejectsExpiredSourceAndReplacedRevision() throws Exception {
         jdbc.update("UPDATE calculation_runs SET as_of_date=? WHERE id=?",today.minusDays(8),run);

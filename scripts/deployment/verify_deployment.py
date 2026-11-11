@@ -576,6 +576,8 @@ def main():
                 lambda path: http_json("https://api.github.com" + path, token),
                 changed_paths(sha),
             )
+            write_private_json(Path(os.environ["RUNNER_TEMP"]) / "approved-ci.json",
+                               {**result, "source_sha": sha, "service": args.service})
         elif args.command == "preflight":
             result = preflight(os.environ, args.service, aws_read)
         elif args.command == "snapshot":

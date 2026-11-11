@@ -19,4 +19,9 @@ public interface EmailVerificationRepository extends JpaRepository<EmailVerifica
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("select v from EmailVerification v where v.email = :email")
     Optional<EmailVerification> findForUpdate(@Param("email") String email);
+
+    // #173 비밀번호 재설정 토큰으로 기록을 찾는다. 토큰 원문은 저장하지 않고 SHA-256 해시로만 찾는다.
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("select v from EmailVerification v where v.tokenHash = :hash")
+    Optional<EmailVerification> findByTokenHashForUpdate(@Param("hash") String hash);
 }

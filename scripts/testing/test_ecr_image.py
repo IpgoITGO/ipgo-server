@@ -206,10 +206,11 @@ class EcrImageTests(unittest.TestCase):
                 self.assertEqual(outputs, "")
                 self.assertNotIn("synthetic-stderr", result.stderr)
 
-    def test_actual_workflow_skips_both_build_steps_and_rechecks_before_render(self):
+    def test_actual_workflow_skips_runtime_preparation_and_build_and_rechecks_before_render(self):
         workflow = (ROOT / ".github/workflows/deploy-dev.yml").read_text()
         condition = "if: steps.image_lookup.outputs.exists == 'false'"
-        self.assertEqual(workflow.count(condition), 2)
+        self.assertEqual(workflow.count(condition), 3)
+        self.assertIn("id: runtime", workflow)
         lookup = workflow.index("id: image_lookup")
         verify = workflow.index("id: verified_image")
         render = workflow.index("      - name: Render")

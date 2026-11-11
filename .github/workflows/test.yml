@@ -27,7 +27,7 @@ jobs:
           java-version: "21"
           cache: gradle
           cache-read-only: ${{ github.event_name == 'pull_request' || github.ref != 'refs/heads/dev' }}
-      - run: ./gradlew --no-daemon test
+      - run: ./gradlew --no-daemon --build-cache test
 
   container:
     runs-on: ubuntu-latest
@@ -56,7 +56,7 @@ jobs:
           cache: gradle
           cache-read-only: ${{ github.event_name == 'pull_request' || github.ref != 'refs/heads/dev' }}
       - name: Verify server and engine transactions on native ARM
-        run: ./gradlew --no-daemon --max-workers=2 test bootJar
+        run: ./gradlew --no-daemon --max-workers=2 --build-cache test bootJar
       - name: Package tested native ARM JAR
         run: python3 scripts/deployment/runtime_artifact.py package
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069

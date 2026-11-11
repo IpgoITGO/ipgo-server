@@ -50,6 +50,8 @@ class BillingIntegrationTests extends DatabaseIntegrationTest {
     @MockitoBean BillingGateway gateway;
     @MockitoBean Clock clock;
     @org.springframework.test.context.bean.override.mockito.MockitoSpyBean com.ipgo.server.repository.BillingLedger ledger;
+    @Autowired com.ipgo.server.service.AccountWithdrawalService withdrawals;
+    @Autowired org.springframework.security.crypto.password.PasswordEncoder encoder;
     static final Instant START=Instant.parse("2026-01-31T01:00:00Z");
     static final String WEBHOOK_KEY="local-webhook-fixture-only";
     static final String STORAGE_KEY=Base64.getEncoder().encodeToString(new byte[32]);
@@ -76,6 +78,8 @@ class BillingIntegrationTests extends DatabaseIntegrationTest {
             String portable=sql.split("-- PostgreSQL 전용")[0];
             for(String statement:portable.split(";")) if(!statement.isBlank()) jdbc.execute(statement);
         }
+        // 결제 요청은 탈퇴(#172, V24 users.withdrawn_at)를 확인하므로 H2 harness에도 적용한다.
+        com.ipgo.server.support.UploadTestDatabase.withdrawalSchema(jdbc);
         clearLedger(pg);
         now=START; when(clock.instant()).thenAnswer(i->now);
         when(clock.withZone(any(java.time.ZoneId.class))).thenAnswer(i->Clock.fixed(now,i.getArgument(0)));
@@ -192,6 +196,43 @@ class BillingIntegrationTests extends DatabaseIntegrationTest {
         assertThat(service.subscription(user).periodEnd()).isEqualTo(Instant.parse("2026-03-31T01:00:00Z"));
         assertThat(jdbc.queryForObject("select count(*) from billing_invoices",Integer.class)).isEqualTo(2);
     }
+    // #172 휘님 검증 1: 탈퇴가 끝난 뒤 늦게 도착한 구독 재개 · 새 구독 · 재결제가 다음 결제를 되살리지 않는다.
+    @Test void withdrawalStopsChargesAndLateBillingRequestsCannotRestartThem() {
+        activate(); withdrawable();
+        service.cancel(user,UUID.randomUUID().toString()); // 재개할 수 있는 상태
+        withdrawals.withdraw(user,"Test123!");
+        assertThatThrownBy(()->service.resume(user,UUID.randomUUID().toString(),BillingPolicy.CONSENT))
+                .isInstanceOfSatisfying(BillingException.class,e->assertThat(e.code()).isEqualTo("ACCOUNT_WITHDRAWN"));
+        assertThatThrownBy(()->service.register(user,UUID.randomUUID().toString(),new BillingRequests.Registration("START_SUBSCRIPTION","seller",BillingPolicy.VERSION,BillingPolicy.CONSENT)))
+                .isInstanceOfSatisfying(BillingException.class,e->assertThat(e.code()).isEqualTo("ACCOUNT_WITHDRAWN"));
+        Map<String,Object> sub=jdbc.queryForMap("select cancel_at_period_end,next_charge_at from billing_subscriptions where user_id=?",user);
+        assertThat(sub.get("cancel_at_period_end")).isEqualTo(true);
+        assertThat(sub.get("next_charge_at")).isNull();
+        now=now.plus(Duration.ofDays(40)); service.prepareRenewals(); service.processOne();
+        verify(gateway,times(1)).charge(anyString(),any(),anyString()); // 처음 결제 1번뿐
+    }
+    // #172 휘님 검증 2: 결제가 진행 중이면 탈퇴를 막고, 다시 시도해도 매번 결제 상태를 확인한다.
+    // 예전 탈퇴는 해지(멱등 키 withdraw-{id})만 기록하고 중간에 실패할 수 있었다 → 구독 재개 → 새 결제 진행 중 → 탈퇴 재시도.
+    @Test void paymentInFlightBlocksWithdrawalEvenWhenRetried() {
+        activate(); withdrawable();
+        service.cancel(user,"withdraw-"+user);
+        service.resume(user,UUID.randomUUID().toString(),BillingPolicy.CONSENT);
+        String attempt=jdbc.queryForObject("select id from billing_attempts where user_id=?",String.class,user);
+        String settled=jdbc.queryForObject("select status from billing_attempts where id=?",String.class,attempt);
+        jdbc.update("update billing_attempts set status='DISPATCHING' where id=?",attempt);
+        for(int i=0;i<2;i++) {
+            assertThatThrownBy(()->withdrawals.withdraw(user,"Test123!"))
+                    .isInstanceOfSatisfying(BillingException.class,e->assertThat(e.code()).isEqualTo("BILLING_IN_PROGRESS"));
+            assertThat(jdbc.queryForObject("select withdrawn_at from users where id=?",Object.class,user)).isNull();
+            assertThat(jdbc.queryForObject("select next_charge_at from billing_subscriptions where user_id=?",Object.class,user)).isNotNull();
+        }
+        // 결제 결과가 정해지면 탈퇴할 수 있어요.
+        jdbc.update("update billing_attempts set status=? where id=?",settled,attempt);
+        withdrawals.withdraw(user,"Test123!");
+        assertThat(jdbc.queryForObject("select email from users where id=?",String.class,user)).isEqualTo("withdrawn-"+user+"@withdrawn.invalid");
+        assertThat(jdbc.queryForObject("select next_charge_at from billing_subscriptions where user_id=?",Object.class,user)).isNull();
+    }
+    void withdrawable() { jdbc.update("update users set password_hash=? where id=?",encoder.encode("Test123!"),user); }
     @Test void cancelKeepsPaidPeriodAndStopsRenewalAndResumeNeedsConsent() {
         activate(); Instant end=service.subscription(user).periodEnd();
         service.cancel(user,UUID.randomUUID().toString());

@@ -1,12 +1,10 @@
 package com.ipgo.server.service;
 
-import com.ipgo.server.config.BillingProperties;
-import com.ipgo.server.entity.UserAccount;
 import com.ipgo.server.exception.AccountException;
-import com.ipgo.server.repository.UserAccountRepository;
 import java.security.SecureRandom;
 import java.time.Clock;
 import java.util.Base64;
+import java.util.List;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.core.userdetails.UsernameNotFoundException;
 import org.springframework.security.crypto.password.PasswordEncoder;
@@ -19,45 +17,36 @@ import org.springframework.transaction.support.TransactionTemplate;
 public class AccountWithdrawalService {
     private static final SecureRandom RANDOM = new SecureRandom();
 
-    private final UserAccountRepository users;
     private final PasswordEncoder passwordEncoder;
     private final JdbcTemplate jdbc;
     private final TransactionTemplate transactions;
     private final BillingService billing;
-    private final BillingProperties billingProperties;
     private final Clock clock;
 
-    public AccountWithdrawalService(UserAccountRepository users, PasswordEncoder passwordEncoder, JdbcTemplate jdbc,
-            TransactionTemplate transactions, BillingService billing, BillingProperties billingProperties, Clock clock) {
-        this.users = users;
+    public AccountWithdrawalService(PasswordEncoder passwordEncoder, JdbcTemplate jdbc, TransactionTemplate transactions,
+            BillingService billing, Clock clock) {
         this.passwordEncoder = passwordEncoder;
         this.jdbc = jdbc;
         this.transactions = transactions;
         this.billing = billing;
-        this.billingProperties = billingProperties;
         this.clock = clock;
     }
 
+    // 모든 단계를 한 transaction에서 회원 row를 잠근 채 처리한다. 결제 요청(BillingService)도 같은 회원 row를 잠그므로
+    // 구독 재개 · 결제와 섞이지 않고, 중간에 실패하면 아무것도 바뀌지 않는다.
     public void withdraw(long userId, String password) {
-        UserAccount user = users.findById(userId)
-                .orElseThrow(() -> new UsernameNotFoundException("이메일 또는 비밀번호를 확인해주세요."));
-        if (!passwordEncoder.matches(password, user.getPasswordHash())) throw AccountException.wrongPassword();
-
-        // 1) 다음 결제를 멈춘다. 결제가 진행 중이면 BillingService가 409로 막고, 탈퇴도 하지 않는다.
-        //    같은 키라 다시 시도해도 해지는 한 번만 기록된다.
-        if (billingProperties.enabled()) {
-            billing.cancel(userId, "withdraw-" + userId);
-        }
-
         transactions.executeWithoutResult(status -> {
-            jdbc.queryForObject("SELECT id FROM users WHERE id = ? FOR UPDATE", Long.class, userId);
-            // 결제 기능이 꺼져 있어도 예전 구독이 다시 청구되지 않게 막는다.
-            jdbc.update("UPDATE billing_subscriptions SET cancel_at_period_end = TRUE, next_charge_at = NULL WHERE user_id = ?",
-                    userId);
+            List<String> hashes = jdbc.queryForList(
+                    "SELECT password_hash FROM users WHERE id = ? AND withdrawn_at IS NULL FOR UPDATE", String.class, userId);
+            if (hashes.isEmpty()) throw new UsernameNotFoundException("이메일 또는 비밀번호를 확인해주세요.");
+            if (!passwordEncoder.matches(password, hashes.getFirst())) throw AccountException.wrongPassword();
+            // 1) 다음 결제를 멈춘다. 결제가 진행 중이면 409 BILLING_IN_PROGRESS로 막고 탈퇴하지 않는다(재시도할 때도 매번 확인).
+            billing.stopForWithdrawal(userId);
             // 2) 모든 로그인 세션을 폐기한다. 서버가 요청마다 세션을 확인하므로 이미 받은 access token도 바로 막힌다.
             jdbc.update("UPDATE auth_sessions SET revoked = TRUE WHERE user_id = ?", userId);
             // 3) 개인정보를 지운다. 이메일은 회원 번호로 바꿔 같은 이메일로 바로 다시 가입할 수 있게 하고,
             //    비밀번호는 아무도 모르는 값으로 바꾼다. .invalid는 실제로 쓸 수 없는 예약 도메인이다.
+            //    withdrawn_at이 생기면 늦게 도착한 결제 요청도 BillingService에서 ACCOUNT_WITHDRAWN으로 거절된다.
             jdbc.update("""
                     UPDATE users SET email = ?, password_hash = ?, company_name = NULL, manager_name = NULL,
                         business_reg_no = NULL, withdrawn_at = ? WHERE id = ?

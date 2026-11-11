@@ -46,6 +46,11 @@ class AccessControlTests extends DatabaseIntegrationTest {
             "POST /api/auth/logout",
             "POST /api/auth/email-verifications",
             "POST /api/auth/email-verifications/confirm",
+            // #173 로그인 화면의 아이디 찾기 · 비밀번호 재설정
+            "POST /api/auth/find-id",
+            "POST /api/auth/password-reset/code",
+            "POST /api/auth/password-reset/verify",
+            "POST /api/auth/password-reset",
             // JWT 대신 원본 body의 토스 HMAC 서명을 검증한다.
             "POST /api/billing/webhooks/toss");
 

@@ -22,13 +22,24 @@ public class VerificationMailer {
     }
 
     public void send(String email, String code) {
+        deliver(email, "Ipgo 회원가입 이메일 인증",
+                "인증 코드: " + code + "\n10분 이내에 입력해주세요. 요청하지 않았다면 이 메일을 무시해주세요.");
+    }
+
+    // #173 비밀번호 재설정 코드
+    public void sendPasswordReset(String email, String code) {
+        deliver(email, "Ipgo 비밀번호 재설정",
+                "비밀번호 재설정 코드: " + code + "\n10분 이내에 입력해주세요. 요청하지 않았다면 이 메일을 무시해주세요. 비밀번호는 바뀌지 않아요.");
+    }
+
+    private void deliver(String email, String subject, String text) {
         JavaMailSender sender = senders.getIfAvailable();
         if (sender == null || from.isBlank()) throw unavailable();
         var message = new SimpleMailMessage();
         message.setFrom(from);
         message.setTo(email);
-        message.setSubject("Ipgo 회원가입 이메일 인증");
-        message.setText("인증 코드: " + code + "\n10분 이내에 입력해주세요. 요청하지 않았다면 이 메일을 무시해주세요.");
+        message.setSubject(subject);
+        message.setText(text);
         try {
             sender.send(message);
         } catch (MailException exception) {

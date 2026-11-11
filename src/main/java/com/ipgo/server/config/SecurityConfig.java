@@ -78,7 +78,10 @@ public class SecurityConfig {
                         .dispatcherTypeMatchers(DispatcherType.ERROR).permitAll()
                         .requestMatchers(HttpMethod.GET, "/api/auth/csrf", "/actuator/health", "/api/auth/email-availability").permitAll()
                         .requestMatchers(HttpMethod.POST, "/api/auth/signup", "/api/auth/login", "/api/auth/refresh", "/api/auth/logout",
-                                "/api/auth/email-verifications", "/api/auth/email-verifications/confirm").permitAll()
+                                "/api/auth/email-verifications", "/api/auth/email-verifications/confirm",
+                                // #173 아이디 찾기 · 비밀번호 재설정은 로그인 전에 쓴다.
+                                "/api/auth/find-id", "/api/auth/password-reset/code", "/api/auth/password-reset/verify",
+                                "/api/auth/password-reset").permitAll()
                         .requestMatchers(HttpMethod.POST, "/api/billing/webhooks/toss").permitAll()
                         .anyRequest().authenticated();
                 })

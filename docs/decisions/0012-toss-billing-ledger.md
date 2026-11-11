@@ -4,7 +4,7 @@
 
 ## 적용 정책
 
-- 테스트 카탈로그 v`test-2026-11-v1`: seller 49,000원/월, business 129,000원/월, KRW. 부가세·라이브 판매가 확정은 라이브 전 별도 단계다.
+- 테스트 카탈로그 `test-2026-11-500-v2`: seller 500원/월, business 129,000원/월, KRW. 이전 v1의 seller 49,000원은 이력이다. 부가세·라이브 판매가 확정은 라이브 전 별도 단계다.
 - 체험은 가입 시각부터 정확히14일이며 카드 없이 시작한다. 체험 종료 후 자동 유료 전환하지 않는다. 기존 사용자의 체험도 원래 signup 시각을 사용하므로 활성화 전 기존 계정 영향을 확인한다.
 - 명시적 유료 시작은 카드 등록 후 첫 결제를 요청한다. 서버 승인 확인 전에는 기존 체험/유료 상태를 유지한다.
 - 최초 유료 시작의 서울 일자·시각을 월 anchor로 유지한다. 1/31→2월말→3/31, 윤년을 지원한다.
@@ -99,8 +99,18 @@ V17은 미공유·미배포인 로컬 신규 migration이므로 이번 검토에
 
 후속 범위는 클라이언트 연결, 실제 테스트 상점/MID·키 종류 확인, 복귀 페이지의 query 로그/Referrer/분석 스크립트 제어, 개발 배포 후 테스트 결제다. 아직 토스의 실제 서명/카드 등록창/결제 응답을 실측한 결과가 아니다.
 
-이번 원장/API 단계는 월 AI100회 사용량의 원자적 예약/집계, 조직·좌석, 요금제 변경/일할 계산, 영수증 링크·환불 API, 운영 알림/24시간 작업기, 키 rotation 이관을 구현하지 않는다. API는 상품 한도와 AI 한도 정보를 제공하지만 AI 횟수는 아직 집계/차감하지 않는다. 기존 이슈 #110과 클라이언트 #186/#187 등의 전체 완료나 라이브 준비 완료로 확대하지 않는다.
+이번 원장/API 단계는 월 AI100회 사용량의 원자적 예약/집계, 조직·좌석, 요금제 변경/일할 계산, 영수증 링크·부분/과거 청구 환불, 운영 알림/24시간 작업기, 키 rotation 이관을 구현하지 않는다. API는 상품 한도와 AI 한도 정보를 제공하지만 AI 횟수는 아직 집계/차감하지 않는다. 기존 이슈 #110과 클라이언트 #186/#187 등의 전체 완료나 라이브 준비 완료로 확대하지 않는다.
 
 배포 전 승인 SHA·migration·기존 계정의 체험 만료 영향·테스트 결과를 확인한다. 중단 시 신규 API/worker를 끄고 DISPATCHING/UNKNOWN을 조회·대조한다. 이전 앱으로 돌아가도 신규 원장과 이미 승인된 결제는 보존하며, 자동 삭제·자동 환불하지 않는다.
 
 공식 계약: [빌링 연동](https://docs.tosspayments.com/guides/v2/billing/integration), [코어 API](https://docs.tosspayments.com/reference), [인증/멱등키](https://docs.tosspayments.com/reference/using-api/authorization), [웹훅](https://docs.tosspayments.com/reference/using-api/webhook-events), [키 종류](https://docs.tosspayments.com/reference/using-api/api-keys).
+
+## TEST 전액 취소 (Server #171)
+
+- `POST /api/billing/invoices/{id}/cancel-payment`에 Bearer 인증·`Idempotency-Key`·`{reason}`(1~200자)을 보낸다. 본인 최신 승인 청구의 전액만 취소한다. CANCELED이면200, PROCESSING/UNKNOWN/REVIEW_REQUIRED이면202다. 금액을 받지 않으므로 부분 취소로 바꿀 수 없다.
+- 취소 전에 원래 orderId로 조회해 paymentKey 대소문자·MID·원주문·KRW·총액을 확인한다. 토스 `/v1/payments/{paymentKey}/cancel`에 cancelReason과 원장에 고정한 provider 멱등키를 전송한다. CANCELED·잔액0·유효한 canceledAt을 확인한 때만 완료한다.
+- 승인 billing_attempts/SUCCEEDED와 원래 결제 기간을 보존하고 invoice VOID·별도 billing_refunds/CANCELED·subscription CANCELED로 기록한다. 취소 요청은 다음 자동 청구를 중단하고 확정 취소는 이용 권한을 끝낸다. 환불 중에는 재개·새 등록·탈퇴를 차단한다.
+- 응답 유실/DB 반영 실패는 UNKNOWN 또는 처리 lease를 보존해 같은 주문 조회/같은 provider 키로 복구한다. 14일 후에는 REVIEW_REQUIRED로 격리하며 자동 취소를 반복하지 않는다.
+- 청구 내역 응답에 refundStatus/canceledAt을 추가한다. 승인 성공과 취소 완료는 별도 상태다.
+- V24 회원 탈퇴를 보존하고 V25에 환불 원장을 추가했다. 서버 역할만 SELECT/INSERT/UPDATE 가능하고 DELETE 및 AI 조회는 허용하지 않는다. 기존 Flyway 원본은 수정하지 않는다.
+- 공식 취소 계약: https://docs.tosspayments.com/reference#결제-취소 . 토스 TEST 환경 준비·실제 카드 등록/PG 승인·취소 검증은 배포 후 별도로 확인한다.

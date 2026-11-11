@@ -14,7 +14,8 @@ import org.springframework.web.bind.annotation.*;
 @RequestMapping("/api/billing")
 public class BillingController {
     private final BillingService billing;
-    public BillingController(BillingService b) { billing=b; }
+    private final com.ipgo.server.service.BillingRefundService refunds;
+    public BillingController(BillingService b,com.ipgo.server.service.BillingRefundService refunds) { billing=b; this.refunds=refunds; }
     private long user(Principal p) { return Long.parseLong(p.getName()); }
     private <T> ResponseEntity<T> ok(T body) { return ResponseEntity.ok().cacheControl(CacheControl.noStore()).body(body); }
     @GetMapping("/plans") public ResponseEntity<List<BillingViews.Plan>> plans() { return ok(billing.plans()); }
@@ -32,6 +33,11 @@ public class BillingController {
     @GetMapping("/registration-sessions/{id}") public ResponseEntity<BillingViews.Session> session(Principal p,@PathVariable String id) { return ok(billing.session(user(p),id)); }
     @PostMapping("/subscription/cancel") public ResponseEntity<BillingViews.Subscription> cancel(Principal p,@RequestHeader("Idempotency-Key") String key) { return ok(billing.cancel(user(p),key)); }
     @PostMapping("/subscription/resume") public ResponseEntity<BillingViews.Subscription> resume(Principal p,@RequestHeader("Idempotency-Key") String key,@Valid @RequestBody BillingRequests.Resume r) { return ok(billing.resume(user(p),key,r.consentVersion())); }
+    @PostMapping("/invoices/{id}/cancel-payment") public ResponseEntity<BillingViews.Refund> cancelPayment(Principal p,@PathVariable String id,
+            @RequestHeader("Idempotency-Key") String key,@Valid @RequestBody BillingRequests.CancelPayment r) {
+        var result=refunds.cancel(user(p),id,key,r.reason());
+        return ResponseEntity.status("CANCELED".equals(result.status())?200:202).cacheControl(CacheControl.noStore()).body(result);
+    }
     @PostMapping("/invoices/{id}/retry") public ResponseEntity<BillingViews.Accepted> retry(Principal p,@PathVariable String id,@RequestHeader("Idempotency-Key") String key) {
         return ResponseEntity.accepted().cacheControl(CacheControl.noStore()).body(billing.retry(user(p),id,key));
     }

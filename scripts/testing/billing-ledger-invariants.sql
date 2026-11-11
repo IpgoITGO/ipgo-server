@@ -6,10 +6,10 @@ DECLARE
     owner_id BIGINT;
     other_id BIGINT;
 BEGIN
-    IF (SELECT COUNT(*) FROM pg_tables WHERE schemaname='public') <> 30 THEN
+    IF (SELECT COUNT(*) FROM pg_tables WHERE schemaname='public') <> 37 THEN
         RAISE EXCEPTION 'unexpected billing migration table count';
     END IF;
-    FOREACH table_name IN ARRAY ARRAY['billing_subscriptions','billing_methods','billing_sessions','billing_invoices','billing_attempts','billing_commands','billing_webhook_inbox'] LOOP
+    FOREACH table_name IN ARRAY ARRAY['billing_subscriptions','billing_methods','billing_sessions','billing_invoices','billing_attempts','billing_commands','billing_webhook_inbox','billing_refunds'] LOOP
         IF NOT has_table_privilege('ipgo_server',table_name,'SELECT')
             OR NOT has_table_privilege('ipgo_server',table_name,'INSERT')
             OR NOT has_table_privilege('ipgo_server',table_name,'UPDATE')
@@ -53,6 +53,12 @@ BEGIN
             VALUES ('schema-attempt3','schema-invoice',owner_id,'schema-method',4,'schema-order3','schema-idem3','fixture','SUCCEEDED',CURRENT_TIMESTAMP);
         RAISE EXCEPTION 'duplicate successful billing attempt accepted';
     EXCEPTION WHEN unique_violation THEN NULL;
+    END;
+    BEGIN
+        INSERT INTO billing_refunds(id,invoice_id,user_id,reason,provider_key,status,created_at,lease_until)
+            VALUES ('schema-refund','schema-invoice',other_id,'fixture','refund-provider','PROCESSING',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP);
+        RAISE EXCEPTION 'cross-owner refund accepted';
+    EXCEPTION WHEN foreign_key_violation THEN NULL;
     END;
 END $$;
 ROLLBACK;

@@ -117,6 +117,22 @@ def render(task, image, env):
         managed["IPGO_ENGINE_BASE_URL"] = config["base"]
     server["environment"] = [e for e in previous if e["name"] not in managed]
     server["environment"].extend({"name": k, "value": v} for k, v in managed.items())
+    if env.get("BILLING_TEST_ENABLED", "false") == "true":
+        billing_secret = env.get("BILLING_TEST_SECRET_ARN", "")
+        require(re.fullmatch(rf"arn:aws:secretsmanager:ap-northeast-2:{account}:secret:/ipgo/dev/server-billing-test-[A-Za-z0-9]+", billing_secret) is not None,
+                "An exact TEST billing Secret ARN in the approved account is required")
+        origin = env.get("BILLING_RETURN_ORIGIN", "")
+        require(origin in ("https://ipgo-dev.iwhya.kr", "https://ipgo-client-dev.vercel.app"), "Billing callback must use an approved development origin")
+        fields = {"IPGO_BILLING_SECRET_KEY": "secret_key", "IPGO_BILLING_SECURITY_KEY": "security_key",
+                  "IPGO_BILLING_ENCRYPTION_KEY": "encryption_key", "IPGO_BILLING_LOOKUP_KEY": "lookup_key",
+                  "IPGO_BILLING_MERCHANT_ID": "merchant_id"}
+        require(not any(e["name"] in fields for e in previous), "Billing credentials must not be plaintext task environment values")
+        managed_billing = {"IPGO_BILLING_ENABLED": "true", "IPGO_BILLING_WORKER_ENABLED": "true",
+                           "IPGO_BILLING_MODE": "TEST", "IPGO_BILLING_RETURN_ORIGIN": origin}
+        server["environment"] = [e for e in server["environment"] if e["name"] not in managed_billing]
+        server["environment"].extend({"name": k, "value": v} for k, v in managed_billing.items())
+        server["secrets"] = [e for e in server.get("secrets", []) if e["name"] not in fields]
+        server["secrets"].extend({"name": name, "valueFrom": f"{billing_secret}:{field}::"} for name, field in fields.items())
     server["image"] = image
     return result
 

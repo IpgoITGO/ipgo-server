@@ -257,6 +257,20 @@ class DevDeploymentTests(unittest.TestCase):
         result=module.render(self.task,IMAGE.removesuffix('-arm64'),self.env)
         self.assertEqual(result['containerDefinitions'][0]['image'],IMAGE.removesuffix('-arm64'))
 
+    def test_billing_test_credentials_are_secret_references_only(self):
+        secret=f"arn:aws:secretsmanager:ap-northeast-2:{ACCOUNT}:secret:/ipgo/dev/server-billing-test-abc123"
+        env=dict(self.env,BILLING_TEST_ENABLED='true',BILLING_TEST_SECRET_ARN=secret,BILLING_RETURN_ORIGIN='https://ipgo-dev.iwhya.kr')
+        result=module.render(self.task,IMAGE,env)['containerDefinitions'][0]
+        values={e['name']:e['value'] for e in result['environment']}
+        self.assertEqual(values['IPGO_BILLING_MODE'],'TEST')
+        self.assertEqual(values['IPGO_BILLING_ENABLED'],'true')
+        refs={e['name']:e['valueFrom'] for e in result['secrets']}
+        self.assertEqual(refs['IPGO_BILLING_SECRET_KEY'],secret+':secret_key::')
+        self.assertNotIn('IPGO_BILLING_SECRET_KEY',values)
+        for change in [dict(BILLING_TEST_SECRET_ARN='live_secret'),dict(BILLING_RETURN_ORIGIN='https://prod.example.com')]:
+            with self.subTest(change=change),self.assertRaises(module.InvalidDeployment):
+                module.render(self.task,IMAGE,dict(env,**change))
+
 
 if __name__=='__main__':
     unittest.main()

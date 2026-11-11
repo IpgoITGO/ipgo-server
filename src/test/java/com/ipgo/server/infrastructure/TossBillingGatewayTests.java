@@ -72,4 +72,16 @@ class TossBillingGatewayTests {
         reset(http); response(500,"{\"code\":\"INTERNAL\"}");
         assertThatThrownBy(()->g.lookup("order")).isInstanceOfSatisfying(BillingGateway.Failure.class,e->assertThat(e.rejected()).isFalse());
     }
+
+    @Test void fullCancelPreservesCaseUsesCancelReasonAndProviderIdempotency() throws Exception {
+        response(200,"{\"paymentKey\":\"CaseSensitiveKey\",\"orderId\":\"order\",\"totalAmount\":500,\"balanceAmount\":0,\"currency\":\"KRW\",\"status\":\"CANCELED\",\"mId\":\"fixture-mid\",\"approvedAt\":\"2026-11-11T17:00:00+09:00\",\"cancels\":[{\"canceledAt\":\"2026-11-11T17:01:00+09:00\"}]}");
+        var payment=new TossBillingGateway(properties(true),mapper,http).cancel("CaseSensitiveKey","테스트 전액 취소","refund-fixed-id");
+        assertThat(payment.status()).isEqualTo("CANCELED");
+        assertThat(payment.balanceAmount()).isZero();
+        assertThat(payment.canceledAt()).isEqualTo(java.time.Instant.parse("2026-11-11T08:01:00Z"));
+        var request=ArgumentCaptor.forClass(HttpRequest.class);
+        verify(http).send(request.capture(),any(HttpResponse.BodyHandler.class));
+        assertThat(request.getValue().uri().getPath()).isEqualTo("/v1/payments/CaseSensitiveKey/cancel");
+        assertThat(request.getValue().headers().firstValue("Idempotency-Key")).contains("refund-fixed-id");
+    }
 }

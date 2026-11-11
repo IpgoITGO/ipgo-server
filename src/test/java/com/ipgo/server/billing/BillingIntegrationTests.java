@@ -40,6 +40,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @AutoConfigureMockMvc
 class BillingIntegrationTests extends DatabaseIntegrationTest {
     @Autowired BillingService service;
+    @Autowired com.ipgo.server.service.BillingRefundService refunds;
     @Autowired BillingSecrets secrets;
     @Autowired com.ipgo.server.service.EngineCalculationService calculations;
     @Autowired com.ipgo.server.service.WarehouseService warehouses;
@@ -78,6 +79,10 @@ class BillingIntegrationTests extends DatabaseIntegrationTest {
             String portable=sql.split("-- PostgreSQL 전용")[0];
             for(String statement:portable.split(";")) if(!statement.isBlank()) jdbc.execute(statement);
         }
+        if(!pg && jdbc.queryForObject("select count(*) from information_schema.tables where lower(table_name)='billing_refunds'",Integer.class)==0) {
+            String refunds=new String(new org.springframework.core.io.ClassPathResource("db/migration/V25__create_billing_refunds.sql").getInputStream().readAllBytes(),StandardCharsets.UTF_8).split("-- PostgreSQL 전용")[0];
+            for(String statement:refunds.split(";")) if(!statement.isBlank()) jdbc.execute(statement);
+        }
         // 결제 요청은 탈퇴(#172, V24 users.withdrawn_at)를 확인하므로 H2 harness에도 적용한다.
         com.ipgo.server.support.UploadTestDatabase.withdrawalSchema(jdbc);
         clearLedger(pg);
@@ -94,7 +99,7 @@ class BillingIntegrationTests extends DatabaseIntegrationTest {
         jdbc.update("delete from warehouses where user_id in (?,?)",user,other);
     }
     private void clearLedger(boolean pg) throws Exception {
-        String[] tables={"billing_webhook_inbox","billing_commands","billing_attempts","billing_invoices","billing_sessions","billing_methods","billing_subscriptions"};
+        String[] tables={"billing_refunds","billing_webhook_inbox","billing_commands","billing_attempts","billing_invoices","billing_sessions","billing_methods","billing_subscriptions"};
         if(pg) {
             String url=System.getenv("IPGO_TEST_DB_URL");
             if(!"temporary".equals(System.getenv("IPGO_BILLING_TEST_DATABASE")) || !url.endsWith("/ipgo_billing_test"))
@@ -139,7 +144,7 @@ class BillingIntegrationTests extends DatabaseIntegrationTest {
         assertThat(jdbc.queryForObject("select encrypted_key from billing_methods",String.class)).startsWith("v1.").doesNotContain("fixture-key");
         service.processOne();
         var sub=service.subscription(user);
-        assertThat(sub.status()).isEqualTo("ACTIVE"); assertThat(sub.amount()).isEqualTo(49000);
+        assertThat(sub.status()).isEqualTo("ACTIVE"); assertThat(sub.amount()).isEqualTo(500);
         assertThat(sub.periodEnd()).isEqualTo(Instant.parse("2026-02-28T01:00:00Z"));
         assertThat(service.invoices(user,null).items().getFirst().status()).isEqualTo("PAID");
         service.processOne(); verify(gateway,times(1)).charge(anyString(),any(),anyString());
@@ -172,7 +177,7 @@ class BillingIntegrationTests extends DatabaseIntegrationTest {
         assertThatThrownBy(()->service.retry(user,invoice(),UUID.randomUUID().toString())).isInstanceOf(BillingException.class);
         assertThatThrownBy(()->service.cancel(user,UUID.randomUUID().toString())).isInstanceOf(BillingException.class);
         String order=jdbc.queryForObject("select order_id from billing_attempts",String.class);
-        when(gateway.lookup(order)).thenReturn(new BillingGateway.Payment("recovered",order,49000,"KRW","DONE","test-merchant",now));
+        when(gateway.lookup(order)).thenReturn(new BillingGateway.Payment("recovered",order,500,"KRW","DONE","test-merchant",now));
         now=now.plusSeconds(181); service.processOne();
         assertThat(service.subscription(user).planId()).isEqualTo("seller");
         verify(gateway,times(1)).charge(anyString(),any(),anyString()); verify(gateway).lookup(order);
@@ -327,14 +332,14 @@ class BillingIntegrationTests extends DatabaseIntegrationTest {
         assertThat(service.invoices(user,null).items().getFirst().status()).isEqualTo("OPEN");
         assertThat(service.invoices(user,null).items().getFirst().paymentStatus()).isEqualTo("DISPATCHING");
         String order=jdbc.queryForObject("select order_id from billing_attempts",String.class);
-        when(gateway.lookup(order)).thenReturn(new BillingGateway.Payment("db-recovered",order,49000,"KRW","DONE","test-merchant",now));
+        when(gateway.lookup(order)).thenReturn(new BillingGateway.Payment("db-recovered",order,500,"KRW","DONE","test-merchant",now));
         now=now.plusSeconds(181); service.processOne();
         assertThat(service.invoices(user,null).items().getFirst().status()).isEqualTo("PAID");
         verify(gateway,times(1)).charge(anyString(),any(),anyString());
     }
     @Test void invalidMerchantAndOrderNeverGrantAccess() {
         checkout();
-        doAnswer(i->new BillingGateway.Payment("wrong-merchant","wrong-order",49000,"KRW","DONE","other-merchant",now))
+        doAnswer(i->new BillingGateway.Payment("wrong-merchant","wrong-order",500,"KRW","DONE","other-merchant",now))
                 .when(gateway).charge(anyString(),any(),anyString());
         service.processOne();
         assertThat(service.subscription(user).planId()).isEqualTo("trial");
@@ -369,7 +374,7 @@ class BillingIntegrationTests extends DatabaseIntegrationTest {
                 .andExpect(jsonPath("authKey").doesNotExist());
         mvc.perform(get("/api/billing/registration-sessions/"+id).with(jwt().jwt(j->j.subject(""+other))))
                 .andExpect(status().isForbidden());
-        assertThat(service.invoices(user,null).items().getFirst().amount()).isEqualTo(49000);
+        assertThat(service.invoices(user,null).items().getFirst().amount()).isEqualTo(500);
         mvc.perform(post("/api/billing/subscription/cancel").with(jwt().jwt(j->j.subject(""+user)))
                 .header("Idempotency-Key",UUID.randomUUID().toString())).andExpect(status().isOk());
         service.processOne(); verify(gateway,never()).charge(anyString(),any(),anyString());
@@ -459,7 +464,7 @@ class BillingIntegrationTests extends DatabaseIntegrationTest {
         checkout(); doThrow(new BillingGateway.Failure(false,"timeout")).when(gateway).charge(anyString(),any(),anyString());
         service.processOne(); String order=jdbc.queryForObject("select order_id from billing_attempts",String.class);
         Instant approved=START.plusSeconds(5);
-        when(gateway.lookup(order)).thenReturn(new BillingGateway.Payment("approval-time",order,49000,"KRW","DONE","test-merchant",approved));
+        when(gateway.lookup(order)).thenReturn(new BillingGateway.Payment("approval-time",order,500,"KRW","DONE","test-merchant",approved));
         now=now.plusSeconds(300); service.processOne();
         assertThat(service.invoices(user,null).items().getFirst().paidAt()).isEqualTo(approved);
         assertThat(service.subscription(user).periodStart()).isEqualTo(approved);
@@ -516,7 +521,7 @@ class BillingIntegrationTests extends DatabaseIntegrationTest {
     @Test void reviewVerifiedAbortedLookupAllowsExplicitRetryWithoutSecondAutomaticCharge() {
         checkout(); doThrow(new BillingGateway.Failure(false,"timeout")).when(gateway).charge(anyString(),any(),anyString());
         service.processOne(); String order=jdbc.queryForObject("select order_id from billing_attempts",String.class);
-        when(gateway.lookup(order)).thenReturn(new BillingGateway.Payment("aborted-payment",order,49000,"KRW","ABORTED","test-merchant",null));
+        when(gateway.lookup(order)).thenReturn(new BillingGateway.Payment("aborted-payment",order,500,"KRW","ABORTED","test-merchant",null));
         now=now.plusSeconds(181); service.processOne();
         assertThat(service.invoices(user,null).items().getFirst().paymentStatus()).isEqualTo("DECLINED");
         assertThatCode(()->service.retry(user,invoice(),UUID.randomUUID().toString())).doesNotThrowAnyException();
@@ -530,5 +535,136 @@ class BillingIntegrationTests extends DatabaseIntegrationTest {
         checkout(); service.cancel(user,UUID.randomUUID().toString()); service.processOne();
         verify(gateway,never()).charge(anyString(),any(),anyString());
         assertThat(service.invoices(user,null).items().getFirst().status()).isEqualTo("VOID");
+    }
+
+    private String paidInvoice() {
+        activate();
+        return jdbc.queryForObject("select id from billing_invoices where user_id=? and status='PAID'",String.class,user);
+    }
+    private BillingGateway.Payment refundPayment(String invoice,String status,long balance) {
+        var row=jdbc.queryForMap("select a.payment_key,a.order_id,i.amount,i.paid_at from billing_attempts a join billing_invoices i on i.id=a.invoice_id where a.invoice_id=? and a.status='SUCCEEDED'",invoice);
+        return new BillingGateway.Payment(row.get("payment_key").toString(),row.get("order_id").toString(),((Number)row.get("amount")).longValue(),"KRW",status,"test-merchant",START,balance,"CANCELED".equals(status)?now:null);
+    }
+    @Test void fullRefundPreservesApprovalAndEndsAccessOnlyAfterConfirmedCancel() throws Exception {
+        String invoice=paidInvoice();
+        when(gateway.lookup(anyString())).thenReturn(refundPayment(invoice,"DONE",500));
+        when(gateway.cancel(anyString(),anyString(),anyString())).thenReturn(refundPayment(invoice,"CANCELED",0));
+        mvc.perform(post("/api/billing/invoices/"+invoice+"/cancel-payment").with(jwt().jwt(j->j.subject(Long.toString(user))))
+                .header("Idempotency-Key",UUID.randomUUID().toString()).contentType("application/json").content("{\"reason\":\"테스트 전액 취소\"}"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.status").value("CANCELED"));
+        assertThat(service.subscription(user).entitlements().canCalculate()).isFalse();
+        assertThat(jdbc.queryForObject("select status from billing_attempts where invoice_id=?",String.class,invoice)).isEqualTo("SUCCEEDED");
+        assertThat(service.invoices(user,null).items().getFirst().refundStatus()).isEqualTo("CANCELED");
+        assertThat(service.invoices(user,null).items().getFirst().canceledAt()).isNotNull();
+        assertThat(service.subscription(user).nextChargeAt()).isNull();
+    }
+    @Test void refundIsOwnedAndDoesNotCallProviderForAnotherUser() {
+        String invoice=paidInvoice();
+        assertThatThrownBy(()->refunds.cancel(other,invoice,UUID.randomUUID().toString(),"test")).isInstanceOf(com.ipgo.server.exception.BillingException.class);
+        verify(gateway,never()).cancel(anyString(),anyString(),anyString());
+    }
+    @Test void repeatedRefundUsesOneProviderRequestAndRejectsChangedBody() {
+        String invoice=paidInvoice(),key=UUID.randomUUID().toString();
+        when(gateway.lookup(anyString())).thenReturn(refundPayment(invoice,"DONE",500));
+        when(gateway.cancel(anyString(),anyString(),anyString())).thenReturn(refundPayment(invoice,"CANCELED",0));
+        refunds.cancel(user,invoice,key,"test");
+        refunds.cancel(user,invoice,key,"test");
+        refunds.cancel(user,invoice,UUID.randomUUID().toString(),"test");
+        assertThatThrownBy(()->refunds.cancel(user,invoice,key,"different")).isInstanceOf(com.ipgo.server.exception.BillingException.class);
+        verify(gateway,times(1)).cancel(anyString(),eq("test"),anyString());
+    }
+    @Test void lostCancelResponseReconcilesByLookupWithoutSecondCancel() {
+        String invoice=paidInvoice();
+        when(gateway.lookup(anyString())).thenReturn(refundPayment(invoice,"DONE",500),refundPayment(invoice,"CANCELED",0));
+        when(gateway.cancel(anyString(),anyString(),anyString())).thenThrow(new BillingGateway.Failure(false,"TIMEOUT"));
+        assertThat(refunds.cancel(user,invoice,UUID.randomUUID().toString(),"test").status()).isEqualTo("UNKNOWN");
+        assertThat(service.subscription(user).entitlements().canCalculate()).isTrue();
+        assertThatThrownBy(()->service.resume(user,UUID.randomUUID().toString(),BillingPolicy.CONSENT)).isInstanceOf(com.ipgo.server.exception.BillingException.class);
+        now=START.plusSeconds(181); refunds.processOne();
+        assertThat(service.invoices(user,null).items().getFirst().refundStatus()).isEqualTo("CANCELED");
+        assertThat(service.subscription(user).entitlements().canCalculate()).isFalse();
+        verify(gateway,times(1)).cancel(anyString(),anyString(),anyString());
+    }
+    @Test void uncertainRetryKeepsProviderIdempotencyKey() {
+        String invoice=paidInvoice();
+        when(gateway.lookup(anyString())).thenReturn(refundPayment(invoice,"DONE",500));
+        when(gateway.cancel(anyString(),anyString(),anyString())).thenThrow(new BillingGateway.Failure(false,"TIMEOUT"));
+        refunds.cancel(user,invoice,UUID.randomUUID().toString(),"test");
+        now=START.plusSeconds(181); refunds.processOne();
+        var keys=org.mockito.ArgumentCaptor.forClass(String.class);
+        verify(gateway,times(2)).cancel(anyString(),eq("test"),keys.capture());
+        assertThat(keys.getAllValues().get(0)).isEqualTo(keys.getAllValues().get(1));
+    }
+    @Test void mismatchedRefundProviderResultDoesNotRevokeEntitlement() {
+        String invoice=paidInvoice();
+        var p=refundPayment(invoice,"DONE",500);
+        when(gateway.lookup(anyString())).thenReturn(new BillingGateway.Payment(p.paymentKey(),p.orderId(),999,"KRW","DONE","test-merchant",START,999,null));
+        assertThat(refunds.cancel(user,invoice,UUID.randomUUID().toString(),"test").status()).isEqualTo("UNKNOWN");
+        assertThat(service.subscription(user).entitlements().canCalculate()).isTrue();
+        verify(gateway,never()).cancel(anyString(),anyString(),anyString());
+    }
+    @Test void partialCancellationIsNotReportedAsFullRefund() {
+        String invoice=paidInvoice();
+        when(gateway.lookup(anyString())).thenReturn(refundPayment(invoice,"PARTIAL_CANCELED",250));
+        assertThat(refunds.cancel(user,invoice,UUID.randomUUID().toString(),"test").status()).isEqualTo("UNKNOWN");
+        verify(gateway,never()).cancel(anyString(),anyString(),anyString());
+    }
+    @Test void concurrentRefundDoesNotSendSecondRequest() throws Exception {
+        String invoice=paidInvoice();
+        var entered=new CountDownLatch(1); var release=new CountDownLatch(1);
+        when(gateway.lookup(anyString())).thenAnswer(a->{ entered.countDown(); if(!release.await(5,TimeUnit.SECONDS)) throw new IllegalStateException("fixture timeout"); return refundPayment(invoice,"DONE",500); });
+        when(gateway.cancel(anyString(),anyString(),anyString())).thenReturn(refundPayment(invoice,"CANCELED",0));
+        try(var executor=Executors.newSingleThreadExecutor()) {
+            var first=executor.submit(()->refunds.cancel(user,invoice,UUID.randomUUID().toString(),"test"));
+            try {
+                assertThat(entered.await(5,TimeUnit.SECONDS)).isTrue();
+                assertThat(refunds.cancel(user,invoice,UUID.randomUUID().toString(),"test").status()).isEqualTo("PROCESSING");
+            } finally { release.countDown(); }
+            assertThat(first.get(5,TimeUnit.SECONDS).status()).isEqualTo("CANCELED");
+        }
+        verify(gateway,times(1)).cancel(anyString(),anyString(),anyString());
+    }
+
+    @Test void confirmedRefundAllowsNewCheckoutButNotResume() {
+        String invoice=paidInvoice();
+        when(gateway.lookup(anyString())).thenReturn(refundPayment(invoice,"DONE",500));
+        when(gateway.cancel(anyString(),anyString(),anyString())).thenReturn(refundPayment(invoice,"CANCELED",0));
+        refunds.cancel(user,invoice,UUID.randomUUID().toString(),"test");
+        assertThatThrownBy(()->service.resume(user,UUID.randomUUID().toString(),BillingPolicy.CONSENT)).isInstanceOf(BillingException.class);
+        activate();
+        assertThat(service.subscription(user).entitlements().canCalculate()).isTrue();
+        assertThat(jdbc.queryForObject("select count(*) from billing_invoices where user_id=? and status='PAID'",Integer.class,user)).isEqualTo(1);
+    }
+    @Test void pendingRefundBlocksWithdrawalInTheSameUserLock() {
+        String invoice=paidInvoice();
+        when(gateway.lookup(anyString())).thenThrow(new BillingGateway.Failure(false,"TIMEOUT"));
+        refunds.cancel(user,invoice,UUID.randomUUID().toString(),"test");
+        assertThatThrownBy(()->ledger.transaction(()->{service.stopForWithdrawal(user);return null;})).isInstanceOf(BillingException.class);
+    }
+    @Test void withdrawnAccountCannotStartRefund() {
+        String invoice=paidInvoice();
+        jdbc.update("update users set withdrawn_at=? where id=?",java.sql.Timestamp.from(now),user);
+        assertThatThrownBy(()->refunds.cancel(user,invoice,UUID.randomUUID().toString(),"test")).isInstanceOf(BillingException.class);
+        verify(gateway,never()).lookup(anyString());
+    }
+    @Test void databaseFailureAfterCancelRecoversFromProviderWithoutSecondCancel() {
+        String invoice=paidInvoice();
+        when(gateway.lookup(anyString())).thenReturn(refundPayment(invoice,"DONE",500),refundPayment(invoice,"CANCELED",0));
+        when(gateway.cancel(anyString(),anyString(),anyString())).thenReturn(refundPayment(invoice,"CANCELED",0));
+        String sql="update billing_refunds set status='CANCELED',canceled_at=?,lease_until=null where id=?";
+        doThrow(new org.springframework.dao.DataAccessResourceFailureException("fixture storage failure")).doCallRealMethod().when(ledger).update(eq(sql),any(Object[].class));
+        assertThatThrownBy(()->refunds.cancel(user,invoice,UUID.randomUUID().toString(),"test")).isInstanceOf(org.springframework.dao.DataAccessResourceFailureException.class);
+        assertThat(service.subscription(user).entitlements().canCalculate()).isTrue();
+        now=START.plusSeconds(181); refunds.processOne();
+        assertThat(service.invoices(user,null).items().getFirst().refundStatus()).isEqualTo("CANCELED");
+        verify(gateway,times(1)).cancel(anyString(),anyString(),anyString());
+    }
+    @Test void refundOlderThanIdempotencyWindowRequiresReviewEvenForManualRetry() {
+        String invoice=paidInvoice();
+        when(gateway.lookup(anyString())).thenThrow(new BillingGateway.Failure(false,"TIMEOUT"));
+        refunds.cancel(user,invoice,UUID.randomUUID().toString(),"test");
+        now=START.plus(Duration.ofDays(15));
+        assertThat(refunds.cancel(user,invoice,UUID.randomUUID().toString(),"test").status()).isEqualTo("REVIEW_REQUIRED");
+        verify(gateway,times(1)).lookup(anyString());
     }
 }

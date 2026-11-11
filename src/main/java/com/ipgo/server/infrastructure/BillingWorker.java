@@ -19,7 +19,8 @@ public class BillingWorker {
             Thread.ofPlatform().daemon(true).name("billing-worker").factory());
     private final BillingProperties properties;
     private final BillingService service;
-    public BillingWorker(BillingProperties p,BillingService s) { properties=p; service=s; }
+    private final com.ipgo.server.service.BillingRefundService refunds;
+    public BillingWorker(BillingProperties p,BillingService s,com.ipgo.server.service.BillingRefundService refunds) { properties=p; service=s; this.refunds=refunds; }
     @EventListener(ApplicationReadyEvent.class)
     public void start() {
         if(properties.enabled() && properties.workerEnabled()) executor.scheduleWithFixedDelay(this::poll,0,60,TimeUnit.SECONDS);
@@ -27,7 +28,7 @@ public class BillingWorker {
     @PreDestroy public void close() { executor.shutdownNow(); }
     public void poll() {
         if(!properties.enabled() || !properties.workerEnabled()) return;
-        try { service.prepareRenewals(); service.processOne(); service.retireOneMethod(); }
+        try { refunds.processOne(); service.prepareRenewals(); service.processOne(); service.retireOneMethod(); }
         catch(Exception e) { log.warn("Billing worker requires reconciliation; exception type={}",e.getClass().getSimpleName()); }
     }
 }

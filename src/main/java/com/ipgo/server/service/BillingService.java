@@ -56,7 +56,8 @@ public class BillingService {
         Instant now=clock.instant(),end=s.time("period_end"),grace=null;
         String status=s.text("status"),reason=null;
         boolean paid=end!=null;
-        if(!paid) { if(!now.isBefore(s.time("trial_end"))) { status="TRIAL_EXPIRED"; reason="TRIAL_ENDED"; } }
+        if("CANCELED".equals(status)) { reason="SUBSCRIPTION_ENDED"; }
+        else if(!paid) { if(!now.isBefore(s.time("trial_end"))) { status="TRIAL_EXPIRED"; reason="TRIAL_ENDED"; } }
         else if(!now.isBefore(end)) {
             if(s.flag("cancel_at_period_end")) { status="CANCELED"; reason="SUBSCRIPTION_ENDED"; }
             else {
@@ -103,6 +104,7 @@ public class BillingService {
     public BillingViews.Registration register(long user,String key,BillingRequests.Registration r) {
         return locked(user,()->{
             String body=r.purpose()+"|"+r.planId()+"|"+r.priceVersion()+"|"+r.consentVersion();
+            ensureNoRefund(user);
             String old=command(user,"REGISTER",key,body);
             if(old!=null) return registration(user,old);
             consent(r.consentVersion());
@@ -112,7 +114,7 @@ public class BillingService {
                 var plan=BillingPolicy.plan(r.planId());
                 if(plan.amount()==0) throw BillingException.invalid();
                 if(!BillingPolicy.VERSION.equals(r.priceVersion())) throw BillingException.conflict("PLAN_PRICE_CHANGED");
-                if(s.time("period_end")!=null && (!s.flag("cancel_at_period_end") || clock.instant().isBefore(s.time("period_end")))) throw BillingException.conflict("SUBSCRIPTION_ALREADY_ACTIVE");
+                if(!"CANCELED".equals(s.text("status")) && s.time("period_end")!=null && (!s.flag("cancel_at_period_end") || clock.instant().isBefore(s.time("period_end")))) throw BillingException.conflict("SUBSCRIPTION_ALREADY_ACTIVE");
                 if(!ledger.list("select id from billing_invoices where user_id=? and status='OPEN'",user).isEmpty()) throw BillingException.conflict("BILLING_IN_PROGRESS");
                 amount=plan.amount();
             } else if(r.planId()!=null || r.priceVersion()!=null) throw BillingException.invalid();
@@ -216,7 +218,9 @@ public class BillingService {
             int before=Integer.MAX_VALUE;
             if(cursor!=null) { try { before=Integer.parseInt(cursor); if(before<1) throw BillingException.invalid(); } catch(NumberFormatException e) { throw BillingException.invalid(); } }
             var rows=ledger.list("select * from billing_invoices where user_id=? and cycle_no<? order by cycle_no desc limit 21",user,before);
-            var items=rows.stream().limit(20).map(r->{ Row a=lastAttempt(r.text("id")); return new BillingViews.Invoice(r.text("id"),r.text("plan_id"),r.number("amount"),"KRW",r.time("period_start"),r.time("period_end"),r.text("status"),a==null?null:a.text("status"),r.time("paid_at")); }).toList();
+            var items=rows.stream().limit(20).map(r->{ Row a=lastAttempt(r.text("id")); return new BillingViews.Invoice(r.text("id"),r.text("plan_id"),r.number("amount"),"KRW",r.time("period_start"),r.time("period_end"),r.text("status"),a==null?null:a.text("status"),r.time("paid_at"),
+                    ledger.list("select status from billing_refunds where invoice_id=?",r.text("id")).stream().findFirst().map(x->x.text("status")).orElse(null),
+                    ledger.list("select canceled_at from billing_refunds where invoice_id=?",r.text("id")).stream().findFirst().map(x->x.time("canceled_at")).orElse(null)); }).toList();
             return new BillingViews.InvoicePage(items,rows.size()>20?Long.toString(rows.get(19).number("cycle_no")):null);
         });
     }
@@ -249,7 +253,7 @@ public class BillingService {
         return locked(user,()->{
             if(command(user,"RESUME",key,consentVersion)!=null) return view(sub(user));
             consent(consentVersion); ensureNoFlight(user); Row s=sub(user);
-            if(!s.flag("cancel_at_period_end") || s.time("period_end")==null || !clock.instant().isBefore(s.time("period_end"))) throw BillingException.conflict("SUBSCRIPTION_NOT_RESUMABLE");
+            if("CANCELED".equals(s.text("status")) || !s.flag("cancel_at_period_end") || s.time("period_end")==null || !clock.instant().isBefore(s.time("period_end"))) throw BillingException.conflict("SUBSCRIPTION_NOT_RESUMABLE");
             activeMethod(s);
             ledger.update("update billing_subscriptions set cancel_at_period_end=false,next_charge_at=period_end where user_id=?",user);
             remember(user,"RESUME",key,consentVersion,uuid()); return view(sub(user));
@@ -266,7 +270,12 @@ public class BillingService {
             remember(user,"RETRY:"+invoice,key,"",invoice); return new BillingViews.Accepted(invoice,"OPEN");
         });
     }
+    private void ensureNoRefund(long user) {
+        if(!ledger.list("select id from billing_refunds where user_id=? and status<>'CANCELED'",user).isEmpty())
+            throw BillingException.conflict("REFUND_IN_PROGRESS");
+    }
     private void ensureNoFlight(long user) {
+        ensureNoRefund(user);
         if(!ledger.list("select id from billing_attempts where user_id=? and status in ('DISPATCHING','UNKNOWN','REVIEW_REQUIRED')",user).isEmpty()) throw BillingException.conflict("BILLING_IN_PROGRESS");
     }
     private String activeMethod(Row s) {
@@ -364,7 +373,7 @@ public class BillingService {
             locked(user,()->{
                 Row current=owned("billing_invoices",i.text("id"),user);
                 if("PAID".equals(current.text("status"))) return null;
-                ledger.update("update billing_attempts set status='SUCCEEDED',payment_key=?,error_code=null,lease_until=null where id=?",payment.paymentKey().toLowerCase(java.util.Locale.ROOT),id);
+                ledger.update("update billing_attempts set status='SUCCEEDED',payment_key=?,error_code=null,lease_until=null where id=?",payment.paymentKey(),id);
                 boolean first=i.text("session_id")!=null;
                 Instant start=first?payment.approvedAt():i.time("period_start");
                 Instant end=first?BillingPolicy.boundary(start,1):i.time("period_end");

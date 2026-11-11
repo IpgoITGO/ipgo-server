@@ -17,8 +17,13 @@ public record CleaningResult(
 
     public record CleanProduct(@NotBlank @Size(max=100) String skuBarcode,
             @NotBlank @Size(max=200) String skuName, @PositiveOrZero Long unitCost, boolean isNew) { }
+    // expiryDate: 수불부 유통기한(#168, ai#97). 수불부에 없거나 예전 AI 결과면 null이다.
     public record Unit(@NotBlank @Size(max=100) String sourceInventoryKey,
-            @NotBlank @Size(max=100) String skuBarcode, @NotNull LocalDate receivedOn) { }
+            @NotBlank @Size(max=100) String skuBarcode, @NotNull LocalDate receivedOn, LocalDate expiryDate) {
+        public Unit(String sourceInventoryKey, String skuBarcode, LocalDate receivedOn) {
+            this(sourceInventoryKey, skuBarcode, receivedOn, null);
+        }
+    }
     public record UnitDay(@NotNull @Positive Long uploadFileId, @NotBlank String sourceInventoryKey,
             @NotNull LocalDate receivedOn, @NotNull LocalDate stockDate,
             @NotNull @PositiveOrZero Long openingQty, @NotNull @PositiveOrZero Long inboundQty,

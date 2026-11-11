@@ -92,7 +92,7 @@ migration_count="$(docker exec "${database_container}" \
 table_count="$(docker exec "${database_container}" \
   psql -U ipgo_migrator -d ipgo -Atc \
   "SELECT COUNT(*) FROM pg_tables WHERE schemaname = 'public' AND tablename <> 'flyway_schema_history'")"
-if [[ "${migration_count}" != "22" || "${table_count}" != "36" ]]; then
+if [[ "${migration_count}" != "23" || "${table_count}" != "36" ]]; then
   echo "unexpected schema: migrations=${migration_count}, tables=${table_count}" >&2
   exit 1
 fi
@@ -205,5 +205,15 @@ expect_denied ipgo_server "UPDATE product_planned_quantities SET calculation_run
 expect_denied ipgo_ai_reader "SELECT * FROM product_planned_quantities"
 expect_denied ipgo_ai_service_reader "SELECT * FROM product_planned_quantities"
 docker exec "${database_container}" psql -v ON_ERROR_STOP=1 -U ipgo_server -d ipgo   -c "DELETE FROM product_planned_quantities WHERE product_id = 100" >/dev/null
+
+# V23: 서버 역할은 LOT 유통기한과 임박 기준(1~365일)을 쓰고, 범위 밖 기준은 거부한다(#168).
+docker exec -i "${database_container}" psql -v ON_ERROR_STOP=1 -U ipgo_server -d ipgo >/dev/null <<'SQL'
+UPDATE inventory_units SET expiry_date = DATE '2027-03-15' WHERE id = 1000;
+UPDATE inventory_units SET expiry_date = NULL WHERE id = 1000;
+UPDATE warehouses SET expiry_imminent_days = 30 WHERE id = 10;
+UPDATE warehouses SET expiry_imminent_days = NULL WHERE id = 10;
+SQL
+expect_denied ipgo_server "UPDATE warehouses SET expiry_imminent_days = 0 WHERE id = 10"
+expect_denied ipgo_server "UPDATE warehouses SET expiry_imminent_days = 366 WHERE id = 10"
 
 echo "PostgreSQL migrations, tenant integrity, and database roles verified."

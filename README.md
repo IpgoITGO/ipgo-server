@@ -467,7 +467,7 @@ storage/uploads/<인증된 사용자 ID>/<보관 UUID>/
 정제 결과의 한 줄(바코드·상품명·`sku_mixed_id`·입고일)을 받아 `ProductRegistrationService`가 상품과 재고관리단위를 자동 등록합니다(BE-05). Python 정제 연동 전이라 아직 업로드 흐름에서 호출하지 않습니다. 창고 선택은 아직 없으며 `WarehouseService`가 회원당 기본 창고 1개를 만들어 씁니다.
 
 - 상품: 회원별 바코드 1개 = 1행. 처음 나온 바코드만 새로 만들고, 이미 있는 상품의 이름은 셀러가 고쳤을 수 있으므로 덮어쓰지 않습니다. 업로드에 안 나왔다는 이유로 비활성화하지 않습니다.
-- 재고관리단위: 같은 창고의 `sku_mixed_id` + 입고일이 처음일 때만 새로 만듭니다. 같은 `sku_mixed_id`라도 입고일이 다르면 다른 단위입니다. 유통기한은 Should 기능이라 저장하지 않습니다.
+- 재고관리단위: 같은 창고의 `sku_mixed_id` + 입고일이 처음일 때만 새로 만듭니다. 같은 `sku_mixed_id`라도 입고일이 다르면 다른 단위입니다. 정제 결과의 `inventoryUnits[].expiryDate`(ai#97)가 있으면 그 단위의 유통기한으로 저장하고, 비어 있으면 이미 저장한 유통기한을 지우지 않습니다(#168).
 
 | API | 동작 |
 |---|---|
@@ -523,6 +523,19 @@ S2·S3 모두 Bearer JWT가 필요하며 CSRF는 요구하지 않습니다. 기�
 | `DELETE /api/products/{productId}/planned-quantity` | 내 입고량을 지우고 `204`를 돌려줍니다. 이미 없어도 `204`입니다 |
 
 잘못된 값은 `400 INVALID_INPUT`과 `details.field`(없거나 끝나지 않은 계산은 `calculationRunId`), 다른 회원의 상품이나 계산은 `403`, 없는 상품은 `404`입니다.
+
+### 유통기한 관리 (#168)
+
+재고관리단위(LOT)마다 수불부의 유통기한을 저장하고(V23), 기준일(마지막 수불 날짜)에 남은 재고가 있는 LOT만 보여 줍니다. 업로드는 다른 화면과 같이 기간별 최신 revision을 고른 뒤 정제가 끝난(`DONE`) 것만 씁니다. 화면 위치(대시보드 카드·목록 페이지·상품 상세)와 상관없이 같은 API를 씁니다. 계산 입력이 아니어서 설정을 바꿔도 재계산하지 않습니다.
+
+| API | 동작 |
+|---|---|
+| `GET /api/expiry` | `{ asOfDate, imminentDays, summary: { expired, imminent, ok, unknown }, items: [{ productId, skuBarcode, skuName, receivedOn, expiryDate, daysLeft, remainingQty, status }] }`. 유통기한이 빠른 순이고 모르는 LOT는 맨 뒤입니다. `daysLeft`는 유통기한 − 오늘(서울)입니다. `status`는 `EXPIRED`(지남)·`IMMINENT`(오늘~임박 기준일 이내)·`OK`·`UNKNOWN`(유통기한 없음)입니다. 업로드 전이면 `asOfDate: null`, 0인 요약, 빈 목록입니다 |
+| `GET /api/expiry?status=IMMINENT&productId=12` | `status`·`productId`는 선택입니다. `status`는 목록만 거르고 `summary`는 그대로입니다. `productId`가 있으면 `summary`도 그 상품 안에서 셉니다 |
+| `GET /api/settings/expiry` | `{ imminentDays }`. 바꾸지 않았으면 30입니다 |
+| `PUT /api/settings/expiry` | `{ imminentDays }`. 1~365 정수만 받습니다. 응답은 GET과 같습니다 |
+
+잘못된 값은 `400 INVALID_INPUT`과 `details.field: imminentDays`, 없는 `status` 값은 `400`, 다른 회원 상품은 `403`, 없는 상품은 `404`입니다.
 
 ### 기존 발주 물량 (R1~R3)
 
@@ -709,7 +722,7 @@ scripts/testing/verify-insight-contract.sh /path/to/ipgo-ai
 
 ## Database 변경과 복구
 
-이미 병합된 migration은 Flyway 이력을 보존하기 위해 수정하지 않습니다. 새 DB에서는 승인한 범위의 migration을 순서대로 적용합니다. #90 구현은 V16까지 필요하며 운영 적용은 별도 승인입니다. V4는 `warehouses`·`products`·`inventory_units`, V5는 `upload_files`, V6은 `replenishment_settings`, V7은 `planned_receipts`, V8은 `auth_sessions`·`refresh_tokens`, V9는 `calculation_runs`·`calculation_results`, V10은 일별 수불 2개 표, V11은 계산 출처·시나리오·백테스트·AI 인사이트 4개 표를 추가합니다. V12는 PostgreSQL tenant 무결성 trigger, V13은 FastAPI view와 역할별 권한을 적용하고, V14는 `engine_jobs`·입력 hash·정제 조회 view를 추가합니다. V15의 DB 원본 저장 전환(Server #77·AI #60)은 보류 상태입니다. V16은 입고 사건·배정·업로드 판정 기록을 추가하며 기존 원본 저장 모드를 바꾸지 않습니다. V16을 위해 전체 migration 경로를 실행하기 전 V15의 보류/실제 DB 이력을 함께 확인해야 합니다. V19는 창고 보관 요율 칸과 `product_boxes`를 추가합니다(#111). 기존 행은 바꾸지 않고, 되돌릴 때는 새 칸과 표만 지우면 됩니다. V21은 내 입고량 `product_planned_quantities`를 추가합니다(#119, V20은 #137 입고 정정). 되돌릴 때는 이 표만 지우면 됩니다. 실제 DB 적용은 V15~V18과 같은 순서 확인과 별도 승인을 따릅니다. 전체 관계와 변경 규칙은 [Database ERD v1](docs/database/erd-v1.md)에 있습니다. Hibernate는 스키마를 자동 수정하지 않고 검증만 수행합니다.
+이미 병합된 migration은 Flyway 이력을 보존하기 위해 수정하지 않습니다. 새 DB에서는 승인한 범위의 migration을 순서대로 적용합니다. #90 구현은 V16까지 필요하며 운영 적용은 별도 승인입니다. V4는 `warehouses`·`products`·`inventory_units`, V5는 `upload_files`, V6은 `replenishment_settings`, V7은 `planned_receipts`, V8은 `auth_sessions`·`refresh_tokens`, V9는 `calculation_runs`·`calculation_results`, V10은 일별 수불 2개 표, V11은 계산 출처·시나리오·백테스트·AI 인사이트 4개 표를 추가합니다. V12는 PostgreSQL tenant 무결성 trigger, V13은 FastAPI view와 역할별 권한을 적용하고, V14는 `engine_jobs`·입력 hash·정제 조회 view를 추가합니다. V15의 DB 원본 저장 전환(Server #77·AI #60)은 보류 상태입니다. V16은 입고 사건·배정·업로드 판정 기록을 추가하며 기존 원본 저장 모드를 바꾸지 않습니다. V16을 위해 전체 migration 경로를 실행하기 전 V15의 보류/실제 DB 이력을 함께 확인해야 합니다. V19는 창고 보관 요율 칸과 `product_boxes`를 추가합니다(#111). 기존 행은 바꾸지 않고, 되돌릴 때는 새 칸과 표만 지우면 됩니다. V21은 내 입고량 `product_planned_quantities`를 추가합니다(#119, V20은 #137 입고 정정). 되돌릴 때는 이 표만 지우면 됩니다. V23은 `inventory_units.expiry_date`와 `warehouses.expiry_imminent_days` 칸을 추가합니다(#168, V22는 인사이트 월 사용량). 기존 행은 NULL로 남고, 되돌릴 때는 두 칸만 지우면 됩니다. 실제 DB 적용은 V15~V18과 같은 순서 확인과 별도 승인을 따릅니다. 전체 관계와 변경 규칙은 [Database ERD v1](docs/database/erd-v1.md)에 있습니다. Hibernate는 스키마를 자동 수정하지 않고 검증만 수행합니다.
 
 초기 PostgreSQL은 administrator가 `database/bootstrap/create_roles.sql`을 먼저 실행한 뒤 `ipgo_migrator`로 Flyway를 적용합니다. 새 DB의 bootstrap SQL은 `ipgo_migrator`·`ipgo_server`·`ipgo_ai_reader`·`ipgo_ai_service_reader` 역할을 만들고 비밀번호는 설정하지 않습니다. 비밀번호는 repository·shell history·Terraform state에 남기지 않고 승인된 Secrets Manager 절차로 설정합니다. Spring runtime은 `ipgo_server`, FastAPI는 `ipgo_ai_reader`를 사용하며 runtime에서는 `SPRING_FLYWAY_ENABLED=false`로 migration 자격 증명을 분리합니다.
 

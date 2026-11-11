@@ -90,6 +90,14 @@ public class UploadCleaningService {
             // 기존 LOT를 다른 상품에 붙이는 결과는 전체 rollback한다.
             require(unit != null && unit.getProductId().equals(productMap.get(input.skuBarcode()).getId()));
         }
+        // #168 유통기한은 새 값이 있을 때만 저장한다. 빈 값으로 이미 아는 유통기한을 지우지 않는다.
+        List<Object[]> expiryDates = result.inventoryUnits().stream().filter(u -> u.expiryDate() != null)
+                .map(u -> new Object[] {u.expiryDate(),
+                        unitMap.get(new UnitKey(u.sourceInventoryKey(), u.receivedOn())).getId()})
+                .toList();
+        if (!expiryDates.isEmpty()) {
+            jdbc.batchUpdate("UPDATE inventory_units SET expiry_date = ? WHERE id = ?", expiryDates);
+        }
 
         jdbc.batchUpdate("""
                 INSERT INTO daily_stock_records (upload_file_id, inventory_unit_id, stock_date, opening_qty,

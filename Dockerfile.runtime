@@ -1,0 +1,11 @@
+# Native ARM CI tests and packages this exact JAR before it is published as an artifact.
+FROM eclipse-temurin:21-jre-jammy
+
+RUN groupadd --system --gid 10001 ipgo \
+    && useradd --system --uid 10001 --gid ipgo --home-dir /app --shell /usr/sbin/nologin ipgo
+WORKDIR /app
+COPY --chown=ipgo:ipgo .prepared-runtime/app.jar /app/app.jar
+
+USER 10001:10001
+EXPOSE 8080
+ENTRYPOINT ["java", "-XX:MaxRAMPercentage=75.0", "-jar", "/app/app.jar"]

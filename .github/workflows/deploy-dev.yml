@@ -157,6 +157,7 @@ jobs:
           git cat-file -e "$WORKFLOW_SHA^{commit}"
           git show "$WORKFLOW_SHA:scripts/deployment/verify_deployment.py" > "$RUNNER_TEMP/verify_deployment.py"
           git show "$WORKFLOW_SHA:scripts/deployment/check_ecr_image.py" > "$RUNNER_TEMP/check_ecr_image.py"
+          git show "$WORKFLOW_SHA:scripts/deployment/runtime_artifact.py" > "$RUNNER_TEMP/runtime_artifact.py"
           python3 "$RUNNER_TEMP/verify_deployment.py" ci --service server
       - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd
         with:
@@ -178,6 +179,22 @@ jobs:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
           ECR_REPOSITORY: ipgo-dev/server
         run: python3 "$RUNNER_TEMP/check_ecr_image.py"
+      - name: Reuse tested runtime without a second compilation
+        id: runtime
+        if: steps.image_lookup.outputs.exists == 'false'
+        timeout-minutes: 2
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "$COMPUTE_MODE" = 'onebox' ] && [ -f Dockerfile.runtime ]; then
+            python3 "$RUNNER_TEMP/runtime_artifact.py" fetch
+            echo 'dockerfile=Dockerfile.runtime' >> "$GITHUB_OUTPUT"
+          else
+            # Historic source / legacy architecture retains its approved source build path.
+            echo 'dockerfile=Dockerfile' >> "$GITHUB_OUTPUT"
+          fi
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069
         if: steps.image_lookup.outputs.exists == 'false'
       - name: Build and push immutable image
@@ -185,6 +202,7 @@ jobs:
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc
         with:
           context: .
+          file: ${{ steps.runtime.outputs.dockerfile }}
           platforms: ${{ vars.AWS_DEV_COMPUTE_MODE == 'onebox' && 'linux/arm64' || 'linux/amd64' }}
           push: true
           provenance: true

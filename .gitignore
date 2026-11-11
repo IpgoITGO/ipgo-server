@@ -28,3 +28,4 @@ HELP.md
 
 # D0 Python helper bytecode
 __pycache__/
+.prepared-runtime/

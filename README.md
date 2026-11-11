@@ -1070,3 +1070,11 @@ TLS 검증·redirect 금지를 유지하고 API/CLI 오류 원문이나 token을
 불필요한 Database CI 요구가 제거됨을 확인했습니다. 공개 smoke URL은 문법 검사용
 placeholder만 사용했으며 실제 URL 설정·AWS/HTTP/배포 검증은 실행하지 않았습니다.
 필수 IAM 읽기 권한과 Server AWS_DEV_SMOKE_URL의 적용 전 조건은 그대로 남습니다.
+
+## 토스 TEST 결제·전액 취소 (#170·#171)
+
+셀러 테스트 카탈로그는 `test-2026-11-500-v2`/월500원입니다. LIVE는 거부합니다. API/worker는 기본 OFF이며, 승인된 개발 배포에서만 TEST Secret ARN·개발 복귀 주소를 지정해 켭니다. 토스 API 개별 연동용 test_ck/test_sk·같은 MID·보안키와 별도32바이트 암호화/lookup 키가 필요합니다. 값은 코드·Terraform·로그에 넣지 않습니다.
+
+본인 최신 승인 청구에 `POST /api/billing/invoices/{id}/cancel-payment` + `Idempotency-Key`, `{reason}`으로 전액 취소를 요청합니다. CANCELED만 완료이고 PROCESSING/UNKNOWN은202·확인 중입니다. 취소 전 주문 조회와 원래 provider 멱등키로 유실 응답을 복구하며14일 후 REVIEW_REQUIRED로 격리합니다. 부분 취소·과거 청구 환불·LIVE는 지원하지 않습니다. 취소 요청은 다음 자동 청구를 중단하고 확정 취소 때 구독을 CANCELED로 바꿉니다. 승인 원장·원래 기간은 보존합니다.
+
+DB V24는 refund 원장을 추가하며 다른 미병합 PR의 V24와 번호가 겹치면 배포 전에 최신dev로 통합해 번호를 조정해야 합니다. 특히 기존 회원 탈퇴 변경이 함께 들어오면 refund 원장 보존과 탈퇴/취소 경합도 다시 검증해야 합니다. 비활성화/이전 이미지 복귀 때도 이미 승인/취소된 원장은 삭제하지 않습니다.

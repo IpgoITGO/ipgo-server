@@ -5,7 +5,11 @@ public interface BillingGateway {
         @Override public String toString() { return "Issued[redacted]"; }
     }
     record Charge(String orderId, String customerKey, long amount, String orderName) { }
-    record Payment(String paymentKey, String orderId, long totalAmount, String currency, String status, String merchantId, java.time.Instant approvedAt) { }
+    record Payment(String paymentKey, String orderId, long totalAmount, String currency, String status, String merchantId, java.time.Instant approvedAt, long balanceAmount, java.time.Instant canceledAt) {
+        public Payment(String paymentKey,String orderId,long totalAmount,String currency,String status,String merchantId,java.time.Instant approvedAt) {
+            this(paymentKey,orderId,totalAmount,currency,status,merchantId,approvedAt,totalAmount,null);
+        }
+    }
     final class Failure extends RuntimeException {
         private final boolean rejected;
         private final String code;
@@ -16,5 +20,8 @@ public interface BillingGateway {
     Issued issue(String authKey,String customerKey,String idempotencyKey);
     Payment charge(String billingKey,Charge charge,String idempotencyKey);
     Payment lookup(String orderId);
+    default Payment cancel(String paymentKey,String reason,String idempotencyKey) {
+        throw new Failure(false,"REFUND_UNAVAILABLE");
+    }
     void delete(String billingKey);
 }

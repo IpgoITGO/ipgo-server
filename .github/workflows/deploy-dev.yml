@@ -82,6 +82,21 @@ on:
         required: false
         default: false
         type: boolean
+      billing_test_enabled:
+        description: "Explicitly enable TEST billing API and worker for the approved SHA (never LIVE)"
+        required: false
+        default: false
+        type: boolean
+      billing_test_secret_arn:
+        description: "ARN of the prepared TEST billing JSON Secret; never enter key values"
+        required: false
+        default: ""
+        type: string
+      billing_return_origin:
+        description: "Approved development frontend origin for Toss callbacks"
+        required: false
+        default: "https://ipgo-dev.iwhya.kr"
+        type: string
       desired_count:
         description: "Spring Boot ECS task count after deployment"
         required: true
@@ -108,6 +123,9 @@ jobs:
     env:
       DEPLOYMENT_SOURCE_SHA: ${{ inputs.source_sha || github.sha }}
       EXPECTED_SHA: ${{ inputs.expected_sha }}
+      BILLING_TEST_ENABLED: ${{ inputs.billing_test_enabled }}
+      BILLING_TEST_SECRET_ARN: ${{ inputs.billing_test_secret_arn }}
+      BILLING_RETURN_ORIGIN: ${{ inputs.billing_return_origin }}
       AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
       MAINTENANCE_APPROVED: ${{ inputs.maintenance_approved }}
       ENGINE_ENABLED: ${{ inputs.engine_enabled }}

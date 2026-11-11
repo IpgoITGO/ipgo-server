@@ -13,5 +13,6 @@ public final class BillingRequests {
             @NotBlank @Size(max=50) String customerKey, @NotBlank @Size(max=100) String state) {
         @Override public String toString() { return "BillingComplete[redacted]"; }
     }
+    public record CancelPayment(@NotBlank @Size(max=200) String reason) { }
     public record Resume(@NotBlank @Size(max=40) String consentVersion) { }
 }

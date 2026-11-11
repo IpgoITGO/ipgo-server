@@ -72,8 +72,7 @@ public class CustomScenarioStore {
         if (!r.active || !"DONE".equals(r.runStatus)
                 || !(CalculationResult.OK.equals(r.status) || CalculationResult.NOT_NEEDED.equals(r.status))
                 || r.asOf.isAfter(now) || NeedJudgment.daysSince(r.asOf, now) > NeedJudgment.MAX_DAYS_SINCE_AS_OF
-                || !Objects.equals(jdbc.queryForObject("SELECT MAX(id) FROM calculation_runs WHERE warehouse_id=?",
-                        Long.class, r.warehouseId),r.runId)) throw ProductException.scenarioConflict();
+                || newerRun(r.warehouseId, r.runId)) throw ProductException.scenarioConflict();
         ObjectNode request;
         long unit;
         try {
@@ -120,6 +119,13 @@ public class CustomScenarioStore {
         return new Input(userId,resultId,r.warehouseId,r.runId,rounded,previous == null ? null : previous.scenarioId(),
                 request,r.preArrival,r.horizon,r.start,r.riskAllowed,
                 previous != null && previous.qty() == rounded ? previous : null);
+    }
+
+    // 화면(D1·K1)은 마지막 DONE 계산을 보여 준다. 그 뒤에 실패한 계산만 있으면 보이는 결과는 그대로이므로 막지 않는다(#174).
+    // 대기·진행 중이거나 새로 끝난 계산이 있으면 결과가 바뀌는 중이거나 이미 바뀐 것이라 막는다.
+    private boolean newerRun(long warehouseId, long runId) {
+        return jdbc.queryForObject("SELECT COUNT(*) FROM calculation_runs WHERE warehouse_id=? AND id>? AND status<>'FAILED'",
+                Integer.class, warehouseId, runId) > 0;
     }
 
     @Transactional

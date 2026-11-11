@@ -22,6 +22,10 @@ artifact는 JAR 재사용이며 컨테이너 전체를 재사용하는 것은 �
 
 ## 실패와 이전 버전
 
+- JAR 상한은 100MiB이며 다운로드 제한은 120초, runtime 재사용 단계 제한은 3분이다.
+  이는 전송 실패의 상한이며 고정 대기나 자동 재시도가 아니다. 실패 로그는 고정 단계명
+  (`ci_evidence`/`artifact_metadata`/`archive_download`/`archive_verification`)만 표시하며 응답/인증정보를 출력하지 않는다.
+
 - artifact 만료/없음/중복/출처·SHA·attempt·ZIP/JAR 해시 불일치는 **실패로 중단**한다. 재빌드로 조용히 우회하지 않는다.
 - 만료된 artifact가 필요하면 승인 범위에서 해당 source CI를 다시 검증·생성하고 새 attempt 성공을 확인한다. 자동 재실행하지 않는다.
 - 새 source 계약이 없는 과거 버전 또는 legacy amd64는 이전 소스 Dockerfile 경로를 유지한다.

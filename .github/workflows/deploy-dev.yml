@@ -182,7 +182,7 @@ jobs:
       - name: Reuse tested runtime without a second compilation
         id: runtime
         if: steps.image_lookup.outputs.exists == 'false'
-        timeout-minutes: 2
+        timeout-minutes: 3
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash

@@ -17,6 +17,7 @@ from verify_deployment import GateError, http_json, pages, require
 REPOSITORY = "IpgoITGO/ipgo-server"
 MAX_JAR = 100 * 1024 * 1024
 MAX_ARCHIVE = MAX_JAR + 1024 * 1024
+DOWNLOAD_TIMEOUT_SECONDS = 120
 
 
 def source_sha(env):
@@ -114,29 +115,37 @@ def main():
     parser.add_argument("command", choices=("package", "fetch"))
     parser.add_argument("--output", type=Path, default=Path(".prepared-runtime"))
     args = parser.parse_args()
+    stage = "arguments"
     try:
         os.umask(0o077)
         if args.command == "package":
+            stage = "package"
             require(os.environ.get("RUNNER_ARCH") == "ARM64", "Native ARM producer required")
             jars = [p for p in Path("build/libs").glob("*.jar") if not p.name.endswith("-plain.jar")]
             require(len(jars) == 1, "One tested bootJar required")
             result = package(jars[0], args.output, os.environ)
         else:
+            stage = "ci_evidence"
             require(os.environ.get("COMPUTE_MODE") == "onebox", "Native ARM artifact required")
             evidence = json.loads((Path(os.environ["RUNNER_TEMP"]) / "approved-ci.json").read_text())
             get = lambda path: http_json("https://api.github.com" + path, os.environ["GH_TOKEN"])
+            stage = "artifact_metadata"
             artifact, run = select_artifact(os.environ, evidence, get)
             with tempfile.TemporaryDirectory(prefix="ipgo-verified-runtime-") as directory:
                 archive = Path(directory) / "runtime.zip"
                 # Use gh's authenticated artifact endpoint; do not construct or log signed download URLs.
                 with archive.open("wb") as stream:
+                    stage = "archive_download"
                     subprocess.run(["gh", "api", f"repos/{REPOSITORY}/actions/artifacts/{artifact['id']}/zip"],
-                                   stdout=stream, stderr=subprocess.PIPE, timeout=60, check=True)
+                                   stdout=stream, stderr=subprocess.PIPE,
+                                   timeout=DOWNLOAD_TIMEOUT_SECONDS, check=True)
+                stage = "archive_verification"
                 result = verify_archive(archive, artifact, run, args.output)
         print(json.dumps(result))
         return 0
     except (GateError, OSError, ValueError, KeyError, TypeError, zipfile.BadZipFile, subprocess.SubprocessError):
-        print("::error::Approved runtime artifact rejected; no fallback rebuild or deploy.", file=sys.stderr)
+        print(f"::error::Approved runtime artifact rejected at {stage}; no fallback rebuild or deploy.",
+              file=sys.stderr)
         return 1
 
 

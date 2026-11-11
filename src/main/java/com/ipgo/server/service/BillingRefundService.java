@@ -27,7 +27,12 @@ public class BillingRefundService {
     private <T> T locked(long user,Supplier<T> action) {
         if(!properties.enabled() || !"TEST".equals(properties.mode()))
             throw new BillingException(503,"BILLING_DISABLED","테스트 결제 기능을 준비 중입니다.");
-        return ledger.transaction(()->{ ledger.lock(user); return action.get(); });
+        return ledger.transaction(()->{
+            ledger.lock(user);
+            if(!ledger.list("select id from users where id=? and withdrawn_at is not null",user).isEmpty())
+                throw new BillingException(409,"ACCOUNT_WITHDRAWN","탈퇴한 계정이에요.");
+            return action.get();
+        });
     }
     public BillingViews.Refund cancel(long user,String invoiceId,String key,String reason) {
         if(key==null || !key.matches("[A-Za-z0-9_-]{8,100}") || reason==null || reason.isBlank() || reason.length()>200)
@@ -41,6 +46,10 @@ public class BillingRefundService {
             var refunds=ledger.list("select * from billing_refunds where invoice_id=? and user_id=?",invoiceId,user);
             if(!refunds.isEmpty()) {
                 Row existing=refunds.getFirst();
+                if(!"CANCELED".equals(existing.text("status")) && !clock.instant().isBefore(existing.time("created_at").plus(Duration.ofDays(14)))) {
+                    ledger.update("update billing_refunds set status='REVIEW_REQUIRED',lease_until=null where id=?",existing.text("id"));
+                    return null;
+                }
                 if(!reason.equals(existing.text("reason"))) throw BillingException.conflict("REFUND_REASON_CHANGED");
                 if(commands.isEmpty()) remember(user,operation,key,hash,existing.text("id"));
                 if("CANCELED".equals(existing.text("status")) || "REVIEW_REQUIRED".equals(existing.text("status"))

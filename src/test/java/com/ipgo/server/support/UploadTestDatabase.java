@@ -68,6 +68,32 @@ public final class UploadTestDatabase {
         }
     }
 
+    public static void withdrawalSchema(JdbcTemplate jdbc) {
+        // #172 탈퇴는 결제 원장(V17)의 구독을 멈추고 users.withdrawn_at(V24)을 쓴다. H2 harness에만 portable 부분을 한 번 적용한다.
+        try (var connection = java.util.Objects.requireNonNull(jdbc.getDataSource()).getConnection()) {
+            if (connection.getMetaData().getDatabaseProductName().contains("PostgreSQL")) return;
+        } catch (java.sql.SQLException e) { throw new IllegalStateException(e); }
+        if (jdbc.queryForObject("SELECT COUNT(*) FROM information_schema.tables WHERE LOWER(table_name) = 'billing_subscriptions'", Integer.class) == 0) {
+            try {
+                String sql = new org.springframework.core.io.ClassPathResource("db/migration/V17__create_billing_ledger.sql")
+                        .getContentAsString(java.nio.charset.StandardCharsets.UTF_8).split("-- PostgreSQL 전용")[0];
+                for (String statement : sql.split(";")) if (!statement.isBlank()) jdbc.execute(statement);
+            } catch (java.io.IOException e) { throw new IllegalStateException(e); }
+        }
+        if (jdbc.queryForObject("SELECT COUNT(*) FROM information_schema.columns WHERE LOWER(table_name) = 'users' AND LOWER(column_name) = 'withdrawn_at'", Integer.class) == 0) {
+            new org.springframework.jdbc.datasource.init.ResourceDatabasePopulator(
+                    new org.springframework.core.io.ClassPathResource("db/migration/V24__add_user_withdrawn_at.sql"))
+                    .execute(java.util.Objects.requireNonNull(jdbc.getDataSource()));
+        }
+        if (jdbc.queryForObject("SELECT COUNT(*) FROM information_schema.tables WHERE LOWER(table_name) = 'billing_refunds'", Integer.class) == 0) {
+            try (var stream = new org.springframework.core.io.ClassPathResource("db/migration/V25__create_billing_refunds.sql").getInputStream()) {
+                String sql = new String(stream.readAllBytes(), java.nio.charset.StandardCharsets.UTF_8).split("-- PostgreSQL 전용")[0];
+                for (String statement : sql.split(";")) if (!statement.isBlank()) jdbc.execute(statement);
+            } catch (java.io.IOException e) { throw new IllegalStateException(e); }
+        }
+
+    }
+
     public static void clear(JdbcTemplate jdbc) {
         try (var connection = java.util.Objects.requireNonNull(jdbc.getDataSource()).getConnection()) {
             if (connection.getMetaData().getDatabaseProductName().equals("PostgreSQL")) {

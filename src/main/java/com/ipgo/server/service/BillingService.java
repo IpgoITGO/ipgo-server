@@ -33,7 +33,12 @@ public class BillingService {
     }
     public List<BillingViews.Plan> plans() { requireEnabled(); return BillingPolicy.plans(); }
     private <T> T locked(long user,Supplier<T> f) {
-        requireEnabled(); return ledger.transaction(()->{ ledger.lock(user); initialize(user); return f.get(); });
+        requireEnabled(); return ledger.transaction(()->{ ledger.lock(user); ensureNotWithdrawn(user); initialize(user); return f.get(); });
+    }
+    // #172 탈퇴와 겹쳐 늦게 도착한 재개 · 등록 · 재결제 요청이 탈퇴 뒤 결제를 되살리지 않게 같은 회원 row 잠금 안에서 거절한다.
+    private void ensureNotWithdrawn(long user) {
+        if(!ledger.list("select id from users where id=? and withdrawn_at is not null",user).isEmpty())
+            throw new BillingException(409,"ACCOUNT_WITHDRAWN","탈퇴한 계정이에요.");
     }
     private void initialize(long user) {
         var existing=ledger.list("select merchant_id from billing_subscriptions where user_id=?",user);
@@ -223,12 +228,26 @@ public class BillingService {
         return locked(user,()->{
             if(command(user,"CANCEL",key,"")!=null) return view(sub(user));
             ensureNoFlight(user);
-            ledger.update("update billing_sessions set status='CANCELED' where user_id=? and purpose='START_SUBSCRIPTION' and status in ('OPEN','ISSUING')",user);
-            ledger.update("update billing_subscriptions set cancel_at_period_end=true,next_charge_at=null where user_id=?",user);
-            ledger.update("update billing_attempts set status='VOID' where user_id=? and status in ('READY','DECLINED')",user);
-            ledger.update("update billing_invoices set status='VOID' where user_id=? and status='OPEN'",user);
+            stopCharges(user);
             remember(user,"CANCEL",key,"",uuid()); return view(sub(user));
         });
+    }
+    /**
+     * #172 회원 탈퇴. 탈퇴 transaction 안에서 회원 row를 잠근 채 개인정보 지우기와 함께 처리한다(같은 잠금이라 재개 · 결제와 섞이지 않는다).
+     * 멱등 키로 건너뛰지 않고 매번 결제 중인지 확인해 409 BILLING_IN_PROGRESS로 막는다. 결제 기능이 꺼져 있어도 예전 구독은 멈춘다.
+     */
+    @org.springframework.transaction.annotation.Transactional(propagation=org.springframework.transaction.annotation.Propagation.MANDATORY)
+    public void stopForWithdrawal(long user) {
+        ledger.lock(user);
+        if(ledger.list("select user_id from billing_subscriptions where user_id=?",user).isEmpty()) return;
+        ensureNoFlight(user);
+        stopCharges(user);
+    }
+    private void stopCharges(long user) {
+        ledger.update("update billing_sessions set status='CANCELED' where user_id=? and purpose='START_SUBSCRIPTION' and status in ('OPEN','ISSUING')",user);
+        ledger.update("update billing_subscriptions set cancel_at_period_end=true,next_charge_at=null where user_id=?",user);
+        ledger.update("update billing_attempts set status='VOID' where user_id=? and status in ('READY','DECLINED')",user);
+        ledger.update("update billing_invoices set status='VOID' where user_id=? and status='OPEN'",user);
     }
     public BillingViews.Subscription resume(long user,String key,String consentVersion) {
         return locked(user,()->{

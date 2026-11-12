@@ -134,6 +134,7 @@ PostgreSQL을 준비한 뒤 실행 환경에 아래 변수를 설정합니다. �
 | `IPGO_AUTH_COOKIE_SECURE` | 기본 `true`. 로컬 HTTP 개발에서만 `false`, 배포에서는 HTTPS와 `true` 사용 |
 | `IPGO_UPLOAD_DATABASE_MAX_BYTES` | DB 원본 전체 상한. 기본/최대 268435456 bytes(256MiB), 양수의 더 작은 검증 한도만 허용 |
 | `IPGO_UPLOAD_DIR` | 원본·보관 정보 저장 폴더. 기본값은 실행 디렉터리의 `./storage/uploads` |
+| `IPGO_PUSH_PUBLIC_KEY` | Web Push VAPID 공개키(base64url, #190). 비어 있으면 알림 등록 API가 `503 PUSH_UNAVAILABLE`. 짝인 비밀키는 발송 단계에서 secret으로 넣음 |
 
 현재 `.env` 파일을 자동으로 읽는 별도 설정은 없습니다. 터미널 또는 IDE의 실행 환경변수로 전달해야 합니다.
 
@@ -284,7 +285,23 @@ IPGO_TEST_DB_USERNAME=ipgo IPGO_TEST_DB_PASSWORD=<임시 비밀번호> ./gradlew
 2. 모든 로그인 세션을 폐기합니다. 서버가 요청마다 세션을 확인하므로 이미 받은 access token도 바로 `401`이 됩니다. 탈퇴와 겹쳐 늦게 처리되는 결제 요청(구독 재개·새 구독·재결제)은 `409 ACCOUNT_WITHDRAWN`으로 거절됩니다.
 3. 개인정보를 지웁니다. 이메일은 `withdrawn-{회원번호}@withdrawn.invalid`, 비밀번호는 아무도 모르는 값, 회사명·담당자명·사업자번호는 비우고 `withdrawn_at`(V24)을 남깁니다. 원래 이메일은 바로 비므로 같은 이메일로 다시 가입할 수 있고, 새 계정이라 옛 데이터는 보이지 않습니다.
 
-회원 행은 지우지 않습니다. 법으로 보관하는 결제 원장(V17)과 최소 30일 보관하는 DB 원본(V15)이 회원·업로드를 가리키기 때문입니다. 수불부·상품·계산 결과는 로그인할 수 없는 탈퇴 계정에 남고, 보관 기간이 지난 뒤 정리하는 작업은 후속입니다.
+회원 행은 지우지 않습니다. 법으로 보관하는 결제 원장(V17)과 최소 30일 보관하는 DB 원본(V15)이 회원·업로드를 가리키기 때문입니다. 수불부·상품·계산 결과는 로그인할 수 없는 탈퇴 계정에 남고, 보관 기간이 지난 뒤 정리하는 작업은 후속입니다. 알림 구독·설정(V26)은 탈퇴할 때 지웁니다(#190).
+
+### Web Push 알림 등록과 설정 (#190)
+
+사이트를 열지 않아도 입고가 필요한 상품을 하루 한 번 브라우저 알림으로 받게 하는 기능의 1단계입니다. 이 단계는 **등록과 설정 저장만** 하고, 실제 발송(대상 판정·예약·중복 방지)은 다음 단계에서 붙입니다.
+
+| API | 동작 |
+|---|---|
+| `GET /api/push/public-key` | `{ publicKey }` 브라우저 등록(`pushManager.subscribe`)의 `applicationServerKey`. 서버에 키가 없으면 `503 PUSH_UNAVAILABLE` |
+| `POST /api/push/subscriptions` | `{ endpoint, keys: { p256dh, auth } }`(브라우저 `PushSubscription.toJSON()` 모양) → 처음이면 `201 { subscriptionId }`, 같은 브라우저를 다시 보내면 `200`과 같은 id. 다른 계정이 쓰던 브라우저면 지금 계정으로 옮깁니다 |
+| `DELETE /api/push/subscriptions/{id}` | `204`. 로그아웃 직전에 부릅니다. 내 등록이 아니거나 없으면 `404 NOT_FOUND` |
+| `GET /api/notifications/settings` | `{ enabled, sendHour, timeZone }`. 저장 전에는 기본값 `{ false, 9, "Asia/Seoul" }`(꺼짐) |
+| `PATCH /api/notifications/settings` | 보낸 칸만 바꿉니다. `sendHour`는 0~23(그 시간대의 정시), `timeZone`은 `Asia/Seoul` 같은 지역 이름만 받습니다(`+09:00` 같은 고정 오프셋은 `400`) |
+
+- `endpoint`는 서버가 나중에 직접 요청을 보내는 주소라, **https이면서 알려진 브라우저 푸시 서버**(`fcm.googleapis.com`, `*.push.services.mozilla.com`, `*.notify.windows.com`, `*.push.apple.com`)만 받습니다. 그 밖의 주소·포트·사용자 정보가 붙은 주소는 `400 INVALID_INPUT`(`details.field: endpoint`)입니다. 목록은 `ipgo.push.allowed-hosts`로 바꿀 수 있습니다.
+- 구독 주소와 키는 응답·로그에 내보내지 않고, 같은 브라우저인지는 주소의 SHA-256 hash로 찾습니다.
+- 설정 표는 "알림 종류 × 받는 방법"마다 1행이라, 메일 알림도 같은 표(`channel = EMAIL`)를 쓸 수 있습니다. 지금 API는 입고 필요 × Web Push 한 줄만 다룹니다.
 
 ## 이메일 인증과 SMTP 설정
 
@@ -757,7 +774,7 @@ scripts/testing/verify-insight-contract.sh /path/to/ipgo-ai
 
 ## Database 변경과 복구
 
-이미 병합된 migration은 Flyway 이력을 보존하기 위해 수정하지 않습니다. 새 DB에서는 승인한 범위의 migration을 순서대로 적용합니다. #90 구현은 V16까지 필요하며 운영 적용은 별도 승인입니다. V4는 `warehouses`·`products`·`inventory_units`, V5는 `upload_files`, V6은 `replenishment_settings`, V7은 `planned_receipts`, V8은 `auth_sessions`·`refresh_tokens`, V9는 `calculation_runs`·`calculation_results`, V10은 일별 수불 2개 표, V11은 계산 출처·시나리오·백테스트·AI 인사이트 4개 표를 추가합니다. V12는 PostgreSQL tenant 무결성 trigger, V13은 FastAPI view와 역할별 권한을 적용하고, V14는 `engine_jobs`·입력 hash·정제 조회 view를 추가합니다. V15의 DB 원본 저장 전환(Server #77·AI #60)은 보류 상태입니다. V16은 입고 사건·배정·업로드 판정 기록을 추가하며 기존 원본 저장 모드를 바꾸지 않습니다. V16을 위해 전체 migration 경로를 실행하기 전 V15의 보류/실제 DB 이력을 함께 확인해야 합니다. V19는 창고 보관 요율 칸과 `product_boxes`를 추가합니다(#111). 기존 행은 바꾸지 않고, 되돌릴 때는 새 칸과 표만 지우면 됩니다. V21은 내 입고량 `product_planned_quantities`를 추가합니다(#119, V20은 #137 입고 정정). 되돌릴 때는 이 표만 지우면 됩니다. V23은 `inventory_units.expiry_date`와 `warehouses.expiry_imminent_days` 칸을 추가합니다(#168, V22는 인사이트 월 사용량). 기존 행은 NULL로 남고, 되돌릴 때는 두 칸만 지우면 됩니다. V24는 회원 탈퇴 시각 `users.withdrawn_at` 칸을 추가합니다(#172). 기존 행은 NULL로 남고, 되돌릴 때는 이 칸만 지우면 됩니다. 실제 DB 적용은 V15~V18과 같은 순서 확인과 별도 승인을 따릅니다. 전체 관계와 변경 규칙은 [Database ERD v1](docs/database/erd-v1.md)에 있습니다. Hibernate는 스키마를 자동 수정하지 않고 검증만 수행합니다.
+이미 병합된 migration은 Flyway 이력을 보존하기 위해 수정하지 않습니다. 새 DB에서는 승인한 범위의 migration을 순서대로 적용합니다. #90 구현은 V16까지 필요하며 운영 적용은 별도 승인입니다. V4는 `warehouses`·`products`·`inventory_units`, V5는 `upload_files`, V6은 `replenishment_settings`, V7은 `planned_receipts`, V8은 `auth_sessions`·`refresh_tokens`, V9는 `calculation_runs`·`calculation_results`, V10은 일별 수불 2개 표, V11은 계산 출처·시나리오·백테스트·AI 인사이트 4개 표를 추가합니다. V12는 PostgreSQL tenant 무결성 trigger, V13은 FastAPI view와 역할별 권한을 적용하고, V14는 `engine_jobs`·입력 hash·정제 조회 view를 추가합니다. V15의 DB 원본 저장 전환(Server #77·AI #60)은 보류 상태입니다. V16은 입고 사건·배정·업로드 판정 기록을 추가하며 기존 원본 저장 모드를 바꾸지 않습니다. V16을 위해 전체 migration 경로를 실행하기 전 V15의 보류/실제 DB 이력을 함께 확인해야 합니다. V19는 창고 보관 요율 칸과 `product_boxes`를 추가합니다(#111). 기존 행은 바꾸지 않고, 되돌릴 때는 새 칸과 표만 지우면 됩니다. V21은 내 입고량 `product_planned_quantities`를 추가합니다(#119, V20은 #137 입고 정정). 되돌릴 때는 이 표만 지우면 됩니다. V23은 `inventory_units.expiry_date`와 `warehouses.expiry_imminent_days` 칸을 추가합니다(#168, V22는 인사이트 월 사용량). 기존 행은 NULL로 남고, 되돌릴 때는 두 칸만 지우면 됩니다. V24는 회원 탈퇴 시각 `users.withdrawn_at` 칸을 추가합니다(#172). 기존 행은 NULL로 남고, 되돌릴 때는 이 칸만 지우면 됩니다. V26은 Web Push 알림의 브라우저 구독 `push_subscriptions`와 알림 설정 `notification_settings`를 추가합니다(#190, V25는 결제 환불 원장). 새 표만 만들어 기존 행은 바뀌지 않고, 다른 표가 참조하지 않아 되돌릴 때는 두 표만 지우면 됩니다. AI 역할은 두 표를 볼 수 없습니다. 실제 DB 적용은 V15~V18과 같은 순서 확인과 별도 승인을 따릅니다. 전체 관계와 변경 규칙은 [Database ERD v1](docs/database/erd-v1.md)에 있습니다. Hibernate는 스키마를 자동 수정하지 않고 검증만 수행합니다.
 
 초기 PostgreSQL은 administrator가 `database/bootstrap/create_roles.sql`을 먼저 실행한 뒤 `ipgo_migrator`로 Flyway를 적용합니다. 새 DB의 bootstrap SQL은 `ipgo_migrator`·`ipgo_server`·`ipgo_ai_reader`·`ipgo_ai_service_reader` 역할을 만들고 비밀번호는 설정하지 않습니다. 비밀번호는 repository·shell history·Terraform state에 남기지 않고 승인된 Secrets Manager 절차로 설정합니다. Spring runtime은 `ipgo_server`, FastAPI는 `ipgo_ai_reader`를 사용하며 runtime에서는 `SPRING_FLYWAY_ENABLED=false`로 migration 자격 증명을 분리합니다.
 

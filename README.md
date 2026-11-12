@@ -1167,3 +1167,20 @@ placeholder만 사용했으며 실제 URL 설정·AWS/HTTP/배포 검증은 실�
 본인 최신 승인 청구에 `POST /api/billing/invoices/{id}/cancel-payment` + `Idempotency-Key`, `{reason}`으로 전액 취소를 요청합니다. CANCELED만 완료이고 PROCESSING/UNKNOWN은202·확인 중입니다. 취소 전 주문 조회와 원래 provider 멱등키로 유실 응답을 복구하며14일 후 REVIEW_REQUIRED로 격리합니다. 부분 취소·과거 청구 환불·LIVE는 지원하지 않습니다. 취소 요청은 다음 자동 청구를 중단하고 확정 취소 때 구독을 CANCELED로 바꿉니다. 승인 원장·원래 기간은 보존합니다.
 
 DB V25는 refund 원장을 추가하며 다른 미병합 PR의 migration과 번호가 겹치면 배포 전에 최신dev로 통합해 번호를 조정해야 합니다. 특히 기존 회원 탈퇴 변경이 함께 들어오면 refund 원장 보존과 탈퇴/취소 경합도 다시 검증해야 합니다. 비활성화/이전 이미지 복귀 때도 이미 승인/취소된 원장은 삭제하지 않습니다.
+
+
+## TEST 가상계좌 발급 취소·환불
+
+V30를 먼저 적용한 뒤 이 Server 버전과 대응 Client를 배포합니다. V27/V28 원장과 기존 키를 보존하며, 이번 PR 자체는 migration/배포/실제 PG 요청을 실행하지 않습니다.
+
+`GET /api/billing/invoices`의 `paymentMethod`는 토스가 확인한 결제수단입니다. 기존 행은 최초 조회/취소 대사 전까지 null일 수 있습니다. `POST /api/billing/invoices/{id}/cancel-payment`는 기존 `reason`과 선택 `refundReceiveAccount: { bank, accountNumber, holderName }`을 받습니다. 은행 코드는2~3자리, 계좌번호는 숫자1~20자리, 예금주는 공백만인 값/제어문자를 제외한60자 이하입니다. 전체 취소만 지원합니다.
+
+- 입금 전 PENDING: 환불계좌 없이 발급 취소. 청구는 VOID로 바꾸고 기존 체험/다른 이용권을 종료하지 않습니다.
+- 입금 후 가상계좌: 환불계좌가 필수입니다. 입금이 취소 요청과 겹치면 실제 승인부터 대사한 뒤 계좌 입력을 요구합니다.
+- ACCOUNT_REQUIRED(202): 아직 취소 요청이 접수되지 않았거나 명시적으로 거절된 계좌입니다. 계좌와 사유를 고쳐 새 요청을 보낼 수 있습니다.
+- PROCESSING/UNKNOWN(202): 같은 암호화 계좌·공급자 멱등키로 조회/복구합니다. 결과 불명 상태에서는 계좌/사유를 바꾸지 않습니다.
+- 공급자 취소 CANCELED라도 가상계좌 refundStatus가 PENDING이면 은행 환불 완료로 표시하지 않습니다. 주문/이용권 취소와 환불 완료를 분리하며, COMPLETED를 확인해야 환불 CANCELED를 확정합니다. FAILED/PARTIAL_FAILED와 상점 환불 불가·환불 기한 경과의 명시적 거절은 REVIEW_REQUIRED로 수동 확인하며 자동 재취소하지 않습니다.
+
+환불계좌는 기존 billing AES-GCM 키로 암호화해 처리 중에만 보관합니다. 확인된 취소/명시 계좌 거절/검토 필요 상태에서는 원문을 지우고, 미확정 요청도14일 후 검토 전환 시 삭제합니다. 입력 DTO와 내부 계좌 객체의 문자열 출력은 마스킹하며 API 응답에는 계좌정보를 포함하지 않습니다. 확정된 취소를 DB 복원으로 되돌리지 않습니다.
+
+검증은 H2/가짜 PG·실제 HTTP 직렬화 대역·격리 PostgreSQL/권한 검사입니다. 실제 Toss 가상계좌 발급·개발자센터 입금 처리·은행 환불 완료는 배포와 필요한 시험 계좌 준비 후 별도 검증해야 합니다. [Toss 취소 계약](https://docs.tosspayments.com/guides/v2/cancel-payment), [API 참조](https://docs.tosspayments.com/reference).

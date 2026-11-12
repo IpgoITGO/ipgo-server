@@ -261,7 +261,7 @@ public class BillingService {
                 String payment=n==null?(a==null?null:a.text("status")):switch(n.text("status")) { case "PAID","CANCELED" -> "SUCCEEDED"; case "PENDING" -> "WAITING_FOR_DEPOSIT"; case "FAILED" -> "DECLINED"; default -> n.text("status"); };
                 return new BillingViews.Invoice(r.text("id"),r.text("plan_id"),r.number("amount"),"KRW",r.time("period_start"),r.time("period_end"),r.text("status"),payment,r.time("paid_at"),
                     n!=null?n.text("refund_status"):ledger.list("select status from billing_refunds where invoice_id=?",r.text("id")).stream().findFirst().map(x->x.text("status")).orElse(null),
-                    n!=null?n.time("canceled_at"):ledger.list("select canceled_at from billing_refunds where invoice_id=?",r.text("id")).stream().findFirst().map(x->x.time("canceled_at")).orElse(null)); }).toList();
+                    n!=null?n.time("canceled_at"):ledger.list("select canceled_at from billing_refunds where invoice_id=?",r.text("id")).stream().findFirst().map(x->x.time("canceled_at")).orElse(null),n==null?null:n.text("payment_method")); }).toList();
             return new BillingViews.InvoicePage(items,rows.size()>20?Long.toString(rows.get(19).number("cycle_no")):null);
         });
     }
@@ -319,7 +319,7 @@ public class BillingService {
             throw BillingException.conflict("REFUND_IN_PROGRESS");
     }
     private void ensureNoFlight(long user) {
-        if(normal.enabled() && !ledger.list("select id from billing_normal_orders where user_id=? and (status in ('CONFIRMING','UNKNOWN','PENDING','REVIEW_REQUIRED') or refund_status in ('PROCESSING','UNKNOWN','REVIEW_REQUIRED'))",user).isEmpty()) throw BillingException.conflict("BILLING_IN_PROGRESS");
+        if(normal.enabled() && !ledger.list("select id from billing_normal_orders where user_id=? and (status in ('CONFIRMING','UNKNOWN','PENDING','REVIEW_REQUIRED') or refund_status in ('PROCESSING','UNKNOWN','ACCOUNT_REQUIRED','REVIEW_REQUIRED'))",user).isEmpty()) throw BillingException.conflict("BILLING_IN_PROGRESS");
         ensureNoRefund(user);
         if(!ledger.list("select id from billing_attempts where user_id=? and status in ('DISPATCHING','UNKNOWN','REVIEW_REQUIRED')",user).isEmpty()) throw BillingException.conflict("BILLING_IN_PROGRESS");
     }

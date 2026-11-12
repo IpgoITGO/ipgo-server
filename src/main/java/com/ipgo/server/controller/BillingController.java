@@ -38,7 +38,10 @@ public class BillingController {
     @PostMapping("/subscription/resume") public ResponseEntity<BillingViews.Subscription> resume(Principal p,@RequestHeader("Idempotency-Key") String key,@Valid @RequestBody BillingRequests.Resume r) { return ok(billing.resume(user(p),key,r.consentVersion())); }
     @PostMapping("/invoices/{id}/cancel-payment") public ResponseEntity<BillingViews.Refund> cancelPayment(Principal p,@PathVariable String id,
             @RequestHeader("Idempotency-Key") String key,@Valid @RequestBody BillingRequests.CancelPayment r) {
-        var result=normal.ownsInvoice(user(p),id)?normal.refund(user(p),id,key,r.reason()):refunds.cancel(user(p),id,key,r.reason());
+        boolean oneOff=normal.ownsInvoice(user(p),id);
+        if(!oneOff && r.refundReceiveAccount()!=null) throw com.ipgo.server.exception.BillingException.invalid();
+        var a=r.refundReceiveAccount();
+        var result=oneOff?normal.refund(user(p),id,key,r.reason(),a==null?null:new com.ipgo.server.infrastructure.NormalPaymentGateway.RefundAccount(a.bank(),a.accountNumber(),a.holderName())):refunds.cancel(user(p),id,key,r.reason());
         return ResponseEntity.status("CANCELED".equals(result.status())?200:202).cacheControl(CacheControl.noStore()).body(result);
     }
     @PostMapping("/invoices/{id}/retry") public ResponseEntity<BillingViews.Accepted> retry(Principal p,@PathVariable String id,@RequestHeader("Idempotency-Key") String key) {

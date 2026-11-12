@@ -114,6 +114,26 @@ class PushIntegrationTests extends DatabaseIntegrationTest {
         send(owner, HttpMethod.DELETE, "/api/push/subscriptions/" + id, null).andExpect(status().isNotFound());
     }
 
+    // 찬님 요청: 로그아웃할 때 id를 몰라도 브라우저 주소로 지운다. 없어도 204, 남의 등록은 안 지워진다.
+    @Test void logoutCanDeleteThisBrowserByEndpoint() throws Exception {
+        subscribe(owner, CHROME, "p256", "auth").andExpect(status().isCreated());
+        String firefox = "https://updates.push.services.mozilla.com/wpush/v2/other";
+        subscribe(other, firefox, "p256", "auth").andExpect(status().isCreated());
+
+        unsubscribe(owner, firefox).andExpect(status().isNoContent());   // 남의 브라우저
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM push_subscriptions WHERE user_id = ?", Integer.class, other)).isOne();
+
+        unsubscribe(owner, CHROME).andExpect(status().isNoContent());
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM push_subscriptions WHERE user_id = ?", Integer.class, owner)).isZero();
+        unsubscribe(owner, CHROME).andExpect(status().isNoContent());   // 이미 지웠어도 성공
+        send(owner, HttpMethod.DELETE, "/api/push/subscriptions", "{}").andExpect(status().isBadRequest())
+                .andExpect(jsonPath("details.field").value("endpoint"));
+    }
+
+    private ResultActions unsubscribe(long userId, String endpoint) throws Exception {
+        return send(userId, HttpMethod.DELETE, "/api/push/subscriptions", mapper.writeValueAsString(Map.of("endpoint", endpoint)));
+    }
+
     @Test void settingsStartOffAndChangeOnlyTheSentFields() throws Exception {
         settings(owner).andExpect(jsonPath("enabled").value(false)).andExpect(jsonPath("sendHour").value(9))
                 .andExpect(jsonPath("timeZone").value("Asia/Seoul"));

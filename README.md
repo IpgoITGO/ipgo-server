@@ -295,12 +295,15 @@ IPGO_TEST_DB_USERNAME=ipgo IPGO_TEST_DB_PASSWORD=<임시 비밀번호> ./gradlew
 |---|---|
 | `GET /api/push/public-key` | `{ publicKey }` 브라우저 등록(`pushManager.subscribe`)의 `applicationServerKey`. 서버에 키가 없으면 `503 PUSH_UNAVAILABLE` |
 | `POST /api/push/subscriptions` | `{ endpoint, keys: { p256dh, auth } }`(브라우저 `PushSubscription.toJSON()` 모양) → 처음이면 `201 { subscriptionId }`, 같은 브라우저를 다시 보내면 `200`과 같은 id. 다른 계정이 쓰던 브라우저면 지금 계정으로 옮깁니다 |
-| `DELETE /api/push/subscriptions/{id}` | `204`. 로그아웃 직전에 부릅니다. 내 등록이 아니거나 없으면 `404 NOT_FOUND` |
+| `DELETE /api/push/subscriptions` | `{ endpoint }` → `204`. **로그아웃 직전에** 이 브라우저의 등록을 지웁니다. id를 저장해 두지 않아도 `pushManager.getSubscription()`의 주소로 지울 수 있고, 내 등록이 없거나 이미 지웠어도 `204`입니다. 다른 회원의 등록은 지우지 않습니다 |
+| `DELETE /api/push/subscriptions/{id}` | `204`. id로 지웁니다. 내 등록이 아니거나 없으면 `404 NOT_FOUND` |
 | `GET /api/notifications/settings` | `{ enabled, sendHour, timeZone }`. 저장 전에는 기본값 `{ false, 9, "Asia/Seoul" }`(꺼짐) |
 | `PATCH /api/notifications/settings` | 보낸 칸만 바꿉니다. `sendHour`는 0~23(그 시간대의 정시), `timeZone`은 `Asia/Seoul` 같은 지역 이름만 받습니다(`+09:00` 같은 고정 오프셋은 `400`) |
 
 - `endpoint`는 서버가 나중에 직접 요청을 보내는 주소라, **https이면서 알려진 브라우저 푸시 서버**(`fcm.googleapis.com`, `*.push.services.mozilla.com`, `*.notify.windows.com`, `*.push.apple.com`)만 받습니다. 그 밖의 주소·포트·사용자 정보가 붙은 주소는 `400 INVALID_INPUT`(`details.field: endpoint`)입니다. 목록은 `ipgo.push.allowed-hosts`로 바꿀 수 있습니다.
 - 구독 주소와 키는 응답·로그에 내보내지 않고, 같은 브라우저인지는 주소의 SHA-256 hash로 찾습니다.
+- 로그인이 만료돼 저절로 나가지면 해제 API를 못 불러 등록이 남습니다. 사이트에 들어오지 않는 셀러도 받게 하려는 기능이라 그대로 두고(알림에는 개수·경로만 담음), 프론트는 **로그인할 때마다 등록을 다시 보냅니다**. 같은 브라우저에서 다른 계정이 로그인해 등록하면 그 계정으로 옮겨집니다.
+- 첫 버전은 PC 브라우저(Chrome·Edge·Firefox·Safari) 기준입니다. iPhone Safari는 홈 화면에 추가한 경우에만 받을 수 있어 뺐습니다.
 - 설정 표는 "알림 종류 × 받는 방법"마다 1행이라, 메일 알림도 같은 표(`channel = EMAIL`)를 쓸 수 있습니다. 지금 API는 입고 필요 × Web Push 한 줄만 다룹니다.
 
 ## 이메일 인증과 SMTP 설정

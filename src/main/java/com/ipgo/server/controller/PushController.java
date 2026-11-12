@@ -2,6 +2,7 @@ package com.ipgo.server.controller;
 
 import com.ipgo.server.dto.request.NotificationSettingsRequest;
 import com.ipgo.server.dto.request.PushSubscriptionRequest;
+import com.ipgo.server.dto.request.PushUnsubscribeRequest;
 import com.ipgo.server.dto.response.NotificationSettings;
 import com.ipgo.server.dto.response.PushPublicKey;
 import com.ipgo.server.dto.response.PushSubscriptionSaved;
@@ -49,6 +50,13 @@ public class PushController {
     @ResponseStatus(HttpStatus.NO_CONTENT)
     public void unsubscribe(Principal principal, @PathVariable long subscriptionId) {
         subscriptions.delete(userId(principal), subscriptionId);
+    }
+
+    // 로그아웃 직전에 부른다. id를 저장해 두지 않아도 브라우저 주소로 지울 수 있고, 없어도 204다.
+    @DeleteMapping("/api/push/subscriptions")
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    public void unsubscribeThisBrowser(Principal principal, @Valid @RequestBody PushUnsubscribeRequest request) {
+        subscriptions.deleteByEndpoint(userId(principal), request.endpoint());
     }
 
     @GetMapping("/api/notifications/settings")

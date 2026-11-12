@@ -92,6 +92,12 @@ public class PushSubscriptionService {
         }
     }
 
+    // 로그아웃할 때 브라우저 주소로 지운다. 내 등록이 없거나 이미 지웠어도 성공으로 보고(로그아웃이 실패하지 않게),
+    // 다른 회원의 등록은 지우지 않는다.
+    public void deleteByEndpoint(long userId, String endpoint) {
+        jdbc.update("DELETE FROM push_subscriptions WHERE endpoint_hash = ? AND user_id = ?", sha256(endpoint), userId);
+    }
+
     // 서버가 이 주소로 직접 요청을 보내므로 https와 알려진 브라우저 푸시 서버만 받는다(SSRF 방지).
     private void checkEndpoint(String endpoint) {
         URI uri;

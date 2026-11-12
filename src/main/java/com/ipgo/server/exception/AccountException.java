@@ -20,6 +20,11 @@ public class AccountException extends RuntimeException {
     public String field() { return field; }
 
     public static AccountException wrongPassword() {
-        return new AccountException(HttpStatus.BAD_REQUEST, "WRONG_PASSWORD", "비밀번호가 맞지 않아요.", "password");
+        return wrongPassword("password");
+    }
+
+    // field: 틀린 비밀번호를 넣은 칸(탈퇴는 password, 비밀번호 바꾸기는 currentPassword)
+    public static AccountException wrongPassword(String field) {
+        return new AccountException(HttpStatus.BAD_REQUEST, "WRONG_PASSWORD", "비밀번호가 맞지 않아요.", field);
     }
 }

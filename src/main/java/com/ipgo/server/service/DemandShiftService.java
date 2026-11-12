@@ -43,13 +43,13 @@ public class DemandShiftService {
                 new MapSqlParameterSource("run", previous), LocalDate.class);
         Map<Long, Long> previousQty = recommended(previous), currentQty = recommended(run.getId());
         windows(previous, previousAsOf).forEach((product, window) -> {
-            if (!up(window) || shifts.containsKey(product)) return;
+            // 이번 계산의 기록이 부족해 판단하지 않은 상품은 "급증이 끝났다"고 볼 수 없으니 DOWN도 아니다.
+            Window current = now.get(product);
+            if (!up(window) || current == null || shifts.containsKey(product)) return;
             Long before = previousQty.get(product), after = currentQty.get(product);
             if (before == null || before <= 0 || after == null) return;
             if (BigDecimal.valueOf(after).compareTo(BigDecimal.valueOf(before).multiply(rule.downRatio())) > 0) return;
-            Window current = now.get(product);
-            shifts.put(product, current != null ? shift(current, DemandShift.DOWN, before)
-                    : new DemandShift(DemandShift.DOWN, null, null, null, sinceOf(run.getAsOfDate()), before));
+            shifts.put(product, shift(current, DemandShift.DOWN, before));
         });
         return shifts;
     }

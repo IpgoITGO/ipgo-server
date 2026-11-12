@@ -44,7 +44,7 @@ class DemandShiftIntegrationTests extends DatabaseIntegrationTest {
         owner = UploadTestDatabase.newUser(jdbc, "shift-" + UUID.randomUUID() + "@example.test");
         jdbc.update("INSERT INTO warehouses (user_id, name) VALUES (?, '기본 창고')", owner);
         warehouse = jdbc.queryForObject("SELECT id FROM warehouses WHERE user_id = ?", Long.class, owner);
-        upload = done(YearMonth.from(AS_OF));
+        upload = done(YearMonth.from(AS_OF), 1);
     }
 
     @AfterEach void cleanup() { UploadTestDatabase.clear(jdbc); }
@@ -98,6 +98,24 @@ class DemandShiftIntegrationTests extends DatabaseIntegrationTest {
                 .andExpect(jsonPath("demandShift.direction").value("DOWN"));
     }
 
+    // 휘님 리뷰: 지난 계산은 충분한 기록으로 UP이었는데, 같은 달을 덮어쓴 이번 수불부에는 최근 7일만 있다.
+    // 이번에는 비교할 기록이 부족해 판단하지 않으므로, 권장량이 크게 줄어도 DOWN이 아니라 null이다.
+    @Test void noDownWhenThisRunHasTooLittleHistoryToJudge() throws Exception {
+        LocalDate previousAsOf = AS_OF.minusDays(7);
+        long gap = product("GAP", day -> !day.isBefore(previousAsOf.minusDays(6)) && !day.isAfter(previousAsOf) ? 30 : 2);
+        long previous = run(previousAsOf, upload);
+        result(previous, gap, 290);
+        long rewritten = done(YearMonth.from(AS_OF), 2);
+        stocks(gap, rewritten, day -> recent(day) ? 3 : null);
+        long run = run(AS_OF, rewritten);
+        result(run, gap, 100);
+
+        dashboard().andExpect(jsonPath("$..[?(@.productId == " + gap + ")].productId", contains((int) gap)))
+                .andExpect(jsonPath(shift(gap) + ".direction", empty()));
+        mvc.perform(get("/api/products/" + gap + "/detail").with(as(owner))).andExpect(status().isOk())
+                .andExpect(jsonPath("demandShift").doesNotExist());
+    }
+
     private static boolean recent(LocalDate day) {
         return !day.isBefore(AS_OF.minusDays(6));
     }
@@ -115,33 +133,41 @@ class DemandShiftIntegrationTests extends DatabaseIntegrationTest {
     private long product(String barcode, Function<LocalDate, Integer> outbound) {
         jdbc.update("INSERT INTO products (user_id, sku_barcode, sku_name) VALUES (?, ?, ?)", owner, barcode, barcode);
         long id = jdbc.queryForObject("SELECT id FROM products WHERE user_id = ? AND sku_barcode = ?", Long.class, owner, barcode);
+        stocks(id, upload, outbound);
+        return id;
+    }
+
+    private void stocks(long productId, long uploadId, Function<LocalDate, Integer> outbound) {
         for (LocalDate day = AS_OF.minusDays(42); !day.isAfter(AS_OF); day = day.plusDays(1)) {
             Integer qty = outbound.apply(day);
             if (qty == null) continue;
             jdbc.update("""
                     INSERT INTO product_daily_stocks (product_id, upload_file_id, stock_date, opening_qty, inbound_qty,
                         outbound_qty, adjustment_qty, closing_qty, is_valid_observation) VALUES (?, ?, ?, 500, 0, ?, 0, ?, TRUE)
-                    """, id, upload, day, qty, 500 - qty);
+                    """, productId, uploadId, day, qty, 500 - qty);
         }
-        return id;
     }
 
-    private long done(YearMonth month) {
+    private long done(YearMonth month, int revision) {
         UploadFile file = uploads.saveAndFlush(new UploadFile(warehouse, month + ".xlsx", UUID.randomUUID().toString(),
-                "a".repeat(64), 1, new UploadPeriod(month)));
+                "a".repeat(64), revision, new UploadPeriod(month)));
         LocalDate end = file.getPeriodEnd();
         file.complete(end, new UploadProcessingReport(end, new UploadProcessingReport.Validation(1, 1, List.of()), null, null));
         return uploads.saveAndFlush(file).getId();
     }
 
     private long run(LocalDate asOf) {
+        return run(asOf, upload);
+    }
+
+    private long run(LocalDate asOf, long source) {
         jdbc.update("""
                 INSERT INTO calculation_runs (warehouse_id, run_type, as_of_date, status, engine_version,
                     selection_snapshot, created_at, completed_at)
                 VALUES (?, 'CALCULATE', ?, 'DONE', '0.0.0', JSON '{}', ?, ?)
                 """, warehouse, asOf, Timestamp.from(Instant.now()), Timestamp.from(Instant.now()));
         long id = jdbc.queryForObject("SELECT MAX(id) FROM calculation_runs", Long.class);
-        jdbc.update("INSERT INTO run_source_files (run_id, upload_file_id) VALUES (?, ?)", id, upload);
+        jdbc.update("INSERT INTO run_source_files (run_id, upload_file_id) VALUES (?, ?)", id, source);
         return id;
     }
 

@@ -41,14 +41,16 @@ public class EngineCalculationService {
     private final JsonMapper mapper;
     private final EntityManager entities;
     private final Clock clock;
+    private final CurrentProducts current;
 
     public EngineCalculationService(EngineJobs jobs, WarehouseRepository warehouses, UploadFileRepository uploads,
             ProductRepository products, ReplenishmentSettingRepository settings, PlannedReceiptRepository receipts,
-            JdbcTemplate jdbc, JsonMapper mapper, EntityManager entities, Clock clock, BillingService billing) {
+            JdbcTemplate jdbc, JsonMapper mapper, EntityManager entities, Clock clock, BillingService billing,
+            CurrentProducts current) {
         this.billing = billing;
         this.jobs = jobs; this.warehouses = warehouses; this.uploads = uploads; this.products = products;
         this.settings = settings; this.receipts = receipts; this.jdbc = jdbc; this.mapper = mapper;
-        this.entities = entities; this.clock = clock;
+        this.entities = entities; this.clock = clock; this.current = current;
     }
 
     @Transactional
@@ -74,9 +76,12 @@ public class EngineCalculationService {
         if (sources.isEmpty()) return null;
         LocalDate asOf = sources.stream().map(UploadFile::getPeriodEnd).max(LocalDate::compareTo).orElseThrow();
         if (today.isBefore(asOf)) return null;
-        var active = products.findByUserIdAndSkuBarcodeIn(userId, jdbc.queryForList(
+        var activeProducts = products.findByUserIdAndSkuBarcodeIn(userId, jdbc.queryForList(
                 "SELECT sku_barcode FROM products WHERE user_id = ? AND is_active = TRUE ORDER BY id", String.class, userId))
                 .stream().filter(p -> p.isActive()).sorted(Comparator.comparing(p -> p.getId())).toList();
+        // #188 같은 달을 덮어써서 옛 파일에만 남은 상품은 계산에 넣지 않는다.
+        var overwritten = current.overwritten(warehouseId);
+        var active = activeProducts.stream().filter(p -> !overwritten.contains(p.getId())).toList();
         if (active.isEmpty()) return null;
         var overrides = new HashMap<Long, com.ipgo.server.entity.ReplenishmentSetting>();
         settings.findByProductIdIn(active.stream().map(p -> p.getId()).toList()).forEach(s -> overrides.put(s.getProductId(), s));

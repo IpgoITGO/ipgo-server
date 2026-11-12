@@ -41,12 +41,13 @@ public class CalculationRunService {
     private final Clock clock;
     private final JdbcTemplate jdbc;
     private final EntityManager entities;
+    private final CurrentProducts current;
 
     public static final String CANCELED_MESSAGE = "계산을 멈췄어요. 이전 결과는 그대로예요.";
 
     public CalculationRunService(CalculationRunRepository runs, CalculationResultRepository results,
             WarehouseRepository warehouses, ProductRepository products, ReplenishmentSettingRepository settings,
-            Clock clock, JdbcTemplate jdbc, EntityManager entities) {
+            Clock clock, JdbcTemplate jdbc, EntityManager entities, CurrentProducts current) {
         this.runs = runs;
         this.results = results;
         this.warehouses = warehouses;
@@ -54,6 +55,7 @@ public class CalculationRunService {
         this.settings = settings;
         this.clock = clock;
         this.jdbc = jdbc;
+        this.current = current;
         this.entities = entities;
     }
 
@@ -107,9 +109,10 @@ public class CalculationRunService {
         LocalDate today = LocalDate.now(clock.withZone(DashboardService.SEOUL));
 
         int need = 0, notNeeded = 0, notCalculable = 0, excluded = 0;
+        var overwritten = current.overwritten(warehouse.getId());
         for (CalculationResult result : runResults) {
-            // 셀러가 사용을 끈 상품은 D1처럼 개수에서 뺀다.
-            if (!byId.get(result.getProductId()).isActive()) continue;
+            // 셀러가 사용을 끈 상품과 덮어쓴 파일에만 있던 상품(#188)은 D1처럼 개수에서 뺀다.
+            if (!byId.get(result.getProductId()).isActive() || overwritten.contains(result.getProductId())) continue;
             Integer leadTime = defaults.applying(overrides.get(result.getProductId())).leadTimeDays();
             switch (NeedJudgment.needStatus(result, run.getAsOfDate(), today, leadTime)) {
                 case NeedJudgment.NEED_NOW -> need++;

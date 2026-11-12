@@ -65,6 +65,11 @@ public class PushSubscriptionService {
 
     private Saved upsert(long userId, String hash, PushSubscriptionRequest request) {
         return transactions.execute(status -> {
+            // 탈퇴와 같은 회원 행을 먼저 잠근다. 인증을 이미 통과한 지연 요청도 탈퇴 뒤에는 저장하지 않는다.
+            if (jdbc.queryForList("SELECT id FROM users WHERE id = ? AND withdrawn_at IS NULL FOR UPDATE",
+                    Long.class, userId).isEmpty()) {
+                throw PushException.accountWithdrawn();
+            }
             Timestamp now = Timestamp.from(clock.instant());
             List<Long> ids = jdbc.queryForList(
                     "SELECT id FROM push_subscriptions WHERE endpoint_hash = ? FOR UPDATE", Long.class, hash);

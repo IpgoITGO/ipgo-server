@@ -23,6 +23,10 @@ public class PushException extends RuntimeException {
         return new PushException(HttpStatus.SERVICE_UNAVAILABLE, "PUSH_UNAVAILABLE", "지금은 알림을 등록할 수 없어요.", null);
     }
 
+    public static PushException accountWithdrawn() {
+        return new PushException(HttpStatus.CONFLICT, "ACCOUNT_WITHDRAWN", "탈퇴한 계정이에요.", null);
+    }
+
     public static PushException invalid(String field) {
         return new PushException(HttpStatus.BAD_REQUEST, "INVALID_INPUT", "입력값의 형식과 길이를 확인해주세요.", field);
     }

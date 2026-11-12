@@ -45,7 +45,11 @@ public class NotificationSettingsService {
             throw PushException.invalid("timeZone");
         }
         return transactions.execute(status -> {
-            jdbc.queryForList("SELECT id FROM users WHERE id = ? FOR UPDATE", Long.class, userId);
+            // 탈퇴와 같은 잠금 안에서 활성 상태를 확인해, 늦게 도착한 요청이 설정을 되살리지 않게 한다.
+            if (jdbc.queryForList("SELECT id FROM users WHERE id = ? AND withdrawn_at IS NULL FOR UPDATE",
+                    Long.class, userId).isEmpty()) {
+                throw PushException.accountWithdrawn();
+            }
             NotificationSettings current = get(userId);
             NotificationSettings next = new NotificationSettings(
                     request.enabled() != null ? request.enabled() : current.enabled(),

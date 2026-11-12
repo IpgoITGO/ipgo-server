@@ -302,6 +302,7 @@ IPGO_TEST_DB_USERNAME=ipgo IPGO_TEST_DB_PASSWORD=<임시 비밀번호> ./gradlew
 
 - `endpoint`는 서버가 나중에 직접 요청을 보내는 주소라, **https이면서 알려진 브라우저 푸시 서버**(`fcm.googleapis.com`, `*.push.services.mozilla.com`, `*.notify.windows.com`, `*.push.apple.com`)만 받습니다. 그 밖의 주소·포트·사용자 정보가 붙은 주소는 `400 INVALID_INPUT`(`details.field: endpoint`)입니다. 목록은 `ipgo.push.allowed-hosts`로 바꿀 수 있습니다.
 - 구독 주소와 키는 응답·로그에 내보내지 않고, 같은 브라우저인지는 주소의 SHA-256 hash로 찾습니다.
+- 구독 등록·갱신과 설정 변경은 탈퇴와 같은 회원 행을 잠근 뒤 활성 상태를 확인합니다. 인증을 통과한 요청이 탈퇴 완료 뒤 처리되면 `409 ACCOUNT_WITHDRAWN`으로 거절해 삭제한 주소·키·수신 설정을 다시 만들지 않습니다. 쓰기가 먼저 끝나면 탈퇴가 이어서 해당 데이터를 지웁니다.
 - 로그인이 만료돼 저절로 나가지면 해제 API를 못 불러 등록이 남습니다. 사이트에 들어오지 않는 셀러도 받게 하려는 기능이라 그대로 두고(알림에는 개수·경로만 담음), 프론트는 **로그인할 때마다 등록을 다시 보냅니다**. 같은 브라우저에서 다른 계정이 로그인해 등록하면 그 계정으로 옮겨집니다.
 - 첫 버전은 PC 브라우저(Chrome·Edge·Firefox·Safari) 기준입니다. iPhone Safari는 홈 화면에 추가한 경우에만 받을 수 있어 뺐습니다.
 - 설정 표는 "알림 종류 × 받는 방법"마다 1행이라, 메일 알림도 같은 표(`channel = EMAIL`)를 쓸 수 있습니다. 지금 API는 입고 필요 × Web Push 한 줄만 다룹니다.

@@ -204,4 +204,23 @@ class NormalPaymentIntegrationTests extends DatabaseIntegrationTest {
         verify(gateway,times(1)).confirm(anyString(),anyString(),anyLong(),anyString());
     }
 
+    @Test void oldDepositWaitCannotStarveAnotherUsersUnknownPayment() {
+        var early=order();
+        when(gateway.confirm(eq("early-key"),anyString(),anyLong(),anyString()))
+                .thenReturn(new BillingGateway.Payment("early-key",early.orderId(),500,"KRW","WAITING_FOR_DEPOSIT","new-mid",null));
+        normal.confirm(user,early.orderId(),"early-key",500);
+        now=START.plusSeconds(1);
+        var later=normal.create(other,UUID.randomUUID().toString(),"seller",BillingPolicy.VERSION,NormalPaymentService.CONSENT);
+        when(gateway.confirm(eq("later-key"),anyString(),anyLong(),anyString())).thenThrow(new BillingGateway.Failure(false,"TIMEOUT"));
+        normal.confirm(other,later.orderId(),"later-key",500);
+        when(gateway.lookup("early-key")).thenReturn(new BillingGateway.Payment("early-key",early.orderId(),500,"KRW","WAITING_FOR_DEPOSIT","new-mid",null));
+        when(gateway.lookup("later-key")).thenReturn(new BillingGateway.Payment("later-key",later.orderId(),500,"KRW","DONE","new-mid",START.plusSeconds(1)));
+        now=START.plusSeconds(61); normal.processOne();
+        now=START.plusSeconds(121); normal.processOne();
+        // Reading through get() would itself reconcile the order and hide worker starvation.
+        assertThat(jdbc.queryForObject("select status from billing_normal_orders where id=?",String.class,later.orderId())).isEqualTo("PAID");
+        verify(gateway).lookup("later-key");
+        verify(gateway,times(2)).confirm(anyString(),anyString(),anyLong(),anyString());
+    }
+
 }

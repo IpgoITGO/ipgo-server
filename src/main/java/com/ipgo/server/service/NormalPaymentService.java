@@ -206,7 +206,7 @@ public class NormalPaymentService {
     }
     public void processOne() {
         if(!properties.enabled()) return;
-        var work=ledger.list("select * from billing_normal_orders where (status in ('CONFIRMING','UNKNOWN','PENDING') or refund_status in ('PROCESSING','UNKNOWN')) and lease_until<=? order by created_at limit 1",at(clock.instant()));
+        var work=ledger.list("select * from billing_normal_orders where (status in ('CONFIRMING','UNKNOWN','PENDING') or refund_status in ('PROCESSING','UNKNOWN')) and lease_until<=? order by lease_until,created_at,id limit 1",at(clock.instant()));
         if(work.isEmpty()) return;
         Row o=work.getFirst(); long user=o.number("user_id");
         if(o.text("refund_status")!=null) {

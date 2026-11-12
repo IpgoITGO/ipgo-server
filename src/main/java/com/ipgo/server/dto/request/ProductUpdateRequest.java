@@ -7,7 +7,7 @@ import jakarta.validation.constraints.Size;
 public record ProductUpdateRequest(
         @Size(min = 1, max = 200) String skuName,
         @PositiveOrZero Long unitCost,
-        Boolean isActive) {
+        Boolean isActive, String activationMode) {
 
     public ProductUpdateRequest {
         skuName = skuName == null ? null : skuName.strip();

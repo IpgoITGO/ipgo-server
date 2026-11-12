@@ -85,13 +85,16 @@ END $$;
 REVOKE ALL ON FUNCTION ipgo_test_correction_fault(text,boolean) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION ipgo_test_correction_fault(text,boolean) TO ipgo_server;
 SQL
-# 서버 역할의 실제 읽기/쓰기 권한과 전체 V1~20 제약을 사용한다.
+# 상품 활성 상태는 V29 필드까지 JPA validate한다. 기존 V16→V20 정정 불변 검사는 위에서 유지한다.
+docker run --rm --network "$matching_prefix" -v "$matching_root/src/main/resources/db/migration:/flyway/sql:ro" \
+  flyway/flyway:11-alpine -url=jdbc:postgresql://ipgo-engine-e2e-118-test-db:5432/engine_test -user=ipgo_migrator migrate
+# 서버 역할의 실제 읽기/쓰기 권한과 전체 V1~29 제약을 사용한다.
 docker run --rm --network "$matching_prefix" --user "$(id -u):$(id -g)" -e GRADLE_USER_HOME=/gradle-cache \
   -e IPGO_TEST_DB_URL=jdbc:postgresql://ipgo-engine-e2e-118-test-db:5432/engine_test \
   -e IPGO_TEST_DB_USERNAME=ipgo_server -e IPGO_TEST_DB_PASSWORD= -e IPGO_ENGINE_LOCAL_POSTGRES=true \
   -e SPRING_FLYWAY_ENABLED=false \
   -v "$matching_root:/workspace" -v "$matching_cache:/gradle-cache" -w /workspace \
   eclipse-temurin:21-jdk-jammy ./gradlew --offline --no-daemon --max-workers=2 test \
-    --tests '*ReceiptCorrectionIntegrationTests' --tests '*ReceiptMatchingIntegrationTests' --tests '*UploadCleaningIntegrationTests' \
+    --tests '*ProductActivityIntegrationTests' --tests '*ReceiptCorrectionIntegrationTests' --tests '*ReceiptMatchingIntegrationTests' --tests '*UploadCleaningIntegrationTests' \
     --tests '*PlannedReceiptIntegrationTests' --tests '*UploadRecordIntegrationTests' \
     --tests '*EngineRealFlowIntegrationTests' --rerun-tasks

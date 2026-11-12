@@ -44,10 +44,11 @@ public class UploadCleaningService {
     private final JdbcTemplate jdbc;
     private final Validator validator;
     private final ReceiptMatchingService matching;
+    private final ProductActivityService activity;
 
     public UploadCleaningService(UploadFileRepository uploads, WarehouseRepository warehouses,
             ProductRepository products, InventoryUnitRepository units, ProductRegistrationService registration,
-            JdbcTemplate jdbc, Validator validator, ReceiptMatchingService matching) {
+            JdbcTemplate jdbc, Validator validator, ReceiptMatchingService matching, ProductActivityService activity) {
         this.uploads = uploads;
         this.warehouses = warehouses;
         this.products = products;
@@ -56,6 +57,7 @@ public class UploadCleaningService {
         this.jdbc = jdbc;
         this.validator = validator;
         this.matching = matching;
+        this.activity = activity;
     }
 
     @Transactional
@@ -131,6 +133,11 @@ public class UploadCleaningService {
         upload.complete(result.periodEnd(), new UploadProcessingReport(result.asOfDate(),
                 new UploadProcessingReport.Validation(result.validation().checkedSkuCount(),
                         result.validation().targetSkuCount(), excluded), result.estimatedReviewCycleDays(), null));
+        // 과거 revision의 지연 결과는 현재 상품 상태를 바꾸지 않는다.
+        if (uploads.findLatestPerPeriod(upload.getWarehouseId()).stream()
+                .anyMatch(source -> source.getId().equals(upload.getId()))) {
+            activity.evaluate(userId, upload.getWarehouseId(), products.findByUserId(userId));
+        }
         matching.match(upload, userId, result, productMap);
         return Outcome.APPLIED;
     }

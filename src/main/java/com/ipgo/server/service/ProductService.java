@@ -31,20 +31,22 @@ public class ProductService {
     private final EngineCalculationService calculations;
     private final ReviewCycleSuggestionService suggestions;
     private final CurrentProducts current;
+    private final ProductActivityService activity;
 
     public ProductService(ProductRepository products, WarehouseService warehouses,
             ReplenishmentSettingRepository settings, EngineCalculationService calculations, ReviewCycleSuggestionService suggestions,
-            CurrentProducts current) {
+            CurrentProducts current, ProductActivityService activity) {
         this.products = products;
         this.warehouses = warehouses;
         this.settings = settings;
         this.calculations = calculations;
         this.suggestions = suggestions;
         this.current = current;
+        this.activity = activity;
     }
 
     @Transactional(readOnly = true)
-    public ProductPage list(long userId, String query, int page, int size) {
+    public ProductPage list(long userId, String query, int page, int size, boolean includeAutoInactive) {
         if (page < 0 || size < 1 || size > MAX_PAGE_SIZE) throw ProductException.invalidInput();
         // 검색어가 없으면 빈 문자열로 보내 전체를 찾는다. null을 넘기면 PostgreSQL이 값의 타입을 몰라 실패한다.
         String keyword = query == null ? "" : query.strip();
@@ -52,8 +54,9 @@ public class ProductService {
         var hidden = new java.util.HashSet<Long>(warehouses.findDefault(userId)
                 .map(w -> current.overwritten(w.getId())).orElse(java.util.Set.of()));
         hidden.add(-1L);
-        Page<Product> result = products.search(userId, hidden, keyword, PageRequest.of(page, size, Sort.by("id")));
-        return new ProductPage(items(userId, result.getContent()), result.getTotalElements(), page, size);
+        Page<Product> result = products.search(userId, hidden, keyword, includeAutoInactive, PageRequest.of(page, size, Sort.by("id")));
+        return new ProductPage(items(userId, result.getContent()), result.getTotalElements(), page, size,
+                products.countByUserIdAndActivationModeAndActiveFalse(userId, "AUTO"));
     }
 
     @Transactional
@@ -61,8 +64,14 @@ public class ProductService {
         var warehouse = warehouses.lockDefault(userId);
         Product product = products.findById(productId).orElseThrow(ProductException::notFound);
         if (!product.getUserId().equals(userId)) throw ProductException.forbidden();
+        if (request.activationMode() != null && (!"AUTO".equals(request.activationMode()) || request.isActive() != null))
+            throw ProductException.invalidField("activationMode");
         boolean wasActive = product.isActive();
         product.update(request.skuName(), request.unitCost(), request.isActive());
+        if (request.activationMode() != null) {
+            product.selectAutomatic();
+            activity.evaluate(userId, warehouse.getId(), List.of(product));
+        }
         if ((!wasActive && product.isActive()) || request.unitCost() != null)
             calculations.request(userId, warehouse.getId(), "PRODUCT", false);
         return items(userId, List.of(product)).getFirst();

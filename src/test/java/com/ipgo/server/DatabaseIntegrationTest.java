@@ -5,6 +5,7 @@ import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 
 @SpringBootTest
+@org.springframework.context.annotation.Import(com.ipgo.server.support.ProductActivityTestSchema.class)
 public abstract class DatabaseIntegrationTest {
     @org.springframework.beans.factory.annotation.Autowired
     private org.springframework.jdbc.core.JdbcTemplate matchingSchemaJdbc;

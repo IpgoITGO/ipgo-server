@@ -179,7 +179,11 @@ class UploadCleaningIntegrationTests extends DatabaseIntegrationTest {
     @Test void revisionsPreserveHistoryAndUserEditedProduct() throws Exception {
         long owner = user(); var first = upload(owner);
         cleaning.complete(first.getId(), first.getJobId(), result(first.getId(), "TEST-A", false));
-        jdbc.update("UPDATE products SET sku_name = '수정한 이름', unit_cost = 1234, is_active = false WHERE user_id = ?", owner);
+        long productId = jdbc.queryForObject("SELECT id FROM products WHERE user_id=?", Long.class, owner);
+        mvc.perform(patch("/api/products/"+productId).with(jwt().jwt(j -> j.subject(""+owner)))
+                .contentType(org.springframework.http.MediaType.APPLICATION_JSON)
+                .content("{\"skuName\":\"수정한 이름\",\"unitCost\":1234,\"isActive\":false}"))
+                .andExpect(status().isOk()).andExpect(jsonPath("activationMode").value("MANUAL_OFF"));
         var second = upload(owner);
         cleaning.complete(second.getId(), second.getJobId(), result(second.getId(), "TEST-A", false));
         assertThat(count("products")).isEqualTo(1);
@@ -197,6 +201,23 @@ class UploadCleaningIntegrationTests extends DatabaseIntegrationTest {
         var empty = new CleaningResult(DAY, DAY, DAY, List.of(), List.of(), List.of(), List.of(),
                 new CleaningResult.Validation(0, 0, List.of()), null);
         assertThat(cleaning.complete(upload.getId(), upload.getJobId(), empty)).isEqualTo(UploadCleaningService.Outcome.APPLIED);
+    }
+
+    @Test void latestCompletionRestoresAutomaticOffButLateRevisionAndDuplicateDoNot() throws Exception {
+        long owner = user();
+        var first = upload(owner);
+        cleaning.complete(first.getId(), first.getJobId(), result(first.getId(), "TEST-A", false));
+        jdbc.update("UPDATE products SET is_active=FALSE, auto_inactive_reason='NO_RECENT_RECORDS' WHERE user_id=?", owner);
+        var old = upload(owner);
+        var newest = upload(owner);
+        cleaning.complete(old.getId(), old.getJobId(), result(old.getId(), "TEST-A", false));
+        assertThat(jdbc.queryForObject("SELECT is_active FROM products WHERE user_id=?", Boolean.class, owner)).isFalse();
+        cleaning.complete(newest.getId(), newest.getJobId(), result(newest.getId(), "TEST-A", false));
+        assertThat(jdbc.queryForObject("SELECT is_active FROM products WHERE user_id=?", Boolean.class, owner)).isTrue();
+        jdbc.update("UPDATE products SET is_active=FALSE,activation_mode='MANUAL_OFF' WHERE user_id=?", owner);
+        assertThat(cleaning.complete(newest.getId(), newest.getJobId(), result(newest.getId(), "TEST-A", false)))
+                .isEqualTo(UploadCleaningService.Outcome.ALREADY_FINISHED);
+        assertThat(jdbc.queryForObject("SELECT is_active FROM products WHERE user_id=?", Boolean.class, owner)).isFalse();
     }
 
     private CleaningResult result(long id, String barcode, boolean excluded) {

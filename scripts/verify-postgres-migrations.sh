@@ -61,6 +61,8 @@ INSERT INTO warehouses (id, user_id, name) VALUES
     (20, 2, 'other warehouse');
 INSERT INTO products (id, user_id, sku_barcode, sku_name) VALUES
     (100, 1, 'SKU-100', 'owner product');
+UPDATE products SET unit_cost=777 WHERE id=100;
+INSERT INTO products(id,user_id,sku_barcode,sku_name,is_active) VALUES(101,1,'SKU-101','preserved off',FALSE);
 INSERT INTO inventory_units (id, product_id, warehouse_id, source_inventory_key, received_on)
 VALUES (1000, 100, 10, 'LOT-100', DATE '2026-10-01');
 INSERT INTO upload_files
@@ -92,7 +94,7 @@ migration_count="$(docker exec "${database_container}" \
 table_count="$(docker exec "${database_container}" \
   psql -U ipgo_migrator -d ipgo -Atc \
   "SELECT COUNT(*) FROM pg_tables WHERE schemaname = 'public' AND tablename <> 'flyway_schema_history'")"
-if [[ "${migration_count}" != "28" || "${table_count}" != "42" ]]; then
+if [[ "${migration_count}" != "29" || "${table_count}" != "42" ]]; then
   echo "unexpected schema: migrations=${migration_count}, tables=${table_count}" >&2
   exit 1
 fi
@@ -103,6 +105,23 @@ INSERT INTO product_daily_stocks
      adjustment_qty, closing_qty, is_valid_observation)
 VALUES (100, 2000, DATE '2026-10-01', 10.000, 2.000, 1.000, 0.000, 11.000, TRUE);
 SQL
+
+# V29 upgrade must preserve existing booleans/settings; run as the application role.
+docker exec -i "${database_container}" psql -v ON_ERROR_STOP=1 -U ipgo_server -d ipgo >/dev/null <<'SQL'
+DO $$ BEGIN
+  IF (SELECT COUNT(*) FROM products WHERE id IN (100,101) AND activation_mode='LEGACY') <> 2
+     OR NOT (SELECT is_active FROM products WHERE id=100)
+     OR (SELECT is_active FROM products WHERE id=101)
+     OR (SELECT unit_cost FROM products WHERE id=100) <> 777 THEN
+    RAISE EXCEPTION 'V29 changed legacy product settings';
+  END IF;
+END $$;
+UPDATE products SET activation_mode='AUTO' WHERE id=101;
+UPDATE products SET auto_inactive_reason='NO_RECENT_RECORDS' WHERE id=101;
+UPDATE products SET activation_mode='LEGACY',auto_inactive_reason=NULL WHERE id=101;
+SQL
+expect_denied ipgo_server "UPDATE products SET activation_mode='INVALID' WHERE id=100"
+expect_denied ipgo_server "UPDATE products SET activation_mode='MANUAL_OFF' WHERE id=100"
 
 visible_rows="$(docker exec "${database_container}" \
   psql -U ipgo_ai_reader -d ipgo -Atc "SELECT COUNT(*) FROM ai_product_daily_stocks_v1")"
@@ -257,5 +276,80 @@ docker exec "${database_container}" psql -v ON_ERROR_STOP=1 -U ipgo_server -d ip
 docker exec "${database_container}" psql -v ON_ERROR_STOP=1 -U ipgo_server -d ipgo -Atc \
   "SELECT CASE WHEN (SELECT COUNT(*) FROM push_subscriptions WHERE user_id=901) + (SELECT COUNT(*) FROM notification_settings WHERE user_id=901) = 0 THEN 'ok' ELSE 'left' END" \
   | grep -qx ok
+
+# #197 old-version UPDATEs omit activation_mode/auto_inactive_reason.
+docker exec -i "${database_container}" psql -v ON_ERROR_STOP=1 -U ipgo_server -d ipgo >/dev/null <<'SQL'
+INSERT INTO products(id,user_id,sku_barcode,sku_name,unit_cost,is_active,activation_mode,auto_inactive_reason) VALUES
+ (9101,1,'ROLLBACK-1','manual on',777,TRUE,'MANUAL_ON',NULL),
+ (9102,1,'ROLLBACK-2','manual off',888,FALSE,'MANUAL_OFF',NULL),
+ (9103,1,'ROLLBACK-3','auto off',999,FALSE,'AUTO','NO_RECENT_RECORDS'),
+ (9104,2,'ROLLBACK-4','auto on',111,TRUE,'AUTO',NULL);
+DO $$ DECLARE actual_constraint TEXT; BEGIN
+  BEGIN
+    UPDATE products SET is_active=FALSE WHERE id=9101;
+    RAISE EXCEPTION 'old manual-on UPDATE unexpectedly succeeded';
+  EXCEPTION WHEN check_violation THEN
+    GET STACKED DIAGNOSTICS actual_constraint = CONSTRAINT_NAME;
+    IF actual_constraint <> 'ck_product_manual_activity' THEN RAISE EXCEPTION 'wrong constraint'; END IF;
+  END;
+  BEGIN
+    UPDATE products SET is_active=TRUE WHERE id=9102;
+    RAISE EXCEPTION 'old manual-off UPDATE unexpectedly succeeded';
+  EXCEPTION WHEN check_violation THEN
+    GET STACKED DIAGNOSTICS actual_constraint = CONSTRAINT_NAME;
+    IF actual_constraint <> 'ck_product_manual_activity' THEN RAISE EXCEPTION 'wrong constraint'; END IF;
+  END;
+  BEGIN
+    UPDATE products SET is_active=TRUE WHERE id=9103;
+    RAISE EXCEPTION 'old auto-off UPDATE unexpectedly succeeded';
+  EXCEPTION WHEN check_violation THEN
+    GET STACKED DIAGNOSTICS actual_constraint = CONSTRAINT_NAME;
+    IF actual_constraint <> 'ck_product_auto_inactive_reason' THEN RAISE EXCEPTION 'wrong constraint'; END IF;
+  END;
+  -- This direction succeeds but loses old-version manual intent: AUTO remains AUTO.
+  UPDATE products SET is_active=FALSE WHERE id=9104;
+  IF (SELECT activation_mode FROM products WHERE id=9104) <> 'AUTO' THEN
+    RAISE EXCEPTION 'silent old-version mode mismatch not reproduced';
+  END IF;
+END $$;
+SQL
+rollback_sql="${repository_root}/database/rollback/prepare-product-activity-legacy.sql"
+rollback_hash_sql="SELECT md5(COALESCE(jsonb_agg(to_jsonb(p) ORDER BY id)::text,'[]')) FROM products p"
+rollback_full_before=$(docker exec "${database_container}" psql -U ipgo_server -d ipgo -Atc "$rollback_hash_sql")
+# Failure immediately before COMMIT must roll back every metadata change.
+if rollback_failure=$(sed 's/^COMMIT;$/SELECT 1\/0;\nCOMMIT;/' "$rollback_sql" | \
+    docker exec -i "${database_container}" psql -v ON_ERROR_STOP=1 -v VERBOSITY=verbose -U ipgo_server -d ipgo 2>&1); then
+  echo 'expected injected rollback failure' >&2; exit 1
+fi
+[[ "$rollback_failure" == *"22012"* ]] || { echo 'unexpected rollback probe error' >&2; exit 1; }
+[[ "$rollback_full_before" == "$(docker exec "${database_container}" psql -U ipgo_server -d ipgo -Atc "$rollback_hash_sql")" ]] || { echo 'rollback probe changed data' >&2; exit 1; }
+rollback_settings_sql="SELECT md5(COALESCE(jsonb_agg(to_jsonb(p)-'activation_mode'-'auto_inactive_reason' ORDER BY id)::text,'[]')) FROM products p"
+rollback_settings_before=$(docker exec "${database_container}" psql -U ipgo_server -d ipgo -Atc "$rollback_settings_sql")
+docker exec -i "${database_container}" psql -v ON_ERROR_STOP=1 -U ipgo_server -d ipgo < "$rollback_sql" >/dev/null
+[[ "$rollback_settings_before" == "$(docker exec "${database_container}" psql -U ipgo_server -d ipgo -Atc "$rollback_settings_sql")" ]] || { echo 'legacy preparation changed product settings' >&2; exit 1; }
+docker exec -i "${database_container}" psql -v ON_ERROR_STOP=1 -U ipgo_server -d ipgo >/dev/null <<'SQL'
+DO $$ BEGIN
+  IF EXISTS (SELECT 1 FROM products WHERE activation_mode <> 'LEGACY' OR auto_inactive_reason IS NOT NULL) THEN
+    RAISE EXCEPTION 'old-version preparation incomplete';
+  END IF;
+END $$;
+-- Both directions now work with old-version SQL; its new rows also default to LEGACY.
+UPDATE products SET is_active=NOT is_active WHERE id BETWEEN 9101 AND 9104;
+INSERT INTO products(id,user_id,sku_barcode,sku_name,is_active) VALUES(9105,1,'ROLLBACK-5','old new row',FALSE);
+DO $$ BEGIN
+  IF NOT (SELECT is_active FROM products WHERE id=9102)
+     OR NOT (SELECT is_active FROM products WHERE id=9103)
+     OR NOT (SELECT is_active FROM products WHERE id=9104)
+     OR (SELECT is_active FROM products WHERE id=9101)
+     OR (SELECT is_active FROM products WHERE id=9105)
+     OR EXISTS (SELECT 1 FROM products WHERE activation_mode <> 'LEGACY') THEN
+    RAISE EXCEPTION 'old-version writes were not preserved';
+  END IF;
+END $$;
+SQL
+rollback_after_old=$(docker exec "${database_container}" psql -U ipgo_server -d ipgo -Atc "$rollback_hash_sql")
+docker exec -i "${database_container}" psql -v ON_ERROR_STOP=1 -U ipgo_server -d ipgo < "$rollback_sql" >/dev/null
+[[ "$rollback_after_old" == "$(docker exec "${database_container}" psql -U ipgo_server -d ipgo -Atc "$rollback_hash_sql")" ]] || { echo 'repeated preparation changed old-version selections' >&2; exit 1; }
+echo "Product activation rollback: three constraint conflicts, silent AUTO mismatch, atomic failure, preserved settings and old writes verified."
 
 echo "PostgreSQL migrations, tenant integrity, and database roles verified."

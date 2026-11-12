@@ -31,6 +31,8 @@ public class BillingController {
         return ResponseEntity.accepted().cacheControl(CacheControl.noStore()).body(billing.complete(user(p),id,key,r));
     }
     @GetMapping("/registration-sessions/{id}") public ResponseEntity<BillingViews.Session> session(Principal p,@PathVariable String id) { return ok(billing.session(user(p),id)); }
+    @PostMapping("/registration-sessions/{id}/cancel") public ResponseEntity<BillingViews.Session> cancelRegistration(Principal p,@PathVariable String id,
+            @RequestHeader("Idempotency-Key") String key) { return ok(billing.cancelRegistration(user(p),id,key)); }
     @PostMapping("/subscription/cancel") public ResponseEntity<BillingViews.Subscription> cancel(Principal p,@RequestHeader("Idempotency-Key") String key) { return ok(billing.cancel(user(p),key)); }
     @PostMapping("/subscription/resume") public ResponseEntity<BillingViews.Subscription> resume(Principal p,@RequestHeader("Idempotency-Key") String key,@Valid @RequestBody BillingRequests.Resume r) { return ok(billing.resume(user(p),key,r.consentVersion())); }
     @PostMapping("/invoices/{id}/cancel-payment") public ResponseEntity<BillingViews.Refund> cancelPayment(Principal p,@PathVariable String id,

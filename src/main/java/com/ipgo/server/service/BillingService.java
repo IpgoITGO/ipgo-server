@@ -106,7 +106,7 @@ public class BillingService {
             String body=r.purpose()+"|"+r.planId()+"|"+r.priceVersion()+"|"+r.consentVersion();
             ensureNoRefund(user);
             String old=command(user,"REGISTER",key,body);
-            if(old!=null) return registration(user,old);
+            if(old!=null) return resumableRegistration(user,old);
             consent(r.consentVersion());
             if(!List.of("START_SUBSCRIPTION","REPLACE_METHOD").contains(r.purpose())) throw BillingException.invalid();
             Row s=sub(user); long amount=0;
@@ -119,8 +119,18 @@ public class BillingService {
                 amount=plan.amount();
             } else if(r.planId()!=null || r.priceVersion()!=null) throw BillingException.invalid();
             ledger.update("update billing_sessions set status='UNKNOWN' where user_id=? and status='ISSUING' and expires_at<=?",user,at(clock.instant()));
-            if(!ledger.list("select id from billing_sessions where user_id=? and status in ('OPEN','ISSUING') and expires_at>?",user,at(clock.instant())).isEmpty())
-                throw BillingException.conflict("BILLING_IN_PROGRESS");
+            ledger.update("update billing_sessions set status='EXPIRED' where user_id=? and status='OPEN' and expires_at<=?",user,at(clock.instant()));
+            var active=ledger.list("select * from billing_sessions where user_id=? and status in ('OPEN','ISSUING') and expires_at>?",user,at(clock.instant()));
+            if(!active.isEmpty()) {
+                Row current=active.getFirst();
+                if(!"OPEN".equals(current.text("status")) || !r.purpose().equals(current.text("purpose"))
+                        || !java.util.Objects.equals(r.planId(),current.text("plan_id"))
+                        || !BillingPolicy.VERSION.equals(current.text("price_version"))
+                        || !r.consentVersion().equals(current.text("consent_version")))
+                    throw BillingException.conflict("BILLING_IN_PROGRESS");
+                remember(user,"REGISTER",key,body,current.text("id"));
+                return registration(user,current.text("id"));
+            }
             String id=uuid(); Instant now=clock.instant();
             ledger.update("insert into billing_sessions(id,user_id,purpose,plan_id,amount,price_version,consent_version,accepted_at,state_hash,expires_at,status,issue_key) values (?,?,?,?,?,?,?,?,?,?,'OPEN',?)",
                     id,user,r.purpose(),r.planId(),amount,BillingPolicy.VERSION,r.consentVersion(),at(now),BillingSecrets.hash(state(user,id)),at(now.plus(Duration.ofMinutes(15))),uuid());
@@ -129,6 +139,31 @@ public class BillingService {
         });
     }
     private String state(long user,String id) { return secrets.fingerprint("session-state:"+user+":"+id); }
+    private BillingViews.Registration resumableRegistration(long user,String id) {
+        Row r=owned("billing_sessions",id,user);
+        if("CANCELED".equals(r.text("status"))) throw BillingException.conflict("BILLING_SESSION_CANCELED");
+        if(!clock.instant().isBefore(r.time("expires_at"))) throw BillingException.conflict("BILLING_SESSION_EXPIRED");
+        if(!"OPEN".equals(r.text("status"))) throw BillingException.conflict("BILLING_IN_PROGRESS");
+        return registration(user,id);
+    }
+    /** 카드 발급 시작 전의 등록 시도만 닫는다. complete와 같은 사용자 lock으로 직렬화한다. */
+    public BillingViews.Session cancelRegistration(long user,String id,String key) {
+        return locked(user,()->{
+            Row r=owned("billing_sessions",id,user);
+            String operation="CANCEL_REGISTRATION:"+id;
+            String old=command(user,operation,key,id);
+            if(old!=null) return session(user,id);
+            String status=r.text("status");
+            if("OPEN".equals(status)) {
+                status=clock.instant().isBefore(r.time("expires_at"))?"CANCELED":"EXPIRED";
+                ledger.update("update billing_sessions set status=? where id=?",status,id);
+            } else if(!"CANCELED".equals(status) && !"EXPIRED".equals(status)) {
+                throw BillingException.conflict("BILLING_IN_PROGRESS");
+            }
+            remember(user,operation,key,id,id);
+            return session(user,id);
+        });
+    }
     private BillingViews.Registration registration(long user,String id) {
         Row r=owned("billing_sessions",id,user);
         String query="?sessionId="+id+"&state="+state(user,id);

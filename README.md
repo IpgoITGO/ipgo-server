@@ -642,6 +642,21 @@ R2·R3은 Bearer JWT가 필요하고, 다른 회원의 상품·발주는 `403`, 
 - D1 `excluded[].date`는 그 계산에 쓴 업로드(`run_source_files`)의 검증 리포트에서 찾은 검산 불일치 날짜입니다. 리포트에 없으면 `null`입니다.
 - 아직 비어 있는 값: K1 `accuracy.history`(백테스트 연동 이후), `result.requiredQtyBeforeRounding`(ERD 저장 칸 없음).
 
+### 판매 급변 (`demandShift`, #193)
+
+어떤 상품이 평소보다 갑자기 많이(또는 다시 적게) 팔리면 셀러에게 확인해 달라고 알리는 값입니다. D1의 `items`·`notNeededItems`·`notCalculable` 상품마다, K1 맨 위에 `demandShift`가 오고, 기준에 맞지 않으면 `null`입니다. 화면에 보이는 계산 결과와 같은 run의 수불부(`run_source_files`) 하루 출고로 판단합니다.
+
+```json
+"demandShift": { "direction": "UP", "recentDailyQty": 21.0, "baselineDailyQty": 2.6, "ratio": 8.1,
+                 "since": "2026-11-04", "previousRecommendedQty": null }
+```
+
+- `recentDailyQty`: 기준일까지 최근 7일 하루 평균 출고, `baselineDailyQty`: 그 전 28일 하루 평균 출고. 평균은 기록이 있는 날로 나누고 소수 첫째 자리로 반올림합니다. `ratio`는 최근 ÷ 이전(이전이 0이면 `null`), `since`는 최근 구간 시작일입니다.
+- `UP`: 최근 평균 ≥ 이전 평균의 3배 **그리고** 하루 10개 이상 늘었을 때. 저판매 상품의 0→2개 같은 작은 변화는 빼려는 기준입니다.
+- `DOWN`: 직전 성공 계산에서 `UP`이던 상품이 이번에는 `UP`이 아니고, 권장량이 직전의 절반 이하로 줄었을 때. `previousRecommendedQty`에 직전 권장량을 줍니다(`UP`이면 `null`).
+- 이전 28일 구간에 기록이 7일보다 적은 상품(새 상품 등)은 판단하지 않습니다.
+- 기준 숫자는 첫 기준이라 `ipgo.demand-shift.recent-days`(7) · `baseline-days`(28) · `up-ratio`(3) · `up-min-increase`(10) · `down-ratio`(0.5)로 바꿀 수 있습니다. 환경변수는 `IPGO_DEMAND_SHIFT_UP_RATIO`처럼 씁니다.
+
 ### 직접 입력 수량 시나리오 (K3 · #94)
 
 `POST /api/results/{resultId}/scenarios`에 JSON `{"qty": 80}`을 보내면 `201`과 CUSTOM 시나리오 한 행을

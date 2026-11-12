@@ -1,6 +1,7 @@
 package com.ipgo.server.service;
 
 import com.ipgo.server.dto.UploadProcessingReport;
+import com.ipgo.server.dto.response.DemandShift;
 import com.ipgo.server.dto.response.ProductSettings;
 import com.ipgo.server.dto.response.ReplenishmentNeeds;
 import com.ipgo.server.entity.CalculationResult;
@@ -49,11 +50,12 @@ public class DashboardService {
     private final JdbcTemplate jdbc;
     private final Clock clock;
     private final CurrentProducts current;
+    private final DemandShiftService demandShifts;
 
     public DashboardService(WarehouseService warehouses, CalculationRunRepository runs,
             CalculationResultRepository results, ProductRepository products,
             ReplenishmentSettingRepository settings, UploadFileRepository uploads, JdbcTemplate jdbc, Clock clock,
-            CurrentProducts current) {
+            CurrentProducts current, DemandShiftService demandShifts) {
         this.warehouses = warehouses;
         this.runs = runs;
         this.results = results;
@@ -63,6 +65,7 @@ public class DashboardService {
         this.jdbc = jdbc;
         this.clock = clock;
         this.current = current;
+        this.demandShifts = demandShifts;
     }
 
     @Transactional(readOnly = true)
@@ -92,6 +95,7 @@ public class DashboardService {
         Map<Long, LocalDate> mismatchDates = mismatchDates(run.getId());
         // #188 덮어쓴 파일에만 있던 상품은 예전 계산 결과에 남아 있어도 보여 주지 않는다.
         var overwritten = current.overwritten(warehouseId);
+        Map<Long, DemandShift> shifts = demandShifts.forRun(run);
 
         List<ReplenishmentNeeds.Item> items = new ArrayList<>();
         List<ReplenishmentNeeds.NotCalculable> notCalculable = new ArrayList<>();
@@ -106,7 +110,7 @@ public class DashboardService {
                 case NeedJudgment.NEED_NOW -> items.add(new ReplenishmentNeeds.Item(product.getId(), result.getId(),
                         product.getSkuBarcode(), product.getSkuName(), result.getRecommendedQty(),
                         DisplayQuantities.won(result.getRecommendedAmount()), result.getExpectedShortageOn(),
-                        leadTime, result.getPreArrivalRisk()));
+                        leadTime, result.getPreArrivalRisk(), shifts.get(product.getId())));
                 case CalculationResult.EXCLUDED -> excluded.add(new ReplenishmentNeeds.Excluded(product.getId(),
                         product.getSkuName(), mismatchDates.get(product.getId()), result.getReason()));
                 // 기준일이 오래돼 재업로드가 필요한 상품도 계산할 수 없는 목록에 사유와 함께 보여준다.
@@ -114,9 +118,11 @@ public class DashboardService {
                         notCalculable.add(new ReplenishmentNeeds.NotCalculable(product.getId(), product.getSkuName(),
                                 result.getReason() != null ? result.getReason()
                                         : NeedJudgment.daysSince(run.getAsOfDate(), today) > NeedJudgment.MAX_DAYS_SINCE_AS_OF
-                                                ? REUPLOAD_REASON : NeedJudgment.UNKNOWN_NEED_REASON));
+                                                ? REUPLOAD_REASON : NeedJudgment.UNKNOWN_NEED_REASON,
+                                shifts.get(product.getId())));
                 default -> notNeeded.add(new ReplenishmentNeeds.NotNeededItem(product.getId(), result.getId(),
-                        product.getSkuBarcode(), product.getSkuName(), result.getExpectedShortageOn(), leadTime));
+                        product.getSkuBarcode(), product.getSkuName(), result.getExpectedShortageOn(), leadTime,
+                        shifts.get(product.getId())));
             }
         }
         items.sort(order);

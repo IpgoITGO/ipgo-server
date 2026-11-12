@@ -1,5 +1,6 @@
 package com.ipgo.server.service;
 
+import com.ipgo.server.dto.response.DemandShift;
 import com.ipgo.server.dto.response.ProductDetail;
 import com.ipgo.server.dto.response.ProductSettings;
 import com.ipgo.server.entity.CalculationResult;
@@ -46,12 +47,15 @@ public class ProductDetailService {
     private final JdbcTemplate jdbc;
     private final Clock clock;
     private final tools.jackson.databind.json.JsonMapper mapper;
+    private final DemandShiftService demandShifts;
 
     public ProductDetailService(ProductRepository products, WarehouseService warehouses,
             ReplenishmentSettingRepository settings, CalculationRunRepository runs,
             CalculationResultRepository results, InventoryUnitRepository inventoryUnits, JdbcTemplate jdbc,
-            Clock clock, tools.jackson.databind.json.JsonMapper mapper, ReviewCycleSuggestionService suggestions) {
+            Clock clock, tools.jackson.databind.json.JsonMapper mapper, ReviewCycleSuggestionService suggestions,
+            DemandShiftService demandShifts) {
         this.products = products;
+        this.demandShifts = demandShifts;
         this.warehouses = warehouses;
         this.suggestions = suggestions;
         this.settings = settings;
@@ -81,9 +85,11 @@ public class ProductDetailService {
         var summary = new ProductDetail.Product(product.getId(), product.getSkuBarcode(), product.getSkuName(),
                 warehouse.map(Warehouse::getName).orElse(null));
         List<ProductDetail.Trend> trend = trend(productId, from, to);
+        // #193 대시보드와 같은 계산 결과 기준의 판매 급변
+        DemandShift demandShift = run.map(r -> demandShifts.forRun(r).get(productId)).orElse(null);
         if (result.isEmpty()) {
             return new ProductDetail(summary, null, run.map(CalculationRun::getAsOfDate).orElse(null), null,
-                    productSettings, null, null, trend);
+                    productSettings, null, null, trend, demandShift);
         }
 
         CalculationResult calculated = result.get();
@@ -92,7 +98,7 @@ public class ProductDetailService {
         String needStatus = NeedJudgment.needStatus(calculated, asOfDate, today, productSettings.leadTimeDays());
         JsonNode facts = resultFacts(calculated);
         return new ProductDetail(summary, needStatus, asOfDate, calculated.getExpectedShortageOn(), productSettings,
-                result(calculated, needStatus, facts), accuracy(calculated, firstInboundOn, facts), trend);
+                result(calculated, needStatus, facts), accuracy(calculated, firstInboundOn, facts), trend, demandShift);
     }
 
     // 정제가 끝난(DONE) 업로드의 상품 일별 수불. 같은 날짜가 덮어쓰기로 여러 번 올라왔으면 가장 최근 업로드를 쓴다.

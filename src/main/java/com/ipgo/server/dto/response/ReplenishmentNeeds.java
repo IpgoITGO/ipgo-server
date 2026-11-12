@@ -14,16 +14,18 @@ public record ReplenishmentNeeds(LocalDate asOfDate, LocalDate today, Long daysS
     public record Summary(int needCount, int notNeededCount, int notCalculableCount, int excludedCount) {
     }
 
+    // demandShift(#193): 판매 급변 기준에 맞는 상품만 값이 있고, 아니면 null이다.
     public record Item(Long productId, Long resultId, String skuBarcode, String skuName, Long recommendedQty,
-            Long recommendedAmount, LocalDate expectedShortageOn, Integer leadTimeDays, BigDecimal preArrivalRisk) {
+            Long recommendedAmount, LocalDate expectedShortageOn, Integer leadTimeDays, BigDecimal preArrivalRisk,
+            DemandShift demandShift) {
     }
 
     // "아직 괜찮아요" 상품. 예상 소진일이 가까운 순이고, 커버 기간 안에 소진되지 않으면 expectedShortageOn이 null이다.
     public record NotNeededItem(Long productId, Long resultId, String skuBarcode, String skuName,
-            LocalDate expectedShortageOn, Integer leadTimeDays) {
+            LocalDate expectedShortageOn, Integer leadTimeDays, DemandShift demandShift) {
     }
 
-    public record NotCalculable(Long productId, String skuName, String reason) {
+    public record NotCalculable(Long productId, String skuName, String reason, DemandShift demandShift) {
     }
 
     // date는 수불부 검산이 어긋난 날이다. 계산에 쓴 업로드의 검증 리포트에 없으면 null이다.

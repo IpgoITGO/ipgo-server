@@ -6,7 +6,7 @@ import java.util.List;
 
 // K1 SKU 상세. 계산 결과가 아직 없으면 needStatus · result · accuracy는 null이다.
 public record ProductDetail(Product product, String needStatus, LocalDate asOfDate, LocalDate expectedShortageOn,
-        Settings settings, Result result, Accuracy accuracy, List<Trend> trend) {
+        Settings settings, Result result, Accuracy accuracy, List<Trend> trend, DemandShift demandShift) {
 
     // fulfillment는 상품이 들어가는 창고 이름이다.
     public record Product(Long productId, String skuBarcode, String skuName, String fulfillment) {

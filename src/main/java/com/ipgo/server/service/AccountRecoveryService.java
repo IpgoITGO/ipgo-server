@@ -1,6 +1,6 @@
 package com.ipgo.server.service;
 
-import com.ipgo.server.dto.response.MaskedEmail;
+import com.ipgo.server.dto.response.FoundAccounts;
 import com.ipgo.server.dto.response.ResetToken;
 import com.ipgo.server.entity.EmailVerification;
 import com.ipgo.server.exception.AccountRecoveryException;
@@ -45,16 +45,36 @@ public class AccountRecoveryService {
         this.clock = clock;
     }
 
-    // 같은 사업자등록번호로 가입한 계정이 여럿이면 가장 최근 가입 계정을 보여 준다.
+    static final int MAX_FOUND = 5;
+
+    // #185 회사명 + 담당자 이름이 둘 다 맞는 계정의 가린 이메일을 최근 가입 순으로 최대 5개 준다.
+    // 띄어쓰기 · 영문 대소문자는 무시하고, 회사명은 (주) · 주식회사 · ㈜ 표기 차이도 무시한다. 탈퇴 계정은 빼요.
     @Transactional(readOnly = true)
-    public MaskedEmail findId(String businessNumber) {
-        String digits = businessNumber.replaceAll("[\\s-]", "");
-        if (!digits.matches("[0-9]{10}")) throw AccountRecoveryException.invalidBusinessNumber();
-        List<String> emails = jdbc.queryForList("""
-                SELECT email FROM users WHERE business_reg_no = ? AND email NOT LIKE ? ORDER BY id DESC
-                """, String.class, digits, "%" + WITHDRAWN_DOMAIN);
+    public FoundAccounts findId(String companyName, String managerName) {
+        String company = companyKey(companyName);
+        String manager = managerKey(managerName);
+        if (company.isEmpty()) throw AccountRecoveryException.blankField("companyName");
+        if (manager.isEmpty()) throw AccountRecoveryException.blankField("managerName");
+        List<String> emails = jdbc.query("""
+                SELECT email, company_name FROM users
+                WHERE LOWER(REPLACE(manager_name, ' ', '')) = ? AND email NOT LIKE ? ORDER BY id DESC
+                """, (rs, n) -> company.equals(companyKey(rs.getString(2))) ? rs.getString(1) : null,
+                manager, "%" + WITHDRAWN_DOMAIN).stream().filter(java.util.Objects::nonNull).limit(MAX_FOUND).toList();
         if (emails.isEmpty()) throw AccountRecoveryException.accountNotFound();
-        return new MaskedEmail(mask(emails.getFirst()));
+        List<String> masked = emails.stream().map(AccountRecoveryService::mask).toList();
+        return new FoundAccounts(masked, masked.getFirst());
+    }
+
+    // 예: "(주) Ipgo ITGO" · "주식회사 ipgoitgo" · "㈜IPGO ITGO" → "ipgoitgo"
+    static String companyKey(String name) {
+        if (name == null) return "";
+        return name.toLowerCase(Locale.ROOT).replace("주식회사", "").replace("(주)", "").replace("（주）", "")
+                .replace("㈜", "").replace(" ", "").strip();
+    }
+
+    // 예: "홍 길동" → "홍길동". DB 쪽 비교(LOWER · REPLACE)와 같은 규칙이다.
+    static String managerKey(String name) {
+        return name == null ? "" : name.toLowerCase(Locale.ROOT).replace(" ", "").strip();
     }
 
     // 가입 여부를 알리지 않으려고 없는 이메일 · 1분 안 재요청도 조용히 끝낸다(화면은 늘 "보냈어요").

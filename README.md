@@ -332,12 +332,12 @@ SMTP 연결·읽기·쓰기 제한은 각각 5초입니다. SMTP 설정이 없�
 
 | API | 동작 |
 |---|---|
-| `POST /api/auth/find-id` | `{ businessNumber }`. 하이픈·공백을 빼고 숫자 10자리를 봅니다. 같은 번호의 계정이 여럿이면 가장 최근 가입 계정의 `{ maskedEmail }`(앞 두 글자만, 예: `se***@a.com`)을 줍니다. 없으면 `404 NOT_FOUND`, 10자리가 아니면 `400 INVALID_INPUT`(`details.field: businessNumber`) |
+| `POST /api/auth/find-id` | `{ companyName, managerName }`(#185). 둘 다 맞는 계정의 가린 이메일(앞 두 글자만, 예: `se***@a.com`)을 `{ maskedEmails, maskedEmail }`로 줍니다. `maskedEmails`는 최근 가입 순 최대 5개, `maskedEmail`은 그중 가장 최근 1개입니다. 띄어쓰기·영문 대소문자는 무시하고, 회사명은 `(주)`·`주식회사`·`㈜` 표기 차이도 무시합니다. 없으면 `404 NOT_FOUND`, 비었으면 `400 INVALID_INPUT`(`details.field: companyName` 또는 `managerName`) |
 | `POST /api/auth/password-reset/code` | `{ email }`. **항상 `204`**입니다. 가입한 이메일이면 "Ipgo 비밀번호 재설정" 메일로 6자리 코드(10분)를 보내고, 없는 이메일이나 1분 안 재요청은 조용히 아무것도 하지 않습니다. 메일 서버 장애만 `503 EMAIL_DELIVERY_UNAVAILABLE`입니다 |
 | `POST /api/auth/password-reset/verify` | `{ email, code }` → `{ resetToken }`(30분, 한 번만). 틀림·만료·5번 실패·가입하지 않은 이메일은 모두 `400 INVALID_CODE`(`details.field: code`)입니다 |
 | `POST /api/auth/password-reset` | `{ resetToken, newPassword }` → `204`. 비밀번호 규칙은 가입과 같고 틀리면 `400 INVALID_INPUT`(`details.field: newPassword`), 토큰이 없거나 만료·사용됐으면 `400 INVALID_TOKEN`입니다. 바꾸면 그 계정의 모든 로그인 세션을 폐기합니다 |
 
-아이디 찾기는 사업자등록번호만 알면 가린 이메일을 보여 주므로, 공개 운영 전에는 IP별 요청 제한을 함께 두어야 합니다.
+아이디 찾기는 회사명·담당자 이름(둘 다 가입 필수 칸)으로 찾아서 기존 계정도 모두 쓸 수 있습니다. 쇼핑몰에 공개되는 사업자등록번호로는 찾지 않습니다(#185). 그래도 이름을 아는 사람은 가린 이메일을 볼 수 있으므로, 공개 운영 전에는 IP별 요청 제한을 함께 두어야 합니다.
 
 ### 개발용 Gmail (#82)
 

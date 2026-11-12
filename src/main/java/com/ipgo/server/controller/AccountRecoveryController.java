@@ -4,7 +4,7 @@ import com.ipgo.server.dto.request.FindIdRequest;
 import com.ipgo.server.dto.request.PasswordResetCodeRequest;
 import com.ipgo.server.dto.request.PasswordResetRequest;
 import com.ipgo.server.dto.request.PasswordResetVerifyRequest;
-import com.ipgo.server.dto.response.MaskedEmail;
+import com.ipgo.server.dto.response.FoundAccounts;
 import com.ipgo.server.dto.response.ResetToken;
 import com.ipgo.server.service.AccountRecoveryService;
 import jakarta.validation.Valid;
@@ -26,8 +26,8 @@ public class AccountRecoveryController {
     }
 
     @PostMapping("/find-id")
-    public MaskedEmail findId(@Valid @RequestBody FindIdRequest request) {
-        return recovery.findId(request.businessNumber());
+    public FoundAccounts findId(@Valid @RequestBody FindIdRequest request) {
+        return recovery.findId(request.companyName(), request.managerName());
     }
 
     @PostMapping("/password-reset/code")

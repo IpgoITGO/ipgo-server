@@ -52,23 +52,36 @@ class AccountRecoveryIntegrationTests extends DatabaseIntegrationTest {
         }
     }
 
-    @Test void findIdMasksTheLatestAccountForTheBusinessNumber() throws Exception {
-        String number = businessNumber();
-        user("older" + UUID.randomUUID() + "@example.test", number);
-        String latest = user("se" + UUID.randomUUID() + "@a.test", number);
-        // 탈퇴(#172)로 이메일이 바뀐 계정은 찾지 않아요.
-        user("withdrawn-" + UUID.randomUUID() + "@withdrawn.invalid", number);
+    // #185 회사명 + 담당자 이름으로 찾고, 같은 회사 · 담당자의 계정은 모두(최근 가입 순) 보여 준다.
+    @Test void findIdByCompanyAndManagerListsEveryMatchingAccount() throws Exception {
+        String tag = UUID.randomUUID().toString().substring(0, 8);
+        String company = "(주) Ipgo " + tag, manager = "홍 길동" + tag;
+        account("ol" + UUID.randomUUID() + "@b.test", company, manager);
+        account("se" + UUID.randomUUID() + "@a.test", "주식회사 IPGO" + tag, "홍길동" + tag);
+        // 다른 담당자 · 다른 회사 · 탈퇴(#172) 계정은 안 나와요.
+        account("xx" + UUID.randomUUID() + "@c.test", company, "김철수" + tag);
+        account("yy" + UUID.randomUUID() + "@d.test", "다른회사" + tag, manager);
+        account("withdrawn-" + UUID.randomUUID() + "@withdrawn.invalid", company, manager);
 
-        String dashed = number.substring(0, 3) + "-" + number.substring(3, 5) + "-" + number.substring(5);
-        findId(dashed).andExpect(status().isOk()).andExpect(jsonPath("maskedEmail").value("se***@a.test"));
-        findId(number).andExpect(status().isOk()).andExpect(jsonPath("maskedEmail").value("se***@a.test"));
-        assertThat(latest).startsWith("se");
+        // 띄어쓰기 · 대소문자 · (주)/주식회사/㈜ 표기가 달라도 찾아요.
+        findId("㈜ipgo" + tag, "홍길동" + tag).andExpect(status().isOk())
+                .andExpect(jsonPath("maskedEmails.length()").value(2))
+                .andExpect(jsonPath("maskedEmails[0]").value("se***@a.test"))
+                .andExpect(jsonPath("maskedEmails[1]").value("ol***@b.test"))
+                .andExpect(jsonPath("maskedEmail").value("se***@a.test"));
 
-        findId(businessNumber()).andExpect(status().isNotFound()).andExpect(jsonPath("code").value("NOT_FOUND"));
-        findId("12-3").andExpect(status().isBadRequest()).andExpect(jsonPath("code").value("INVALID_INPUT"))
-                .andExpect(jsonPath("details.field").value("businessNumber"));
-        post("/api/auth/find-id", "{}").andExpect(status().isBadRequest())
-                .andExpect(jsonPath("details.field").value("businessNumber"));
+        findId("없는회사" + tag, "홍길동" + tag).andExpect(status().isNotFound()).andExpect(jsonPath("code").value("NOT_FOUND"));
+        findId("ipgo" + tag, "다른사람").andExpect(status().isNotFound());
+        findId("(주)", "홍길동" + tag).andExpect(status().isBadRequest()).andExpect(jsonPath("code").value("INVALID_INPUT"))
+                .andExpect(jsonPath("details.field").value("companyName"));
+        post("/api/auth/find-id", json(Map.of("companyName", "ipgo"))).andExpect(status().isBadRequest())
+                .andExpect(jsonPath("details.field").value("managerName"));
+    }
+
+    @Test void findIdShowsAtMostFiveAccounts() throws Exception {
+        String tag = UUID.randomUUID().toString().substring(0, 8);
+        for (int i = 0; i < 6; i++) account("m" + i + UUID.randomUUID() + "@e.test", "회사" + tag, "담당" + tag);
+        findId("회사" + tag, "담당" + tag).andExpect(status().isOk()).andExpect(jsonPath("maskedEmails.length()").value(5));
     }
 
     @Test void resetFlowChangesPasswordLogsOutEverywhereAndTokenWorksOnce() throws Exception {
@@ -149,8 +162,14 @@ class AccountRecoveryIntegrationTests extends DatabaseIntegrationTest {
 
     private String json(Map<String, String> body) throws Exception { return mapper.writeValueAsString(body); }
 
-    private ResultActions findId(String number) throws Exception {
-        return post("/api/auth/find-id", json(Map.of("businessNumber", number)));
+    private void account(String email, String company, String manager) {
+        jdbc.update("INSERT INTO users (email, password_hash, company_name, manager_name) VALUES (?, ?, ?, ?)",
+                email, encoder.encode(OLD_PASSWORD), company, manager);
+        emails.add(email);
+    }
+
+    private ResultActions findId(String company, String manager) throws Exception {
+        return post("/api/auth/find-id", json(Map.of("companyName", company, "managerName", manager)));
     }
 
     private ResultActions post(String path, String body) throws Exception {

@@ -3,6 +3,7 @@ package com.ipgo.server.dto.request;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Size;
 
-// #173 아이디 찾기. 화면은 "123-45-67890"처럼 하이픈을 넣어 보낼 수 있어 서버가 숫자만 남긴다.
-public record FindIdRequest(@NotBlank @Size(max = 20) String businessNumber) {
+// #185 아이디 찾기. 회사명 · 담당자 이름은 가입 필수 칸이라 모든 계정을 찾을 수 있다.
+// 사업자등록번호는 쇼핑몰에 공개되는 번호이고 가입 때 선택이라 쓰지 않는다.
+public record FindIdRequest(@NotBlank @Size(max = 50) String companyName, @NotBlank @Size(max = 50) String managerName) {
 }

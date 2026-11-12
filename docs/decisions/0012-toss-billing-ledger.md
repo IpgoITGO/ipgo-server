@@ -15,6 +15,10 @@
 
 ## API 계약
 
+카드 등록창 실패 뒤 재진입할 때 같은 목적·요금제·가격 버전·동의의 미만료 OPEN 세션은 새로운 Idempotency-Key여도 재사용한다. 만료 시각은 연장하지 않는다. 다른 목적/요금제 또는 발급 중인 ISSUING 세션은409 BILLING_IN_PROGRESS다. 이전 등록 키를 만료/취소 뒤 다시 쓰면 각각 BILLING_SESSION_EXPIRED/BILLING_SESSION_CANCELED이므로 새 시도에는 새 키를 사용한다.
+
+`POST /api/billing/registration-sessions/{id}/cancel`은 본인 JWT와 Idempotency-Key를 받고 요청 본문 없이 세션 조회와 같은 JSON을200/no-store로 반환한다. OPEN만 CANCELED로 종료하며 이미 만료된 OPEN은 EXPIRED로 기록한다. CANCELED/EXPIRED의 반복 취소는 안전하다. ISSUING/UNKNOWN/COMPLETED/REJECTED는409로 보존한다. complete와 동일한 사용자 lock을 사용하므로 취소가 먼저면 늦은 complete가 발급/청구를 하지 않고, 발급이 먼저면 취소가 덮어쓰지 않는다. 환불·구독 해지와 별개이며 PG 호출/청구 원장 삭제는 없다. 프론트는 확인된 카드창 실패/닫기 뒤만 이 경로를 사용하고, 네트워크 오류나409만으로 완료·미승인을 단정하지 않는다.
+
 사용자 경로는 기존 access JWT Bearer 인증·소유권 검사를 사용한다. refresh 쿠키 경로의 기존 CSRF 정책은 유지한다. 모든 결제 응답은 `Cache-Control: no-store`다. 앱 mutation은8~100자 영문/숫자/`_`/`-`의 `Idempotency-Key`가 필요하다. 같은 키·다른 본문은409다.
 
 | 경로 | 요청·응답 |

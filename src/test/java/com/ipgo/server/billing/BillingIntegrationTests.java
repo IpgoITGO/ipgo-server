@@ -127,6 +127,87 @@ class BillingIntegrationTests extends DatabaseIntegrationTest {
         assertThatThrownBy(()->service.assertWriteAllowed(user)).isInstanceOf(BillingException.class);
         assertThat(service.subscription(user).trialEnd()).isEqualTo(a.trialEnd());
     }
+    @Test void registrationReentryReusesOpenSessionWithoutExtendingExpiry() {
+        var first=registration(); now=now.plusSeconds(60);
+        assertThat(registration()).isEqualTo(first);
+        assertThat(jdbc.queryForObject("select count(*) from billing_sessions where user_id=?",Integer.class,user)).isEqualTo(1);
+        assertThat(jdbc.queryForObject("select count(*) from billing_commands where user_id=? and operation='REGISTER'",Integer.class,user)).isEqualTo(2);
+        verifyNoInteractions(gateway);
+    }
+    @Test void registrationDoesNotReuseDifferentIntentOrPlan() {
+        registration();
+        assertThatThrownBy(()->service.register(user,UUID.randomUUID().toString(),new BillingRequests.Registration("START_SUBSCRIPTION","business",BillingPolicy.VERSION,BillingPolicy.CONSENT)))
+                .isInstanceOf(BillingException.class).satisfies(e->assertThat(((BillingException)e).code()).isEqualTo("BILLING_IN_PROGRESS"));
+        assertThatThrownBy(()->service.register(user,UUID.randomUUID().toString(),new BillingRequests.Registration("REPLACE_METHOD",null,null,BillingPolicy.CONSENT)))
+                .isInstanceOf(BillingException.class);
+        verifyNoInteractions(gateway);
+    }
+    @Test void expiredRegistrationRejectsOldKeyAndNewKeyCreatesFreshSession() {
+        String key=UUID.randomUUID().toString();
+        var request=new BillingRequests.Registration("START_SUBSCRIPTION","seller",BillingPolicy.VERSION,BillingPolicy.CONSENT);
+        var first=service.register(user,key,request); now=first.expiresAt();
+        assertThatThrownBy(()->service.register(user,key,request)).isInstanceOf(BillingException.class)
+                .satisfies(e->assertThat(((BillingException)e).code()).isEqualTo("BILLING_SESSION_EXPIRED"));
+        assertThat(registration().sessionId()).isNotEqualTo(first.sessionId());
+        assertThat(jdbc.queryForObject("select status from billing_sessions where id=?",String.class,first.sessionId())).isEqualTo("EXPIRED");
+        verifyNoInteractions(gateway);
+    }
+    @Test void canceledRegistrationIsIdempotentAndLateCompleteCannotIssueOrCharge() {
+        String originalKey=UUID.randomUUID().toString();
+        var request=new BillingRequests.Registration("START_SUBSCRIPTION","seller",BillingPolicy.VERSION,BillingPolicy.CONSENT);
+        var first=service.register(user,originalKey,request); String key=UUID.randomUUID().toString();
+        assertThat(service.cancelRegistration(user,first.sessionId(),key).status()).isEqualTo("CANCELED");
+        assertThat(service.cancelRegistration(user,first.sessionId(),key).status()).isEqualTo("CANCELED");
+        assertThat(service.cancelRegistration(user,first.sessionId(),UUID.randomUUID().toString()).status()).isEqualTo("CANCELED");
+        assertThatThrownBy(()->complete(first)).isInstanceOf(BillingException.class)
+                .satisfies(e->assertThat(((BillingException)e).code()).isEqualTo("BILLING_SESSION_CANCELED"));
+        assertThatThrownBy(()->service.register(user,originalKey,request)).isInstanceOf(BillingException.class)
+                .satisfies(e->assertThat(((BillingException)e).code()).isEqualTo("BILLING_SESSION_CANCELED"));
+        assertThat(registration().sessionId()).isNotEqualTo(first.sessionId());
+        service.processOne(); verifyNoInteractions(gateway);
+    }
+    @Test void cancelRegistrationPreservesOtherUserAndUncertainOrCompletedStates() {
+        var first=registration();
+        assertThatThrownBy(()->service.cancelRegistration(other,first.sessionId(),UUID.randomUUID().toString()))
+                .isInstanceOf(BillingException.class).satisfies(e->assertThat(((BillingException)e).status()).isEqualTo(403));
+        assertThatThrownBy(()->service.cancelRegistration(user,first.sessionId(),"bad")).isInstanceOf(BillingException.class);
+        for(String status:new String[]{"ISSUING","UNKNOWN","COMPLETED","REJECTED"}) {
+            jdbc.update("update billing_sessions set status=? where id=?",status,first.sessionId());
+            assertThatThrownBy(()->service.cancelRegistration(user,first.sessionId(),UUID.randomUUID().toString()))
+                    .isInstanceOf(BillingException.class).satisfies(e->assertThat(((BillingException)e).code()).isEqualTo("BILLING_IN_PROGRESS"));
+            assertThat(jdbc.queryForObject("select status from billing_sessions where id=?",String.class,first.sessionId())).isEqualTo(status);
+        }
+        verifyNoInteractions(gateway);
+    }
+    @Test void expiredOpenRegistrationCanBeClosedWithoutProviderCalls() {
+        var first=registration(); now=first.expiresAt();
+        assertThat(service.cancelRegistration(user,first.sessionId(),UUID.randomUUID().toString()).status()).isEqualTo("EXPIRED");
+        verifyNoInteractions(gateway);
+    }
+    @Test void cancelRegistrationHttpRequiresAuthenticationAndIdempotencyKey() throws Exception {
+        var first=registration(); String path="/api/billing/registration-sessions/"+first.sessionId()+"/cancel";
+        mvc.perform(post(path)).andExpect(status().isUnauthorized());
+        mvc.perform(post(path).with(jwt().jwt(j->j.subject(""+user)))).andExpect(status().isBadRequest());
+        mvc.perform(post(path).with(jwt().jwt(j->j.subject(""+other))).header("Idempotency-Key",UUID.randomUUID().toString())).andExpect(status().isForbidden());
+        mvc.perform(post(path).with(jwt().jwt(j->j.subject(""+user))).header("Idempotency-Key",UUID.randomUUID().toString()))
+                .andExpect(status().isOk()).andExpect(header().string("Cache-Control","no-store")).andExpect(jsonPath("$.status").value("CANCELED"));
+        verifyNoInteractions(gateway);
+    }
+    @Test void issuingCompletionWinsOverCancelAndReentryWithoutSecondIssue() throws Exception {
+        var first=registration(); var entered=new CountDownLatch(1); var release=new CountDownLatch(1);
+        doAnswer(i->{ entered.countDown(); assertThat(release.await(5,TimeUnit.SECONDS)).isTrue();
+            return new BillingGateway.Issued("race-key",first.customerKey(),"****1234"); }).when(gateway).issue(anyString(),anyString(),anyString());
+        try(var pool=Executors.newSingleThreadExecutor()) {
+            var completing=pool.submit(()->complete(first));
+            try {
+                assertThat(entered.await(5,TimeUnit.SECONDS)).isTrue();
+                assertThatThrownBy(()->service.cancelRegistration(user,first.sessionId(),UUID.randomUUID().toString())).isInstanceOf(BillingException.class);
+                assertThatThrownBy(this::registration).isInstanceOf(BillingException.class);
+            } finally { release.countDown(); }
+            assertThat(completing.get(5,TimeUnit.SECONDS).status()).isEqualTo("COMPLETED");
+        }
+        verify(gateway,times(1)).issue(anyString(),anyString(),anyString()); verify(gateway,never()).charge(anyString(),any(),anyString());
+    }
     @Test void registrationIsIdempotentAndPriceAndConsentAreServerControlled() {
         String key=UUID.randomUUID().toString();
         var request=new BillingRequests.Registration("START_SUBSCRIPTION","seller",BillingPolicy.VERSION,BillingPolicy.CONSENT);

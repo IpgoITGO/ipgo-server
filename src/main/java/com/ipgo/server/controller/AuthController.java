@@ -5,6 +5,7 @@ import com.ipgo.server.dto.response.AccessTokenResponse;
 import com.ipgo.server.dto.response.AccountProfile;
 import com.ipgo.server.exception.AuthTokenException;
 import com.ipgo.server.service.AuthService;
+import com.ipgo.server.service.PasswordLoginService;
 import com.ipgo.server.service.TokenService;
 
 import java.security.Principal;
@@ -18,8 +19,6 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseCookie;
-import org.springframework.security.authentication.AuthenticationManager;
-import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.AuthenticationException;
 import org.springframework.security.web.csrf.CookieCsrfTokenRepository;
 import org.springframework.http.HttpStatus;
@@ -37,16 +36,16 @@ import org.springframework.web.bind.annotation.RequestParam;
 @RequestMapping("/api/auth")
 public class AuthController {
     private final AuthService authService;
-    private final AuthenticationManager authentication;
+    private final PasswordLoginService logins;
     private final TokenService tokens;
     private final CookieCsrfTokenRepository csrfTokens;
     private final Clock clock;
     private final boolean secure;
 
-    public AuthController(AuthService authService, AuthenticationManager authentication, TokenService tokens,
+    public AuthController(AuthService authService, PasswordLoginService logins, TokenService tokens,
             CookieCsrfTokenRepository csrfTokens, Clock clock, @Value("${ipgo.auth.cookie-secure:true}") boolean secure) {
         this.authService = authService;
-        this.authentication = authentication;
+        this.logins = logins;
         this.tokens = tokens;
         this.csrfTokens = csrfTokens;
         this.clock = clock;
@@ -63,14 +62,13 @@ public class AuthController {
     public AccessTokenResponse login(@RequestParam(defaultValue = "") String email,
             @RequestParam(defaultValue = "") String password,
             HttpServletRequest request, HttpServletResponse response) {
-        long userId;
+        TokenService.IssuedTokens issued;
         try {
-            userId = Long.parseLong(authentication.authenticate(
-                    UsernamePasswordAuthenticationToken.unauthenticated(email, password)).getName());
+            // #192 리뷰: 비밀번호 확인과 세션 만들기를 회원 row 잠금 안에서 한 번에 한다(PasswordLoginService).
+            issued = logins.login(email, password);
         } catch (AuthenticationException exception) {
             throw new AuthTokenException("INVALID_CREDENTIALS", "이메일 또는 비밀번호를 확인해주세요.");
         }
-        var issued = tokens.login(userId);
         csrfTokens.saveToken(null, request, response);
         return respond(issued, response);
     }

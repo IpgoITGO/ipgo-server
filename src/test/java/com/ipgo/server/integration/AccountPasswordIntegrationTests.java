@@ -7,6 +7,11 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -19,6 +24,7 @@ import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 import org.springframework.test.web.servlet.ResultActions;
 import org.springframework.test.web.servlet.request.RequestPostProcessor;
+import org.springframework.transaction.support.TransactionTemplate;
 import tools.jackson.databind.json.JsonMapper;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -36,6 +42,7 @@ class AccountPasswordIntegrationTests extends DatabaseIntegrationTest {
     @Autowired JdbcTemplate jdbc;
     @Autowired JsonMapper mapper;
     @Autowired PasswordEncoder encoder;
+    @Autowired TransactionTemplate transactions;
     final List<String> emails = new ArrayList<>();
 
     @BeforeEach void setup() { UploadTestDatabase.withdrawalSchema(jdbc); }
@@ -58,6 +65,52 @@ class AccountPasswordIntegrationTests extends DatabaseIntegrationTest {
         mvc.perform(post("/api/auth/refresh").with(realCsrf()).cookie(otherRefresh)).andExpect(status().isUnauthorized());
         login(email, OLD_PASSWORD).andExpect(status().isUnauthorized());
         login(email, NEW_PASSWORD).andExpect(status().isOk());
+    }
+
+    // 휘님 리뷰: 다른 기기의 로그인이 비밀번호 바꾸기와 겹쳐도 옛 비밀번호로 살아 있는 세션이 생기면 안 된다.
+    // 비밀번호 바꾸기가 회원 row를 잠그고 새 비밀번호 저장 · 세션 폐기까지 했지만 아직 commit 전인 순간에 옛 비밀번호로 로그인한다.
+    // 로그인은 잠금이 풀릴 때까지 기다렸다가 바뀐 비밀번호로 다시 확인하므로 실패해야 한다.
+    @Test void loginRacingAPasswordChangeCannotLeaveAnOldPasswordSession() throws Exception {
+        String email = user();
+        var changing = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+        ExecutorService pool = Executors.newFixedThreadPool(2);
+        try {
+            Future<?> change = pool.submit(() -> transactions.executeWithoutResult(status -> {
+                jdbc.queryForObject("SELECT id FROM users WHERE email = ? FOR UPDATE", Long.class, email);
+                jdbc.update("UPDATE users SET password_hash = ? WHERE email = ?", encoder.encode(NEW_PASSWORD), email);
+                jdbc.update("UPDATE auth_sessions SET revoked = TRUE WHERE user_id = (SELECT id FROM users WHERE email = ?)", email);
+                changing.countDown();
+                await(release);
+            }));
+            assertThat(changing.await(10, TimeUnit.SECONDS)).isTrue();
+            var csrf = realCsrf();
+            Future<MvcResult> racing = pool.submit(() -> mvc.perform(post("/api/auth/login").with(csrf)
+                    .contentType(MediaType.APPLICATION_FORM_URLENCODED)
+                    .param("email", email).param("password", OLD_PASSWORD)).andReturn());
+            Thread.sleep(300);
+            release.countDown();
+            change.get(10, TimeUnit.SECONDS);
+            MvcResult result = racing.get(10, TimeUnit.SECONDS);
+
+            assertThat(result.getResponse().getStatus()).isEqualTo(401);
+            assertThat(jdbc.queryForObject("""
+                    SELECT COUNT(*) FROM auth_sessions s JOIN users u ON u.id = s.user_id WHERE u.email = ? AND s.revoked = FALSE
+                    """, Integer.class, email)).isZero();
+            login(email, NEW_PASSWORD).andExpect(status().isOk());
+        } finally {
+            release.countDown();
+            pool.shutdownNow();
+        }
+    }
+
+    private static void await(CountDownLatch latch) {
+        try {
+            if (!latch.await(10, TimeUnit.SECONDS)) throw new IllegalStateException("timeout");
+        } catch (InterruptedException exception) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException(exception);
+        }
     }
 
     @Test void wrongCurrentPasswordOrBadNewPasswordChangesNothing() throws Exception {

@@ -56,6 +56,13 @@ public class ApiExceptionHandler {
                 exception.field() == null ? null : new ApiError.FieldDetails(exception.field())));
     }
 
+    // #190 알림 등록 · 설정
+    @ExceptionHandler(PushException.class)
+    ResponseEntity<ApiError> push(PushException exception) {
+        return ResponseEntity.status(exception.status()).body(new ApiError(exception.code(), exception.getMessage(),
+                exception.field() == null ? null : new ApiError.FieldDetails(exception.field())));
+    }
+
     @ExceptionHandler(ProductException.class)
     ResponseEntity<ApiError> product(ProductException exception) {
         return ResponseEntity.status(exception.status()).body(new ApiError(exception.code(), exception.getMessage(),

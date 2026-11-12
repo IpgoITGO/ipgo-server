@@ -91,7 +91,21 @@ public final class UploadTestDatabase {
                 for (String statement : sql.split(";")) if (!statement.isBlank()) jdbc.execute(statement);
             } catch (java.io.IOException e) { throw new IllegalStateException(e); }
         }
+        // #190 탈퇴하면 알림 구독 · 설정(V26)도 지운다.
+        pushSchema(jdbc);
+    }
 
+    public static void pushSchema(JdbcTemplate jdbc) {
+        // #190 Web Push 구독 · 알림 설정(V26). H2 harness에만 portable 부분을 한 번 적용한다.
+        try (var connection = java.util.Objects.requireNonNull(jdbc.getDataSource()).getConnection()) {
+            if (connection.getMetaData().getDatabaseProductName().contains("PostgreSQL")) return;
+        } catch (java.sql.SQLException e) { throw new IllegalStateException(e); }
+        if (jdbc.queryForObject("SELECT COUNT(*) FROM information_schema.tables WHERE LOWER(table_name) = 'push_subscriptions'", Integer.class) == 0) {
+            try (var stream = new org.springframework.core.io.ClassPathResource("db/migration/V26__create_push_notifications.sql").getInputStream()) {
+                String sql = new String(stream.readAllBytes(), java.nio.charset.StandardCharsets.UTF_8).split("-- PostgreSQL 전용")[0];
+                for (String statement : sql.split(";")) if (!statement.isBlank()) jdbc.execute(statement);
+            } catch (java.io.IOException e) { throw new IllegalStateException(e); }
+        }
     }
 
     public static void clear(JdbcTemplate jdbc) {

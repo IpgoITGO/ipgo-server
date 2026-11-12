@@ -1,5 +1,7 @@
 # Ipgo Server
 
+토스 TEST 일반결제 1개월 이용권의 API·설정·상태·배포/복구는 [일반결제 계약](docs/decisions/0018-normal-payment-pass.md)을 따릅니다. 구현과 실제 PG 거래·배포 완료는 구분합니다.
+
 개발 배포의 검사한 JAR 재사용·원본/해시 검증·전송 상한/실패 단계·이전 버전 복구 경로는 [빌드 재사용 절차](docs/development/runtime-reuse.md)를 따릅니다. 실제 배포 전에는 변경과 승인 SHA를 별도로 확인합니다.
 
 CI의 `--build-cache`는 Java 컴파일 산출물만 재사용합니다. 테스트 결과는 캐시하거나 생략하지 않으며,

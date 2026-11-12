@@ -25,13 +25,14 @@ public class BillingService {
     private final BillingSecrets secrets;
     private final BillingGateway gateway;
     private final Clock clock;
-    public BillingService(BillingLedger l,BillingProperties p,BillingSecrets s,BillingGateway g,Clock c) {
-        ledger=l; properties=p; secrets=s; gateway=g; clock=c;
+    private final com.ipgo.server.config.NormalPaymentProperties normal;
+    public BillingService(BillingLedger l,BillingProperties p,BillingSecrets s,BillingGateway g,Clock c,com.ipgo.server.config.NormalPaymentProperties n) {
+        ledger=l; properties=p; secrets=s; gateway=g; clock=c; normal=n;
     }
     public void requireEnabled() {
         if(!properties.enabled()) throw new BillingException(503,"BILLING_DISABLED","결제 기능을 준비 중입니다.");
     }
-    public List<BillingViews.Plan> plans() { requireEnabled(); return BillingPolicy.plans(); }
+    public List<BillingViews.Plan> plans() { requireEnabled(); return BillingPolicy.plans().stream().map(p->normal.enabled()?new BillingViews.Plan(p.planId(),p.priceVersion(),p.amount(),p.currency(),"ONE_TIME",p.products(),p.monthlyInsights(),p.testMode(),p.trialDays(),NormalPaymentService.CONSENT):p).toList(); }
     private <T> T locked(long user,Supplier<T> f) {
         requireEnabled(); return ledger.transaction(()->{ ledger.lock(user); ensureNotWithdrawn(user); initialize(user); return f.get(); });
     }
@@ -59,7 +60,7 @@ public class BillingService {
         if("CANCELED".equals(status)) { reason="SUBSCRIPTION_ENDED"; }
         else if(!paid) { if(!now.isBefore(s.time("trial_end"))) { status="TRIAL_EXPIRED"; reason="TRIAL_ENDED"; } }
         else if(!now.isBefore(end)) {
-            if(s.flag("cancel_at_period_end")) { status="CANCELED"; reason="SUBSCRIPTION_ENDED"; }
+            if(normal.enabled() || s.flag("cancel_at_period_end")) { status="CANCELED"; reason="SUBSCRIPTION_ENDED"; }
             else {
                 grace=BillingPolicy.grace(end);
                 if(now.isBefore(grace)) status="PAST_DUE";
@@ -69,9 +70,9 @@ public class BillingService {
         boolean allowed=reason==null;
         var plan=BillingPolicy.plan(s.text("plan_id"));
         boolean hasMethod=s.text("default_method_id")!=null && !ledger.list("select id from billing_methods where id=? and status='ACTIVE'",s.text("default_method_id")).isEmpty();
-        Instant next=s.flag("cancel_at_period_end") || !hasMethod?null:s.time("next_charge_at");
+        Instant next=normal.enabled() || s.flag("cancel_at_period_end") || !hasMethod?null:s.time("next_charge_at");
         return new BillingViews.Subscription(s.text("plan_id"),status,s.time("trial_end"),s.time("period_start"),end,next,
-                s.flag("cancel_at_period_end"),grace,s.number("amount"),s.text("price_version"),
+                (normal.enabled() || s.flag("cancel_at_period_end")),grace,s.number("amount"),s.text("price_version"),
                 new BillingViews.Entitlements(allowed,allowed,allowed,plan.products(),plan.monthlyInsights(),reason));
     }
     public void assertWriteAllowed(long user) {
@@ -102,6 +103,7 @@ public class BillingService {
                 user,op,key,BillingSecrets.hash(body),List.of("REGISTER","RESUME").contains(op)?BillingPolicy.CONSENT:null,result,at(clock.instant()));
     }
     public BillingViews.Registration register(long user,String key,BillingRequests.Registration r) {
+        if(normal.enabled()) throw BillingException.conflict("AUTOMATIC_PAYMENT_DISABLED");
         return locked(user,()->{
             String body=r.purpose()+"|"+r.planId()+"|"+r.priceVersion()+"|"+r.consentVersion();
             ensureNoRefund(user);
@@ -171,6 +173,7 @@ public class BillingService {
                 properties.returnOrigin()+"/billing/auth/success"+query,properties.returnOrigin()+"/billing/auth/fail"+query);
     }
     public BillingViews.Session complete(long user,String id,String key,BillingRequests.Complete r) {
+        if(normal.enabled()) throw BillingException.conflict("AUTOMATIC_PAYMENT_DISABLED");
         String body=BillingSecrets.hash(r.authKey())+"|"+r.customerKey()+"|"+r.state();
         Row session=locked(user,()->{
             Row t=owned("billing_sessions",id,user);
@@ -253,13 +256,17 @@ public class BillingService {
             int before=Integer.MAX_VALUE;
             if(cursor!=null) { try { before=Integer.parseInt(cursor); if(before<1) throw BillingException.invalid(); } catch(NumberFormatException e) { throw BillingException.invalid(); } }
             var rows=ledger.list("select * from billing_invoices where user_id=? and cycle_no<? order by cycle_no desc limit 21",user,before);
-            var items=rows.stream().limit(20).map(r->{ Row a=lastAttempt(r.text("id")); return new BillingViews.Invoice(r.text("id"),r.text("plan_id"),r.number("amount"),"KRW",r.time("period_start"),r.time("period_end"),r.text("status"),a==null?null:a.text("status"),r.time("paid_at"),
-                    ledger.list("select status from billing_refunds where invoice_id=?",r.text("id")).stream().findFirst().map(x->x.text("status")).orElse(null),
-                    ledger.list("select canceled_at from billing_refunds where invoice_id=?",r.text("id")).stream().findFirst().map(x->x.time("canceled_at")).orElse(null)); }).toList();
+            var items=rows.stream().limit(20).map(r->{ Row a=lastAttempt(r.text("id"));
+                Row n=normal.enabled()?ledger.list("select * from billing_normal_orders where invoice_id=?",r.text("id")).stream().findFirst().orElse(null):null;
+                String payment=n==null?(a==null?null:a.text("status")):switch(n.text("status")) { case "PAID","CANCELED" -> "SUCCEEDED"; case "PENDING" -> "WAITING_FOR_DEPOSIT"; case "FAILED" -> "DECLINED"; default -> n.text("status"); };
+                return new BillingViews.Invoice(r.text("id"),r.text("plan_id"),r.number("amount"),"KRW",r.time("period_start"),r.time("period_end"),r.text("status"),payment,r.time("paid_at"),
+                    n!=null?n.text("refund_status"):ledger.list("select status from billing_refunds where invoice_id=?",r.text("id")).stream().findFirst().map(x->x.text("status")).orElse(null),
+                    n!=null?n.time("canceled_at"):ledger.list("select canceled_at from billing_refunds where invoice_id=?",r.text("id")).stream().findFirst().map(x->x.time("canceled_at")).orElse(null)); }).toList();
             return new BillingViews.InvoicePage(items,rows.size()>20?Long.toString(rows.get(19).number("cycle_no")):null);
         });
     }
     public BillingViews.Subscription cancel(long user,String key) {
+        if(normal.enabled()) throw BillingException.conflict("AUTOMATIC_PAYMENT_DISABLED");
         return locked(user,()->{
             if(command(user,"CANCEL",key,"")!=null) return view(sub(user));
             ensureNoFlight(user);
@@ -285,6 +292,7 @@ public class BillingService {
         ledger.update("update billing_invoices set status='VOID' where user_id=? and status='OPEN'",user);
     }
     public BillingViews.Subscription resume(long user,String key,String consentVersion) {
+        if(normal.enabled()) throw BillingException.conflict("AUTOMATIC_PAYMENT_DISABLED");
         return locked(user,()->{
             if(command(user,"RESUME",key,consentVersion)!=null) return view(sub(user));
             consent(consentVersion); ensureNoFlight(user); Row s=sub(user);
@@ -295,6 +303,7 @@ public class BillingService {
         });
     }
     public BillingViews.Accepted retry(long user,String invoice,String key) {
+        if(normal.enabled()) throw BillingException.conflict("AUTOMATIC_PAYMENT_DISABLED");
         return locked(user,()->{
             Row i=owned("billing_invoices",invoice,user);
             if(command(user,"RETRY:"+invoice,key,"")!=null) return new BillingViews.Accepted(invoice,i.text("status"));
@@ -310,6 +319,7 @@ public class BillingService {
             throw BillingException.conflict("REFUND_IN_PROGRESS");
     }
     private void ensureNoFlight(long user) {
+        if(normal.enabled() && !ledger.list("select id from billing_normal_orders where user_id=? and (status in ('CONFIRMING','UNKNOWN','PENDING','REVIEW_REQUIRED') or refund_status in ('PROCESSING','UNKNOWN','REVIEW_REQUIRED'))",user).isEmpty()) throw BillingException.conflict("BILLING_IN_PROGRESS");
         ensureNoRefund(user);
         if(!ledger.list("select id from billing_attempts where user_id=? and status in ('DISPATCHING','UNKNOWN','REVIEW_REQUIRED')",user).isEmpty()) throw BillingException.conflict("BILLING_IN_PROGRESS");
     }
@@ -343,6 +353,7 @@ public class BillingService {
     public static String uuid() { return UUID.randomUUID().toString(); }
     /** 내부 작업기 진입점. 공개 즉시 청구 API는 제공하지 않는다. */
     public void processOne() {
+        if(normal.enabled()) return;
         requireEnabled();
         var rows=ledger.list("select id,user_id from billing_attempts where status='READY' or (status in ('DISPATCHING','UNKNOWN') and (lease_until is null or lease_until<=?)) order by created_at limit 1",at(clock.instant()));
         if(rows.isEmpty()) return;
@@ -426,6 +437,7 @@ public class BillingService {
                 rejected?"DECLINED":"UNKNOWN",code,rejected?null:at(clock.instant().plusSeconds(180)),id); return null; });
     }
     public void prepareRenewals() {
+        if(normal.enabled()) return;
         requireEnabled();
         var due=ledger.list("select user_id from billing_subscriptions s where status='ACTIVE' and cancel_at_period_end=false and next_charge_at<=? and next_charge_at>? and not exists (select 1 from billing_invoices i where i.user_id=s.user_id and i.status='OPEN') and exists (select 1 from billing_methods m where m.id=s.default_method_id and m.status='ACTIVE') order by next_charge_at limit 50",
                 at(clock.instant()),at(clock.instant().atZone(BillingPolicy.SEOUL).minusMonths(1).toInstant()));

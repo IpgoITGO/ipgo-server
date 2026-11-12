@@ -82,6 +82,11 @@ on:
         required: false
         default: false
         type: boolean
+      normal_payment_enabled:
+        description: "Enable one-off TEST payments; disables automatic billing (requires prepared checkout_secret_key)"
+        required: false
+        default: false
+        type: boolean
       billing_test_enabled:
         description: "Explicitly enable TEST billing API and worker for the approved SHA (never LIVE)"
         required: false
@@ -123,6 +128,7 @@ jobs:
     env:
       DEPLOYMENT_SOURCE_SHA: ${{ inputs.source_sha || github.sha }}
       EXPECTED_SHA: ${{ inputs.expected_sha }}
+      NORMAL_PAYMENT_ENABLED: ${{ inputs.normal_payment_enabled }}
       BILLING_TEST_ENABLED: ${{ inputs.billing_test_enabled }}
       BILLING_TEST_SECRET_ARN: ${{ inputs.billing_test_secret_arn }}
       BILLING_RETURN_ORIGIN: ${{ inputs.billing_return_origin }}

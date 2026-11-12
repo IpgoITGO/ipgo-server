@@ -48,10 +48,12 @@ public class DashboardService {
     private final UploadFileRepository uploads;
     private final JdbcTemplate jdbc;
     private final Clock clock;
+    private final CurrentProducts current;
 
     public DashboardService(WarehouseService warehouses, CalculationRunRepository runs,
             CalculationResultRepository results, ProductRepository products,
-            ReplenishmentSettingRepository settings, UploadFileRepository uploads, JdbcTemplate jdbc, Clock clock) {
+            ReplenishmentSettingRepository settings, UploadFileRepository uploads, JdbcTemplate jdbc, Clock clock,
+            CurrentProducts current) {
         this.warehouses = warehouses;
         this.runs = runs;
         this.results = results;
@@ -60,6 +62,7 @@ public class DashboardService {
         this.uploads = uploads;
         this.jdbc = jdbc;
         this.clock = clock;
+        this.current = current;
     }
 
     @Transactional(readOnly = true)
@@ -87,6 +90,8 @@ public class DashboardService {
                 .collect(Collectors.toMap(ReplenishmentSetting::getProductId, Function.identity()));
         ProductSettings defaults = ProductSettings.defaults(warehouse);
         Map<Long, LocalDate> mismatchDates = mismatchDates(run.getId());
+        // #188 덮어쓴 파일에만 있던 상품은 예전 계산 결과에 남아 있어도 보여 주지 않는다.
+        var overwritten = current.overwritten(warehouseId);
 
         List<ReplenishmentNeeds.Item> items = new ArrayList<>();
         List<ReplenishmentNeeds.NotCalculable> notCalculable = new ArrayList<>();
@@ -95,7 +100,7 @@ public class DashboardService {
         for (CalculationResult result : runResults) {
             Product product = byId.get(result.getProductId());
             // 셀러가 사용을 끈 상품은 계산 뒤에 껐더라도 바로 목록에서 뺀다.
-            if (!product.isActive()) continue;
+            if (!product.isActive() || overwritten.contains(product.getId())) continue;
             Integer leadTime = defaults.applying(overrides.get(product.getId())).leadTimeDays();
             switch (NeedJudgment.needStatus(result, run.getAsOfDate(), today, leadTime)) {
                 case NeedJudgment.NEED_NOW -> items.add(new ReplenishmentNeeds.Item(product.getId(), result.getId(),

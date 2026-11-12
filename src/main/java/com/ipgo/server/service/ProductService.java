@@ -30,14 +30,17 @@ public class ProductService {
     private final ReplenishmentSettingRepository settings;
     private final EngineCalculationService calculations;
     private final ReviewCycleSuggestionService suggestions;
+    private final CurrentProducts current;
 
     public ProductService(ProductRepository products, WarehouseService warehouses,
-            ReplenishmentSettingRepository settings, EngineCalculationService calculations, ReviewCycleSuggestionService suggestions) {
+            ReplenishmentSettingRepository settings, EngineCalculationService calculations, ReviewCycleSuggestionService suggestions,
+            CurrentProducts current) {
         this.products = products;
         this.warehouses = warehouses;
         this.settings = settings;
         this.calculations = calculations;
         this.suggestions = suggestions;
+        this.current = current;
     }
 
     @Transactional(readOnly = true)
@@ -45,7 +48,11 @@ public class ProductService {
         if (page < 0 || size < 1 || size > MAX_PAGE_SIZE) throw ProductException.invalidInput();
         // 검색어가 없으면 빈 문자열로 보내 전체를 찾는다. null을 넘기면 PostgreSQL이 값의 타입을 몰라 실패한다.
         String keyword = query == null ? "" : query.strip();
-        Page<Product> result = products.search(userId, keyword, PageRequest.of(page, size, Sort.by("id")));
+        // #188 같은 달을 덮어써서 옛 파일에만 남은 상품은 목록에서 뺀다(행은 남아 설정이 지켜진다).
+        var hidden = new java.util.HashSet<Long>(warehouses.findDefault(userId)
+                .map(w -> current.overwritten(w.getId())).orElse(java.util.Set.of()));
+        hidden.add(-1L);
+        Page<Product> result = products.search(userId, hidden, keyword, PageRequest.of(page, size, Sort.by("id")));
         return new ProductPage(items(userId, result.getContent()), result.getTotalElements(), page, size);
     }
 

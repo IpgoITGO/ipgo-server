@@ -14,7 +14,7 @@
 
 승인된 개발 배포에서 `normal_payment_enabled=true` + `billing_test_enabled=true`와 기존 Secret ARN/복귀 origin을 지정합니다.
 renderer는 `checkout_secret_key` 필드를 `IPGO_PAYMENT_SECRET_KEY`로 참조하며, 별도 새 IAM 권한은 필요하지 않습니다.
-Secret 업데이트·DB V26 적용·Server/Client 배포는 실제 SHA·환경·검증·복구를 정리한 후 별도 승인합니다.
+Secret 업데이트·DB V27 적용·Server/Client 배포는 실제 SHA·환경·검증·복구를 정리한 후 별도 승인합니다.
 기존 Secret JSON의 모든 저장 키를 보존하고 checkout 필드만 추가합니다. 이 문서의 존재는 적용 완료가 아닙니다.
 
 ## API와 상태
@@ -43,4 +43,4 @@ PG 응답의 주문/금액/통화/키/MID 불일치는 REVIEW_REQUIRED이며 이
 새 프론트와 서버는 함께 적용합니다. 기존 프론트는 ONE_TIME을 해석하지 않으므로 단독 배포하지 않습니다.
 롤백은 신규 결제 시작을 중단하고 CONFIRMING/PENDING/UNKNOWN/환불을 먼저 대조한 뒤 직전 승인 SHA·Secret 버전을 복구합니다.
 일반결제를 끄는 renderer 경로는 checkout Secret 참조를 제거합니다. 자동청구를 재활성화할 의도가 없다면
-기존 billing worker도 끄고 레거시 READY 작업이 없는지 확인합니다. V26과 결제 원장은 삭제하지 않습니다.
+기존 billing worker도 끄고 레거시 READY 작업이 없는지 확인합니다. V27과 결제 원장은 삭제하지 않습니다.

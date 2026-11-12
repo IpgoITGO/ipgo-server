@@ -50,7 +50,7 @@ class NormalPaymentIntegrationTests extends DatabaseIntegrationTest {
     @BeforeEach void setup() throws Exception {
         com.ipgo.server.support.UploadTestDatabase.withdrawalSchema(jdbc);
         if(jdbc.queryForObject("select count(*) from information_schema.tables where lower(table_name)='billing_normal_orders'",Integer.class)==0) {
-            String sql=new org.springframework.core.io.ClassPathResource("db/migration/V26__create_normal_payment_orders.sql").getContentAsString(StandardCharsets.UTF_8).split("-- PostgreSQL 전용")[0];
+            String sql=new org.springframework.core.io.ClassPathResource("db/migration/V27__create_normal_payment_orders.sql").getContentAsString(StandardCharsets.UTF_8).split("-- PostgreSQL 전용")[0];
             for(String s:sql.split(";")) if(!s.isBlank()) jdbc.execute(s);
         }
         now=START; when(clock.instant()).thenAnswer(i->now);

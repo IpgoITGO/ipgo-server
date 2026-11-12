@@ -77,7 +77,9 @@ public class PushSubscriptionService {
                 jdbc.update("""
                         UPDATE push_subscriptions SET user_id = ?, endpoint = ?, p256dh = ?, auth_secret = ?, active = TRUE,
                             updated_at = ? WHERE id = ?
-                        """, userId, request.endpoint(), request.keys().p256dh(), request.keys().auth(), now, ids.getFirst());
+                            AND (user_id <> ? OR endpoint <> ? OR p256dh <> ? OR auth_secret <> ? OR active = FALSE)
+                        """, userId, request.endpoint(), request.keys().p256dh(), request.keys().auth(), now, ids.getFirst(),
+                        userId, request.endpoint(), request.keys().p256dh(), request.keys().auth());
                 return new Saved(ids.getFirst(), false);
             }
             jdbc.update("""

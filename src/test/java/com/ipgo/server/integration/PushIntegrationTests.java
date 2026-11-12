@@ -68,6 +68,13 @@ class PushIntegrationTests extends DatabaseIntegrationTest {
                 .satisfies(e -> assertThat(((PushException) e).code()).isEqualTo("PUSH_UNAVAILABLE"));
     }
 
+    @Test void identicalRegistrationPreservesVersionForQueuedDailyDelivery() throws Exception {
+        subscribe(owner, CHROME, "p256-first", "auth-first").andExpect(status().isCreated());
+        var before = jdbc.queryForObject("SELECT updated_at FROM push_subscriptions WHERE user_id=?", java.time.OffsetDateTime.class, owner);
+        subscribe(owner, CHROME, "p256-first", "auth-first").andExpect(status().isOk());
+        assertThat(jdbc.queryForObject("SELECT updated_at FROM push_subscriptions WHERE user_id=?", java.time.OffsetDateTime.class, owner)).isEqualTo(before);
+    }
+
     @Test void sameBrowserIsSavedOnceAndMovesToTheAccountThatRegisteredLast() throws Exception {
         long id = mapper.readTree(subscribe(owner, CHROME, "p256-first", "auth-first").andExpect(status().isCreated())
                 .andReturn().getResponse().getContentAsString()).get("subscriptionId").longValue();

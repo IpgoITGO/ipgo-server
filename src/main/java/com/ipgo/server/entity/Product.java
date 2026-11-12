@@ -38,6 +38,12 @@ public class Product {
     @Column(name = "is_active", nullable = false)
     private boolean active;
 
+    @Column(name = "activation_mode", nullable = false, length = 20)
+    private String activationMode = "AUTO";
+
+    @Column(name = "auto_inactive_reason", length = 30)
+    private String autoInactiveReason;
+
     @Column(name = "explanation_mode", length = 20)
     private String explanationMode;
 
@@ -56,6 +62,20 @@ public class Product {
     public void update(String skuName, Long unitCost, Boolean active) {
         if (skuName != null) this.skuName = skuName;
         if (unitCost != null) this.unitCost = BigDecimal.valueOf(unitCost);
-        if (active != null) this.active = active;
+        if (active != null) {
+            this.active = active;
+            this.activationMode = active ? "MANUAL_ON" : "MANUAL_OFF";
+            this.autoInactiveReason = null;
+        }
+    }
+    public void selectAutomatic() {
+        if (!"AUTO".equals(activationMode)) autoInactiveReason = null;
+        activationMode = "AUTO";
+    }
+
+    public void applyAutomaticActivity(boolean active) {
+        if (!"AUTO".equals(activationMode)) return;
+        this.active = active;
+        this.autoInactiveReason = active ? null : "NO_RECENT_RECORDS";
     }
 }

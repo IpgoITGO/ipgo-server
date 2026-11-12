@@ -34,8 +34,9 @@ public class ProductController {
     // P1 상품 목록 · 검색
     @GetMapping
     public ProductPage list(Principal principal, @RequestParam(required = false) String query,
+            @RequestParam(defaultValue = "false") boolean includeAutoInactive,
             @RequestParam(defaultValue = "0") int page, @RequestParam(defaultValue = "20") int size) {
-        return productService.list(userId(principal), query, page, size);
+        return productService.list(userId(principal), query, page, size, includeAutoInactive);
     }
 
     // P2 상품명 · 원가 · 사용 여부 수정

@@ -29,6 +29,7 @@ import tools.jackson.databind.json.JsonMapper;
 import static org.assertj.core.api.Assertions.*;
 
 @SpringBootTest
+@org.springframework.context.annotation.Import(com.ipgo.server.support.ProductActivityTestSchema.class)
 class EngineRealFlowIntegrationTests {
     @TempDir static Path root;
     @Autowired JdbcTemplate jdbc;

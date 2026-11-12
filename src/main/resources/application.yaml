@@ -66,6 +66,9 @@ ipgo:
   auth:
     jwt-secret: ${IPGO_JWT_SECRET:}
     cookie-secure: ${IPGO_AUTH_COOKIE_SECURE:true}
+  push:
+    # #190 Web Push VAPID 공개키(base64url). 비어 있으면 알림 등록 API가 503 PUSH_UNAVAILABLE을 돌려준다.
+    public-key: ${IPGO_PUSH_PUBLIC_KEY:}
   upload:
     storage: ${IPGO_UPLOAD_STORAGE:local}
     directory: ${IPGO_UPLOAD_DIR:./storage/uploads}

@@ -92,7 +92,7 @@ migration_count="$(docker exec "${database_container}" \
 table_count="$(docker exec "${database_container}" \
   psql -U ipgo_migrator -d ipgo -Atc \
   "SELECT COUNT(*) FROM pg_tables WHERE schemaname = 'public' AND tablename <> 'flyway_schema_history'")"
-if [[ "${migration_count}" != "25" || "${table_count}" != "37" ]]; then
+if [[ "${migration_count}" != "26" || "${table_count}" != "39" ]]; then
   echo "unexpected schema: migrations=${migration_count}, tables=${table_count}" >&2
   exit 1
 fi
@@ -224,5 +224,26 @@ UPDATE users SET email='withdrawn-900@withdrawn.invalid', company_name=NULL, man
 DELETE FROM users WHERE id=900;
 SQL
 expect_denied ipgo_ai_reader "SELECT withdrawn_at FROM users"
+
+# V26: 서버 역할은 브라우저 알림 구독과 알림 설정을 쓰고 지운다(#190). 같은 브라우저는 한 번만, 시각은 0~23시만 받는다.
+# 구독 주소 · 키는 AI 역할이 볼 수 없다.
+docker exec -i "${database_container}" psql -v ON_ERROR_STOP=1 -U ipgo_server -d ipgo >/dev/null <<'SQL'
+INSERT INTO users(id,email,password_hash) VALUES (901,'push-check@example.test','test-only-hash');
+INSERT INTO push_subscriptions(user_id,endpoint_hash,endpoint,p256dh,auth_secret,created_at,updated_at)
+VALUES (901,repeat('a',64),'https://fcm.googleapis.com/fcm/send/check','p256','auth',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP);
+UPDATE push_subscriptions SET active=FALSE WHERE user_id=901;
+INSERT INTO notification_settings(user_id,kind,channel,enabled,send_hour,time_zone,updated_at)
+VALUES (901,'REPLENISHMENT_NEEDED','PUSH',TRUE,9,'Asia/Seoul',CURRENT_TIMESTAMP);
+SQL
+expect_denied ipgo_server "INSERT INTO push_subscriptions(user_id,endpoint_hash,endpoint,p256dh,auth_secret,created_at,updated_at) VALUES (901,repeat('a',64),'https://fcm.googleapis.com/x','p','a',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)"
+expect_denied ipgo_server "UPDATE notification_settings SET send_hour=24 WHERE user_id=901"
+expect_denied ipgo_server "INSERT INTO notification_settings(user_id,kind,channel,enabled,send_hour,time_zone,updated_at) VALUES (901,'REPLENISHMENT_NEEDED','SMS',TRUE,9,'Asia/Seoul',CURRENT_TIMESTAMP)"
+expect_denied ipgo_ai_reader "SELECT endpoint FROM push_subscriptions"
+expect_denied ipgo_ai_service_reader "SELECT * FROM notification_settings"
+# 회원 행을 지우면 구독 · 설정도 같이 지워진다.
+docker exec "${database_container}" psql -v ON_ERROR_STOP=1 -U ipgo_server -d ipgo -c "DELETE FROM users WHERE id=901" >/dev/null
+docker exec "${database_container}" psql -v ON_ERROR_STOP=1 -U ipgo_server -d ipgo -Atc \
+  "SELECT CASE WHEN (SELECT COUNT(*) FROM push_subscriptions WHERE user_id=901) + (SELECT COUNT(*) FROM notification_settings WHERE user_id=901) = 0 THEN 'ok' ELSE 'left' END" \
+  | grep -qx ok
 
 echo "PostgreSQL migrations, tenant integrity, and database roles verified."

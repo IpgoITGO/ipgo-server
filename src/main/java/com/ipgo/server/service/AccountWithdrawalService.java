@@ -44,6 +44,9 @@ public class AccountWithdrawalService {
             billing.stopForWithdrawal(userId);
             // 2) 모든 로그인 세션을 폐기한다. 서버가 요청마다 세션을 확인하므로 이미 받은 access token도 바로 막힌다.
             jdbc.update("UPDATE auth_sessions SET revoked = TRUE WHERE user_id = ?", userId);
+            // #190 알림 구독(브라우저 주소 · 키)과 알림 설정도 지워 탈퇴 뒤에는 알림이 가지 않게 한다.
+            jdbc.update("DELETE FROM push_subscriptions WHERE user_id = ?", userId);
+            jdbc.update("DELETE FROM notification_settings WHERE user_id = ?", userId);
             // 3) 개인정보를 지운다. 이메일은 회원 번호로 바꿔 같은 이메일로 바로 다시 가입할 수 있게 하고,
             //    비밀번호는 아무도 모르는 값으로 바꾼다. .invalid는 실제로 쓸 수 없는 예약 도메인이다.
             //    withdrawn_at이 생기면 늦게 도착한 결제 요청도 BillingService에서 ACCOUNT_WITHDRAWN으로 거절된다.

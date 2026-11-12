@@ -14,6 +14,8 @@ erDiagram
     users ||--o{ warehouses : owns
     users ||--o{ products : owns
     users ||--o{ auth_sessions : logs_in
+    users ||--o{ push_subscriptions : receives
+    users ||--o{ notification_settings : chooses
     auth_sessions ||--o{ refresh_tokens : rotates
 
     warehouses ||--o{ inventory_units : stores
@@ -61,6 +63,7 @@ erDiagram
 | 내 입고량 | `product_planned_quantities` | V21 | 상품당 1행, 수량 양수, 출처 4종, 기준 계산 FK (#119) |
 | 유통기한 | `inventory_units.expiry_date`, `warehouses.expiry_imminent_days` | V23 | LOT별 유통기한(없으면 NULL), 임박 기준 1~365일(NULL이면 30일) (#168) |
 | 회원 탈퇴 | `users.withdrawn_at` | V24 | 탈퇴 시각(없으면 NULL). 탈퇴 회원 행은 결제 원장·보관 원본 때문에 남기고 개인정보만 지움 (#172) |
+| 알림 | `push_subscriptions`, `notification_settings` | V26 | 브라우저 구독은 endpoint hash unique(기기마다 1행), 설정은 회원·알림 종류·받는 방법(`PUSH`·`EMAIL`)마다 1행, 시각 0~23시. 회원 삭제 시 cascade, 탈퇴 시 서버가 지움, AI 역할 접근 없음 (#190) |
 
 V12의 PostgreSQL trigger는 다음 교차 연결을 거부합니다.
 

@@ -23,9 +23,9 @@ public class AccountRecoveryException extends RuntimeException {
         return new AccountRecoveryException(HttpStatus.NOT_FOUND, "NOT_FOUND", "가입한 계정이 없어요.", null);
     }
 
-    public static AccountRecoveryException invalidBusinessNumber() {
-        return new AccountRecoveryException(HttpStatus.BAD_REQUEST, "INVALID_INPUT", "사업자등록번호 10자리를 확인해 주세요.",
-                "businessNumber");
+    // 공백이나 "(주)"만 넣어서 비교할 글자가 남지 않은 칸
+    public static AccountRecoveryException blankField(String field) {
+        return new AccountRecoveryException(HttpStatus.BAD_REQUEST, "INVALID_INPUT", "입력값의 형식과 길이를 확인해주세요.", field);
     }
 
     public static AccountRecoveryException invalidCode() {

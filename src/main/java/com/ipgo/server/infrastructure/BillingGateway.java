@@ -5,7 +5,10 @@ public interface BillingGateway {
         @Override public String toString() { return "Issued[redacted]"; }
     }
     record Charge(String orderId, String customerKey, long amount, String orderName) { }
-    record Payment(String paymentKey, String orderId, long totalAmount, String currency, String status, String merchantId, java.time.Instant approvedAt, long balanceAmount, java.time.Instant canceledAt) {
+    record Payment(String paymentKey, String orderId, long totalAmount, String currency, String status, String merchantId, java.time.Instant approvedAt, long balanceAmount, java.time.Instant canceledAt, String method, String virtualRefundStatus) {
+        public Payment(String paymentKey,String orderId,long totalAmount,String currency,String status,String merchantId,java.time.Instant approvedAt,long balanceAmount,java.time.Instant canceledAt) {
+            this(paymentKey,orderId,totalAmount,currency,status,merchantId,approvedAt,balanceAmount,canceledAt,null,null);
+        }
         public Payment(String paymentKey,String orderId,long totalAmount,String currency,String status,String merchantId,java.time.Instant approvedAt) {
             this(paymentKey,orderId,totalAmount,currency,status,merchantId,approvedAt,totalAmount,null);
         }

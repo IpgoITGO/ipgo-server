@@ -94,7 +94,7 @@ migration_count="$(docker exec "${database_container}" \
 table_count="$(docker exec "${database_container}" \
   psql -U ipgo_migrator -d ipgo -Atc \
   "SELECT COUNT(*) FROM pg_tables WHERE schemaname = 'public' AND tablename <> 'flyway_schema_history'")"
-if [[ "${migration_count}" != "29" || "${table_count}" != "42" ]]; then
+if [[ "${migration_count}" != "30" || "${table_count}" != "42" ]]; then
   echo "unexpected schema: migrations=${migration_count}, tables=${table_count}" >&2
   exit 1
 fi
@@ -351,5 +351,29 @@ rollback_after_old=$(docker exec "${database_container}" psql -U ipgo_server -d 
 docker exec -i "${database_container}" psql -v ON_ERROR_STOP=1 -U ipgo_server -d ipgo < "$rollback_sql" >/dev/null
 [[ "$rollback_after_old" == "$(docker exec "${database_container}" psql -U ipgo_server -d ipgo -Atc "$rollback_hash_sql")" ]] || { echo 'repeated preparation changed old-version selections' >&2; exit 1; }
 echo "Product activation rollback: three constraint conflicts, silent AUTO mismatch, atomic failure, preserved settings and old writes verified."
+
+# V30: refund-account retry state, partial unique index, and protected columns.
+docker exec -i "${database_container}" psql -v ON_ERROR_STOP=1 -U ipgo_server -d ipgo >/dev/null <<'SQL'
+BEGIN;
+INSERT INTO users(id,email,password_hash,company_name,manager_name) VALUES (990029,'v29-fixture@example.test','fixture','fixture','fixture');
+INSERT INTO billing_subscriptions(user_id,merchant_id,mode,status,plan_id,price_version,amount,trial_end,customer_key)
+VALUES (990029,'fixture','TEST','ACTIVE','seller','fixture',500,NOW()+INTERVAL '1 day','v29-customer');
+INSERT INTO billing_invoices(id,user_id,cycle_no,plan_id,price_version,amount,order_name,currency,period_start,period_end,status)
+VALUES ('00000000-0000-0000-0000-000000000029',990029,1,'seller','fixture',500,'fixture','KRW',NOW(),NOW()+INTERVAL '1 day','PAID'),
+('00000000-0000-0000-0000-000000000030',990029,2,'seller','fixture',500,'fixture','KRW',NOW(),NOW()+INTERVAL '1 day','PAID');
+INSERT INTO billing_normal_orders(id,user_id,invoice_id,command_key,body_hash,customer_key,status,provider_key,created_at,expires_at,refund_status,payment_method)
+VALUES ('v29-one',990029,'00000000-0000-0000-0000-000000000029','v29-command','fixture','v29-customer','PAID','v29-provider',NOW(),NOW()+INTERVAL '1 hour','ACCOUNT_REQUIRED','가상계좌');
+DO $$ BEGIN
+    BEGIN
+        INSERT INTO billing_normal_orders(id,user_id,invoice_id,command_key,body_hash,customer_key,status,provider_key,created_at,expires_at)
+        VALUES ('v29-two',990029,'00000000-0000-0000-0000-000000000030','v29-command-two','fixture','v29-customer','OPEN','v29-provider-two',NOW(),NOW()+INTERVAL '1 hour');
+        RAISE EXCEPTION 'refund-account retry must block a second open order';
+    EXCEPTION WHEN unique_violation THEN NULL; END;
+END $$;
+SELECT refund_account_ciphertext,refund_account_fingerprint FROM billing_normal_orders WHERE id='v29-one';
+ROLLBACK;
+SQL
+expect_denied ipgo_ai_reader "SELECT refund_account_ciphertext FROM billing_normal_orders"
+expect_denied ipgo_ai_service_reader "SELECT refund_account_ciphertext FROM billing_normal_orders"
 
 echo "PostgreSQL migrations, tenant integrity, and database roles verified."

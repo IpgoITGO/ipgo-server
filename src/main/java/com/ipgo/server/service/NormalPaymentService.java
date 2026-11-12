@@ -29,10 +29,11 @@ public class NormalPaymentService {
     private final BillingLedger ledger;
     private final NormalPaymentGateway gateway;
     private final Clock clock;
+    private final BillingSecrets secrets;
     public record Checkout(String orderId,String customerKey,long amount,String orderName,String successUrl,String failUrl,Instant expiresAt) { }
     public record Result(String orderId,String invoiceId,String status,String refundStatus,Instant canceledAt) { }
-    public NormalPaymentService(NormalPaymentProperties p,BillingProperties bp,BillingService b,BillingLedger l,NormalPaymentGateway g,Clock c) {
-        properties=p; billingProperties=bp; billing=b; ledger=l; gateway=g; clock=c;
+    public NormalPaymentService(NormalPaymentProperties p,BillingProperties bp,BillingService b,BillingLedger l,NormalPaymentGateway g,Clock c,BillingSecrets s) {
+        properties=p; billingProperties=bp; billing=b; ledger=l; gateway=g; clock=c; secrets=s;
     }
     private <T> T locked(long user,Supplier<T> action) {
         if(!properties.enabled()) throw new BillingException(503,"PAYMENT_DISABLED","일반결제를 준비 중입니다.");
@@ -65,7 +66,7 @@ public class NormalPaymentService {
                 ledger.update("update billing_normal_orders set status='FAILED' where id=?",stale.text("id"));
                 ledger.update("update billing_invoices set status='VOID' where id=?",stale.text("invoice_id"));
             }
-            if(!ledger.list("select id from billing_normal_orders where user_id=? and (status in ('CONFIRMING','PENDING','UNKNOWN','REVIEW_REQUIRED') or refund_status in ('PROCESSING','UNKNOWN','REVIEW_REQUIRED'))",user).isEmpty()) throw BillingException.conflict("BILLING_IN_PROGRESS");
+            if(!ledger.list("select id from billing_normal_orders where user_id=? and (status in ('CONFIRMING','PENDING','UNKNOWN','REVIEW_REQUIRED') or refund_status in ('PROCESSING','UNKNOWN','ACCOUNT_REQUIRED','REVIEW_REQUIRED'))",user).isEmpty()) throw BillingException.conflict("BILLING_IN_PROGRESS");
             if(!ledger.list("select id from billing_attempts where user_id=? and status in ('READY','DISPATCHING','UNKNOWN','REVIEW_REQUIRED')",user).isEmpty()
                     || !ledger.list("select id from billing_refunds where user_id=? and status<>'CANCELED'",user).isEmpty()) throw BillingException.conflict("BILLING_IN_PROGRESS");
             Row sub=ledger.one("select * from billing_subscriptions where user_id=?",user);
@@ -100,7 +101,7 @@ public class NormalPaymentService {
     }
     public Result get(long user,String id) {
         Row o=locked(user,()->owned(user,id));
-        if(List.of("CONFIRMING","UNKNOWN","PENDING").contains(o.text("status")) && (o.time("lease_until")==null || !clock.instant().isBefore(o.time("lease_until")))) {
+        if(o.text("refund_status")==null && List.of("CONFIRMING","UNKNOWN","PENDING").contains(o.text("status")) && (o.time("lease_until")==null || !clock.instant().isBefore(o.time("lease_until")))) {
             boolean claim=locked(user,()->{
                 Row fresh=owned(user,id);
                 if(!List.of("CONFIRMING","UNKNOWN","PENDING").contains(fresh.text("status")) || (fresh.time("lease_until")!=null && clock.instant().isBefore(fresh.time("lease_until")))) return false;
@@ -118,7 +119,7 @@ public class NormalPaymentService {
                 Row fresh=owned(user,id);
                 if(fresh.time("lease_until")==null || clock.instant().isBefore(fresh.time("lease_until"))) return false;
                 if(!clock.instant().isBefore(fresh.time("refund_started_at").plus(Duration.ofDays(14)))) {
-                    ledger.update("update billing_normal_orders set refund_status='REVIEW_REQUIRED',lease_until=null where id=?",id); return false;
+                    refundReview(id); return false;
                 }
                 ledger.update("update billing_normal_orders set lease_until=? where id=?",at(clock.instant().plusSeconds(180)),id); return true;
             });
@@ -127,7 +128,7 @@ public class NormalPaymentService {
         return locked(user,()->view(owned(user,id)));
     }
     public List<Result> pending(long user) {
-        return locked(user,()->ledger.list("select * from billing_normal_orders where user_id=? and (status in ('CONFIRMING','PENDING','UNKNOWN','REVIEW_REQUIRED') or refund_status in ('PROCESSING','UNKNOWN','REVIEW_REQUIRED')) order by created_at",user).stream().map(this::view).toList());
+        return locked(user,()->ledger.list("select * from billing_normal_orders where user_id=? and (status in ('CONFIRMING','PENDING','UNKNOWN','REVIEW_REQUIRED') or refund_status in ('PROCESSING','UNKNOWN','ACCOUNT_REQUIRED','REVIEW_REQUIRED')) order by created_at",user).stream().map(this::view).toList());
     }
     private boolean matches(BillingGateway.Payment p,Row o,Row i) {
         return p!=null && o.text("id").equals(p.orderId()) && o.text("payment_key").equals(p.paymentKey())
@@ -143,10 +144,11 @@ public class NormalPaymentService {
                 Row fresh=owned(user,id);
                 if(!List.of("CONFIRMING","UNKNOWN","PENDING").contains(fresh.text("status"))) return null;
                 if(!matches(p,fresh,i)) { review(id); return null; }
+                if(p.method()!=null && !p.method().isBlank()) ledger.update("update billing_normal_orders set payment_method=? where id=?",p.method(),id);
                 if("DONE".equals(p.status()) && p.balanceAmount()==i.number("amount") && p.approvedAt()!=null
                         && !p.approvedAt().isAfter(clock.instant().plusSeconds(60)) && !p.approvedAt().isBefore(o.time("created_at"))) {
                     Instant start=p.approvedAt(),end=BillingPolicy.boundary(start,1);
-                    ledger.update("update billing_normal_orders set status='PAID',merchant_id=?,lease_until=null where id=?",p.merchantId(),id);
+                    ledger.update("update billing_normal_orders set status='PAID',merchant_id=?,lease_until=case when refund_status is null then null else lease_until end where id=?",p.merchantId(),id);
                     ledger.update("update billing_invoices set status='PAID',paid_at=?,period_start=?,period_end=? where id=?",at(start),at(start),at(end),i.text("id"));
                     ledger.update("update billing_subscriptions set status='ACTIVE',plan_id=?,price_version=?,amount=?,period_start=?,period_end=?,anchor_at=?,cycle_no=?,cancel_at_period_end=true,next_charge_at=null,default_method_id=null where user_id=?",
                             i.text("plan_id"),i.text("price_version"),i.number("amount"),at(start),at(end),at(start),i.number("cycle_no"),user);
@@ -171,15 +173,28 @@ public class NormalPaymentService {
     private void review(String id) { ledger.update("update billing_normal_orders set status='REVIEW_REQUIRED',lease_until=null where id=?",id); }
     public boolean ownsInvoice(long user,String id) { return properties.enabled() && !ledger.list("select id from billing_normal_orders where invoice_id=? and user_id=?",id,user).isEmpty(); }
     public BillingViews.Refund refund(long user,String invoiceId,String key,String reason) {
+        return refund(user,invoiceId,key,reason,null);
+    }
+    public BillingViews.Refund refund(long user,String invoiceId,String key,String reason,NormalPaymentGateway.RefundAccount account) {
         if(key==null || !key.matches("[A-Za-z0-9_-]{8,100}") || reason==null || reason.isBlank() || reason.length()>200) throw BillingException.invalid();
+        String payload=account==null?null:account.bank()+"\n"+account.accountNumber()+"\n"+account.holderName();
+        String fingerprint=payload==null?null:secrets.fingerprint(payload);
         String id=locked(user,()->{
             Row o=ledger.one("select * from billing_normal_orders where invoice_id=? and user_id=?",invoiceId,user);
             Row i=invoice(o); Row sub=ledger.one("select * from billing_subscriptions where user_id=?",user);
-            if(o.text("refund_reason")!=null && !reason.equals(o.text("refund_reason"))) throw BillingException.conflict("REFUND_REASON_CHANGED");
-            if(o.text("refund_status")!=null) return null;
-            if(!"PAID".equals(o.text("status")) || i.number("cycle_no")!=sub.number("cycle_no")) throw BillingException.conflict("ONLY_CURRENT_PAYMENT_REFUNDABLE");
-            if(!pending(user).isEmpty()) throw BillingException.conflict("BILLING_IN_PROGRESS");
-            ledger.update("update billing_normal_orders set refund_status='PROCESSING',refund_reason=?,refund_key=?,refund_started_at=?,lease_until=? where id=?",reason,uuid(),at(clock.instant()),at(clock.instant().plusSeconds(180)),o.text("id")); return o.text("id");
+            if(o.text("refund_reason")!=null && !reason.equals(o.text("refund_reason")) && !"ACCOUNT_REQUIRED".equals(o.text("refund_status"))) throw BillingException.conflict("REFUND_REASON_CHANGED");
+            if(o.text("refund_status")!=null && !"ACCOUNT_REQUIRED".equals(o.text("refund_status"))) {
+                if(payload!=null && !fingerprint.equals(o.text("refund_account_fingerprint")) && List.of("PROCESSING","UNKNOWN").contains(o.text("refund_status")))
+                    throw BillingException.conflict("REFUND_DETAILS_CHANGED");
+                return null;
+            }
+            boolean paid="PAID".equals(o.text("status")) && i.number("cycle_no")==sub.number("cycle_no");
+            if(!paid && !"PENDING".equals(o.text("status"))) throw BillingException.conflict("ONLY_CURRENT_PAYMENT_REFUNDABLE");
+            if(pending(user).stream().anyMatch(row->!row.orderId().equals(o.text("id")))) throw BillingException.conflict("BILLING_IN_PROGRESS");
+            if(account!=null && o.text("payment_method")!=null && !"가상계좌".equals(o.text("payment_method"))) throw BillingException.invalid();
+            ledger.update("update billing_normal_orders set refund_status='PROCESSING',refund_reason=?,refund_key=?,refund_started_at=?,lease_until=?,refund_account_ciphertext=?,refund_account_fingerprint=? where id=?",
+                    reason,uuid(),at(clock.instant()),at(clock.instant().plusSeconds(180)),payload==null?null:secrets.encrypt(payload),fingerprint,o.text("id"));
+            return o.text("id");
         });
         if(id!=null) performRefund(user,id,true);
         return locked(user,()->{
@@ -187,22 +202,66 @@ public class NormalPaymentService {
             return new BillingViews.Refund(invoiceId,o.text("refund_status"),o.time("canceled_at"));
         });
     }
+    private void refundReview(String id) {
+        ledger.update("update billing_normal_orders set refund_status='REVIEW_REQUIRED',lease_until=null,refund_account_ciphertext=null,refund_account_fingerprint=null where id=?",id);
+    }
+    private void accountRequired(String id) {
+        ledger.update("update billing_normal_orders set refund_status='ACCOUNT_REQUIRED',lease_until=null,refund_account_ciphertext=null,refund_account_fingerprint=null where id=?",id);
+    }
+    private NormalPaymentGateway.RefundAccount refundAccount(Row o) {
+        if(o.text("refund_account_ciphertext")==null) return null;
+        String[] parts=secrets.decrypt(o.text("refund_account_ciphertext")).split("\n",-1);
+        if(parts.length!=3) throw new IllegalStateException("Invalid encrypted refund account");
+        return new NormalPaymentGateway.RefundAccount(parts[0],parts[1],parts[2]);
+    }
     private void performRefund(long user,String id,boolean cancel) {
-        Row o=owned(user,id),i=invoice(o);
         try {
-            var p=gateway.lookup(o.text("payment_key"));
-            if(matches(p,o,i) && "DONE".equals(p.status()) && p.balanceAmount()==i.number("amount") && cancel) p=gateway.cancel(p.paymentKey(),o.text("refund_reason"),o.text("refund_key"));
+            Row initial=owned(user,id),initialInvoice=invoice(initial);
+            var p=gateway.lookup(initial.text("payment_key"));
+            if(!matches(p,initial,initialInvoice)) { locked(user,()->{ refundReview(id); return null; }); return; }
+            String method=p.method();
+            if(method!=null && !method.isBlank()) locked(user,()->{ ledger.update("update billing_normal_orders set payment_method=? where id=?",method,id); return null; });
+            // A deposit racing an unpaid-account cancellation must first be reconciled.
+            // This only queries; the existing paid path grants exactly one period.
+            if("DONE".equals(p.status()) && initialInvoice.time("paid_at")==null) {
+                perform(user,id,false);
+                if(invoice(owned(user,id)).time("paid_at")==null) { locked(user,()->{ refundReview(id); return null; }); return; }
+            }
+            Row o=owned(user,id),i=invoice(o);
+            boolean virtual="가상계좌".equals(p.method()) || "가상계좌".equals(o.text("payment_method"));
+            if(cancel && ("DONE".equals(p.status()) || "WAITING_FOR_DEPOSIT".equals(p.status()))) {
+                if(("DONE".equals(p.status()) && p.balanceAmount()!=i.number("amount")) || ("WAITING_FOR_DEPOSIT".equals(p.status()) && !virtual)) {
+                    locked(user,()->{ refundReview(id); return null; }); return;
+                }
+                var account=refundAccount(o);
+                if(virtual && "DONE".equals(p.status()) && account==null) { locked(user,()->{ accountRequired(id); return null; }); return; }
+                p=virtual && "DONE".equals(p.status())?gateway.cancel(p.paymentKey(),o.text("refund_reason"),o.text("refund_key"),account)
+                        :gateway.cancel(p.paymentKey(),o.text("refund_reason"),o.text("refund_key"));
+            }
             var result=p;
             locked(user,()->{
-                if(matches(result,o,i) && "CANCELED".equals(result.status()) && result.balanceAmount()==0 && result.canceledAt()!=null
-                        && !result.canceledAt().isBefore(i.time("paid_at")) && !result.canceledAt().isAfter(clock.instant().plusSeconds(60))) {
-                    ledger.update("update billing_normal_orders set status='CANCELED',refund_status='CANCELED',canceled_at=?,lease_until=null where id=?",at(result.canceledAt()),id);
-                    ledger.update("update billing_invoices set status='VOID' where id=?",i.text("id"));
-                    ledger.update("update billing_subscriptions set status='CANCELED',cancel_at_period_end=true,next_charge_at=null where user_id=? and cycle_no=?",user,i.number("cycle_no"));
+                Row fresh=owned(user,id),inv=invoice(fresh);
+                Instant earliest=inv.time("paid_at")==null?fresh.time("created_at"):inv.time("paid_at");
+                if(matches(result,fresh,inv) && "CANCELED".equals(result.status()) && result.balanceAmount()==0 && result.canceledAt()!=null
+                        && !result.canceledAt().isBefore(earliest) && !result.canceledAt().isAfter(clock.instant().plusSeconds(60))) {
+                    boolean funded=inv.time("paid_at")!=null || result.approvedAt()!=null;
+                    String status="CANCELED";
+                    if(virtual && funded && !"COMPLETED".equals(result.virtualRefundStatus()))
+                        status=List.of("FAILED","PARTIAL_FAILED").contains(result.virtualRefundStatus()==null?"":result.virtualRefundStatus())?"REVIEW_REQUIRED":"PROCESSING";
+                    ledger.update("update billing_normal_orders set status='CANCELED',refund_status=?,canceled_at=?,lease_until=?,refund_account_ciphertext=null,refund_account_fingerprint=? where id=?",
+                            status,at(result.canceledAt()),"PROCESSING".equals(status)?at(clock.instant().plusSeconds(60)):null,"PROCESSING".equals(status)?fresh.text("refund_account_fingerprint"):null,id);
+                    if(inv.time("paid_at")==null && result.approvedAt()!=null && !result.approvedAt().isBefore(fresh.time("created_at")) && !result.approvedAt().isAfter(result.canceledAt()))
+                        ledger.update("update billing_invoices set paid_at=? where id=?",at(result.approvedAt()),inv.text("id"));
+                    ledger.update("update billing_invoices set status='VOID' where id=?",inv.text("id"));
+                    if(funded) ledger.update("update billing_subscriptions set status='CANCELED',cancel_at_period_end=true,next_charge_at=null where user_id=? and cycle_no=?",user,inv.number("cycle_no"));
                 } else ledger.update("update billing_normal_orders set refund_status='UNKNOWN',lease_until=? where id=?",at(clock.instant().plusSeconds(60)),id);
                 return null;
             });
-        } catch(BillingGateway.Failure e) { locked(user,()->{ ledger.update("update billing_normal_orders set refund_status='UNKNOWN',lease_until=? where id=?",at(clock.instant().plusSeconds(60)),id); return null; }); }
+        } catch(BillingGateway.Failure e) {
+            locked(user,()->{ if(e.rejected() && "REFUND_ACCOUNT_INVALID".equals(e.code())) accountRequired(id);
+                else if(e.rejected() && "REFUND_REJECTED".equals(e.code())) refundReview(id);
+                else ledger.update("update billing_normal_orders set refund_status='UNKNOWN',lease_until=? where id=?",at(clock.instant().plusSeconds(60)),id); return null; });
+        } catch(IllegalStateException e) { locked(user,()->{ refundReview(id); return null; }); }
     }
     public void processOne() {
         if(!properties.enabled()) return;
@@ -213,7 +272,7 @@ public class NormalPaymentService {
             boolean claim=locked(user,()->{
                 Row fresh=owned(user,o.text("id"));
                 if(!List.of("PROCESSING","UNKNOWN").contains(fresh.text("refund_status")) || clock.instant().isBefore(fresh.time("lease_until"))) return false;
-                if(!clock.instant().isBefore(fresh.time("refund_started_at").plus(Duration.ofDays(14)))) { ledger.update("update billing_normal_orders set refund_status='REVIEW_REQUIRED',lease_until=null where id=?",o.text("id")); return false; }
+                if(!clock.instant().isBefore(fresh.time("refund_started_at").plus(Duration.ofDays(14)))) { refundReview(o.text("id")); return false; }
                 ledger.update("update billing_normal_orders set lease_until=? where id=?",at(clock.instant().plusSeconds(180)),o.text("id")); return true;
             });
             if(claim) performRefund(user,o.text("id"),true);

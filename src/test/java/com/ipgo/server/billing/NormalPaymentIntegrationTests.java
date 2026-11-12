@@ -50,8 +50,10 @@ class NormalPaymentIntegrationTests extends DatabaseIntegrationTest {
     @BeforeEach void setup() throws Exception {
         com.ipgo.server.support.UploadTestDatabase.withdrawalSchema(jdbc);
         if(jdbc.queryForObject("select count(*) from information_schema.tables where lower(table_name)='billing_normal_orders'",Integer.class)==0) {
-            String sql=new org.springframework.core.io.ClassPathResource("db/migration/V27__create_normal_payment_orders.sql").getContentAsString(StandardCharsets.UTF_8).split("-- PostgreSQL 전용")[0];
+            String sql=new org.springframework.core.io.ClassPathResource("db/migration/V27__create_normal_payment_orders.sql").getContentAsString(StandardCharsets.UTF_8).split("-- PostgreSQL 전용")[0].replace("refund_status VARCHAR(24) CHECK", "refund_status VARCHAR(24) CONSTRAINT billing_normal_orders_refund_status_check CHECK");
             for(String s:sql.split(";")) if(!s.isBlank()) jdbc.execute(s);
+            String upgrade=new org.springframework.core.io.ClassPathResource("db/migration/V30__support_virtual_account_refunds.sql").getContentAsString(StandardCharsets.UTF_8).split("-- PostgreSQL 전용")[0];
+            for(String statement:upgrade.split(";")) if(!statement.isBlank()) jdbc.execute(statement);
         }
         now=START; when(clock.instant()).thenAnswer(i->now);
         user=addUser(); other=addUser();
@@ -221,6 +223,135 @@ class NormalPaymentIntegrationTests extends DatabaseIntegrationTest {
         assertThat(jdbc.queryForObject("select status from billing_normal_orders where id=?",String.class,later.orderId())).isEqualTo("PAID");
         verify(gateway).lookup("later-key");
         verify(gateway,times(2)).confirm(anyString(),anyString(),anyLong(),anyString());
+    }
+
+    private BillingGateway.Payment va(String order,String status,String refund) {
+        return new BillingGateway.Payment("key",order,500,"KRW",status,"new-mid",status.equals("WAITING_FOR_DEPOSIT")?null:START,
+                status.equals("CANCELED")?0:500,status.equals("CANCELED")?now:null,"가상계좌",refund);
+    }
+    private NormalPaymentGateway.RefundAccount account() { return new NormalPaymentGateway.RefundAccount("88","1234567890","합성 예금주"); }
+    private NormalPaymentService.Checkout virtualOrder(boolean paid) {
+        var o=order();
+        when(gateway.confirm(anyString(),anyString(),anyLong(),anyString())).thenReturn(va(o.orderId(),paid?"DONE":"WAITING_FOR_DEPOSIT","NONE"));
+        normal.confirm(user,o.orderId(),"key",500);return o;
+    }
+    @Test void unpaidVirtualAccountCancellationDoesNotNeedAccountOrEndTrial() {
+        var o=virtualOrder(false);String inv=normal.get(user,o.orderId()).invoiceId();
+        var before=billing.subscription(user);
+        when(gateway.lookup("key")).thenReturn(new BillingGateway.Payment("key",o.orderId(),500,"KRW","WAITING_FOR_DEPOSIT","new-mid",null,0,null,"가상계좌","NONE"));
+        when(gateway.cancel(eq("key"),anyString(),anyString())).thenReturn(new BillingGateway.Payment("key",o.orderId(),500,"KRW","CANCELED","new-mid",null,0,now,"가상계좌","NONE"));
+        assertThat(normal.refund(user,inv,UUID.randomUUID().toString(),"발급 취소").status()).isEqualTo("CANCELED");
+        assertThat(billing.subscription(user)).isEqualTo(before);
+        assertThat(billing.invoices(user,null).items().getFirst().status()).isEqualTo("VOID");
+        verify(gateway,never()).cancel(anyString(),anyString(),anyString(),any());
+    }
+    @Test void paidVirtualRefundRequiresAccountWithoutSendingCancellation() {
+        var o=virtualOrder(true);when(gateway.lookup("key")).thenReturn(va(o.orderId(),"DONE","NONE"));
+        assertThat(normal.refund(user,normal.get(user,o.orderId()).invoiceId(),UUID.randomUUID().toString(),"환불").status()).isEqualTo("ACCOUNT_REQUIRED");
+        assertThat(billing.subscription(user).entitlements().canCalculate()).isTrue();
+        assertThat(billing.invoices(user,null).items().getFirst().paymentMethod()).isEqualTo("가상계좌");
+        verify(gateway,never()).cancel(anyString(),anyString(),anyString());
+        verify(gateway,never()).cancel(anyString(),anyString(),anyString(),any());
+    }
+    @Test void unknownRefundRetainsEncryptedAccountAndRetriesIdenticalProviderKey() {
+        var o=virtualOrder(true);String inv=normal.get(user,o.orderId()).invoiceId();
+        when(gateway.lookup("key")).thenReturn(va(o.orderId(),"DONE","NONE"));
+        when(gateway.cancel(eq("key"),anyString(),anyString(),any())).thenThrow(new BillingGateway.Failure(false,"TIMEOUT"));
+        assertThat(normal.refund(user,inv,UUID.randomUUID().toString(),"환불",account()).status()).isEqualTo("UNKNOWN");
+        String encrypted=jdbc.queryForObject("select refund_account_ciphertext from billing_normal_orders where id=?",String.class,o.orderId());
+        assertThat(encrypted).startsWith("v1.").doesNotContain("1234567890","합성 예금주");
+        var changed=new NormalPaymentGateway.RefundAccount("20","9876543210","다른 합성");
+        assertThatThrownBy(()->normal.refund(user,inv,UUID.randomUUID().toString(),"환불",changed)).isInstanceOf(BillingException.class);
+        now=now.plusSeconds(61);
+        when(gateway.cancel(eq("key"),anyString(),anyString(),eq(account()))).thenReturn(va(o.orderId(),"CANCELED","COMPLETED"));
+        normal.processOne();
+        assertThat(normal.get(user,o.orderId()).refundStatus()).isEqualTo("CANCELED");
+        var keys=org.mockito.ArgumentCaptor.forClass(String.class);
+        verify(gateway,times(2)).cancel(eq("key"),eq("환불"),keys.capture(),eq(account()));
+        assertThat(keys.getAllValues().get(0)).isEqualTo(keys.getAllValues().get(1));
+        assertThat(jdbc.queryForObject("select refund_account_ciphertext from billing_normal_orders where id=?",String.class,o.orderId())).isNull();
+    }
+    @Test void rejectedAccountCanBeCorrectedWithNewProviderKey() {
+        var o=virtualOrder(true);String inv=normal.get(user,o.orderId()).invoiceId();
+        when(gateway.lookup("key")).thenReturn(va(o.orderId(),"DONE","NONE"));
+        when(gateway.cancel(eq("key"),anyString(),anyString(),any())).thenThrow(new BillingGateway.Failure(true,"REFUND_ACCOUNT_INVALID"));
+        assertThat(normal.refund(user,inv,UUID.randomUUID().toString(),"환불",account()).status()).isEqualTo("ACCOUNT_REQUIRED");
+        assertThat(jdbc.queryForObject("select refund_account_ciphertext from billing_normal_orders where id=?",String.class,o.orderId())).isNull();
+        var corrected=new NormalPaymentGateway.RefundAccount("20","9876543210","다른 합성");
+        when(gateway.cancel(eq("key"),anyString(),anyString(),eq(corrected))).thenReturn(va(o.orderId(),"CANCELED","COMPLETED"));
+        assertThat(normal.refund(user,inv,UUID.randomUUID().toString(),"환불 사유 수정",corrected).status()).isEqualTo("CANCELED");
+        var keys=org.mockito.ArgumentCaptor.forClass(String.class);verify(gateway,times(2)).cancel(eq("key"),anyString(),keys.capture(),any());
+        assertThat(keys.getAllValues().get(0)).isNotEqualTo(keys.getAllValues().get(1));
+    }
+    @Test void bankRefundPendingIsNotCompletedAndRecoveryOnlyLooksUp() {
+        var o=virtualOrder(true);String inv=normal.get(user,o.orderId()).invoiceId();
+        when(gateway.lookup("key")).thenReturn(va(o.orderId(),"DONE","NONE"));
+        when(gateway.cancel(eq("key"),anyString(),anyString(),eq(account()))).thenReturn(va(o.orderId(),"CANCELED","PENDING"));
+        assertThat(normal.refund(user,inv,UUID.randomUUID().toString(),"환불",account()).status()).isEqualTo("PROCESSING");
+        assertThat(billing.subscription(user).status()).isEqualTo("CANCELED");
+        assertThat(billing.invoices(user,null).items().getFirst().status()).isEqualTo("VOID");
+        assertThat(jdbc.queryForObject("select refund_account_ciphertext from billing_normal_orders where id=?",String.class,o.orderId())).isNull();
+        assertThat(normal.refund(user,inv,UUID.randomUUID().toString(),"환불",account()).status()).isEqualTo("PROCESSING");
+        now=now.plusSeconds(61);when(gateway.lookup("key")).thenReturn(va(o.orderId(),"CANCELED","COMPLETED"));normal.processOne();
+        assertThat(normal.get(user,o.orderId()).refundStatus()).isEqualTo("CANCELED");
+        verify(gateway,times(1)).cancel(eq("key"),anyString(),anyString(),any());
+    }
+    @Test void bankRefundFailureNeedsReviewWithoutBlindResending() {
+        var o=virtualOrder(true);when(gateway.lookup("key")).thenReturn(va(o.orderId(),"DONE","NONE"));
+        when(gateway.cancel(eq("key"),anyString(),anyString(),eq(account()))).thenReturn(va(o.orderId(),"CANCELED","FAILED"));
+        assertThat(normal.refund(user,normal.get(user,o.orderId()).invoiceId(),UUID.randomUUID().toString(),"환불",account()).status()).isEqualTo("REVIEW_REQUIRED");
+        now=now.plusSeconds(120);normal.processOne();
+        verify(gateway,times(1)).cancel(eq("key"),anyString(),anyString(),any());
+        assertThat(jdbc.queryForObject("select refund_account_ciphertext from billing_normal_orders where id=?",String.class,o.orderId())).isNull();
+    }
+    @Test void racingDepositRequiresRefundAccountAndPreservesPaidAccessUntilCancel() {
+        var o=virtualOrder(false);String inv=normal.get(user,o.orderId()).invoiceId();
+        when(gateway.lookup("key")).thenReturn(va(o.orderId(),"DONE","NONE"));
+        assertThat(normal.refund(user,inv,UUID.randomUUID().toString(),"환불").status()).isEqualTo("ACCOUNT_REQUIRED");
+        assertThat(billing.subscription(user).status()).isEqualTo("ACTIVE");
+        assertThat(billing.invoices(user,null).items().getFirst().paidAt()).isEqualTo(START);
+        when(gateway.cancel(eq("key"),anyString(),anyString(),eq(account()))).thenReturn(va(o.orderId(),"CANCELED","COMPLETED"));
+        assertThat(normal.refund(user,inv,UUID.randomUUID().toString(),"환불",account()).status()).isEqualTo("CANCELED");
+        assertThat(billing.subscription(user).status()).isEqualTo("CANCELED");
+    }
+    @Test void refundAccountIsRedactedAndOtherOwnersCannotCancel() {
+        var o=virtualOrder(true);String inv=normal.get(user,o.orderId()).invoiceId();clearInvocations(gateway);
+        assertThatThrownBy(()->normal.refund(other,inv,UUID.randomUUID().toString(),"환불",account())).isInstanceOf(BillingException.class);
+        assertThat(account().toString()).doesNotContain("1234567890","합성 예금주");
+        assertThat(new com.ipgo.server.dto.request.BillingRequests.CancelPayment("환불",new com.ipgo.server.dto.request.BillingRequests.RefundAccount("88","1234567890","합성 예금주")).toString()).doesNotContain("1234567890");
+        verifyNoInteractions(gateway);
+    }
+
+    @Test void invalidNestedRefundAccountReturnsNoSensitiveValuesAndCallsNoProvider() throws Exception {
+        var o=virtualOrder(true);String inv=normal.get(user,o.orderId()).invoiceId();clearInvocations(gateway);
+        var response=mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post("/api/billing/invoices/"+inv+"/cancel-payment")
+                .with(org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.jwt().jwt(j->j.subject(Long.toString(user))))
+                .with(org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.csrf())
+                .header("Idempotency-Key",UUID.randomUUID().toString()).contentType("application/json")
+                .content("{\"reason\":\"환불\",\"refundReceiveAccount\":{\"bank\":\"88\",\"accountNumber\":\"private-fixture-number\",\"holderName\":\"private-fixture-holder\"}}"))
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.status().isBadRequest()).andReturn();
+        assertThat(response.getResponse().getContentAsString()).doesNotContain("private-fixture-number","private-fixture-holder");
+        verifyNoInteractions(gateway);
+    }
+    @Test void expiredUnknownRefundErasesAccountAndStopsAutomaticRetries() {
+        var o=virtualOrder(true);when(gateway.lookup("key")).thenReturn(va(o.orderId(),"DONE","NONE"));
+        when(gateway.cancel(eq("key"),anyString(),anyString(),any())).thenThrow(new BillingGateway.Failure(false,"TIMEOUT"));
+        normal.refund(user,normal.get(user,o.orderId()).invoiceId(),UUID.randomUUID().toString(),"환불",account());
+        now=now.plus(java.time.Duration.ofDays(15));normal.processOne();
+        assertThat(jdbc.queryForObject("select refund_status from billing_normal_orders where id=?",String.class,o.orderId())).isEqualTo("REVIEW_REQUIRED");
+        assertThat(jdbc.queryForObject("select refund_account_ciphertext from billing_normal_orders where id=?",String.class,o.orderId())).isNull();
+        assertThat(jdbc.queryForObject("select refund_account_fingerprint from billing_normal_orders where id=?",String.class,o.orderId())).isNull();
+        verify(gateway,times(1)).cancel(eq("key"),anyString(),anyString(),any());
+    }
+
+    @Test void merchantRefundRejectionStopsRetriesAndErasesAccount() {
+        var o=virtualOrder(true);when(gateway.lookup("key")).thenReturn(va(o.orderId(),"DONE","NONE"));
+        when(gateway.cancel(eq("key"),anyString(),anyString(),any())).thenThrow(new BillingGateway.Failure(true,"REFUND_REJECTED"));
+        assertThat(normal.refund(user,normal.get(user,o.orderId()).invoiceId(),UUID.randomUUID().toString(),"환불",account()).status()).isEqualTo("REVIEW_REQUIRED");
+        now=now.plusSeconds(120);normal.processOne();
+        verify(gateway,times(1)).cancel(eq("key"),anyString(),anyString(),any());
+        assertThat(jdbc.queryForObject("select refund_account_ciphertext from billing_normal_orders where id=?",String.class,o.orderId())).isNull();
+        assertThat(billing.subscription(user).status()).isEqualTo("ACTIVE");
     }
 
 }

@@ -18,6 +18,8 @@ import tools.jackson.databind.json.JsonMapper;
 @Component
 public class TossNormalPaymentGateway implements NormalPaymentGateway {
     private static final String ORIGIN="https://api.tosspayments.com";
+    private static final Set<String> ACCOUNT_ERRORS=Set.of("INVALID_REFUND_ACCOUNT_INFO","INVALID_REFUND_ACCOUNT_NUMBER","INVALID_BANK","NOT_ALLOWED_REFUND_BANK","INVALID_ACCOUNT_NOT_CORRECT_BANK","INVALID_ACCOUNT_NUMBER","INVALID_ACCOUNT_INFO","FORBIDDEN_BANK_REFUND_REQUEST","FAILED_CLOSED_ACCOUNT_REFUND","INVALID_STOPPED_ACCOUNT");
+    private static final Set<String> REFUND_REJECTIONS=Set.of("NOT_SUPPORTED_REFUND","EXCEED_MAX_REFUND_DUE");
     // 나머지 오류는 승인 여부를 보수적으로 UNKNOWN으로 두고 조회한다.
     private static final Set<String> DECLINES=Set.of("REJECT_CARD_COMPANY","EXCEED_MAX_CARD_INSTALLMENT_PLAN",
             "INVALID_CARD_NUMBER","INVALID_CARD_EXPIRATION","NOT_AVAILABLE_PAYMENT","EXCEED_MAX_DAILY_PAYMENT_COUNT",
@@ -40,6 +42,10 @@ public class TossNormalPaymentGateway implements NormalPaymentGateway {
     @Override public BillingGateway.Payment cancel(String paymentKey,String reason,String key) {
         return payment(send("POST","/v1/payments/"+segment(paymentKey)+"/cancel",Map.of("cancelReason",reason),key));
     }
+    @Override public BillingGateway.Payment cancel(String paymentKey,String reason,String key,RefundAccount account) {
+        if(account==null) return cancel(paymentKey,reason,key);
+        return payment(send("POST","/v1/payments/"+segment(paymentKey)+"/cancel",Map.of("cancelReason",reason,"refundReceiveAccount",account),key));
+    }
     private BillingGateway.Payment payment(JsonNode n) {
         try {
             String approved=text(n,"approvedAt");
@@ -47,7 +53,7 @@ public class TossNormalPaymentGateway implements NormalPaymentGateway {
             JsonNode cancels=n.path("cancels");
             String canceled=cancels.isArray() && cancels.size()>0?text(cancels.get(cancels.size()-1),"canceledAt"):"";
             java.time.Instant canceledAt=canceled.isBlank()?null:java.time.OffsetDateTime.parse(canceled).toInstant();
-            return new BillingGateway.Payment(text(n,"paymentKey"),text(n,"orderId"),n.path("totalAmount").asLong(-1),text(n,"currency"),text(n,"status"),text(n,"mId"),approvedAt,n.path("balanceAmount").asLong(-1),canceledAt);
+            return new BillingGateway.Payment(text(n,"paymentKey"),text(n,"orderId"),n.path("totalAmount").asLong(-1),text(n,"currency"),text(n,"status"),text(n,"mId"),approvedAt,n.path("balanceAmount").asLong(-1),canceledAt,text(n,"method"),text(n.path("virtualAccount"),"refundStatus"));
         } catch(java.time.DateTimeException e) { throw new BillingGateway.Failure(false,"INVALID_PROVIDER_RESPONSE"); }
     }
     private JsonNode send(String method,String path,Object body,String key) {
@@ -64,6 +70,8 @@ public class TossNormalPaymentGateway implements NormalPaymentGateway {
             JsonNode n=r.body().isBlank()?mapper.createObjectNode():mapper.readTree(r.body());
             if(r.statusCode()<200 || r.statusCode()>=300) {
                 String code=text(n,"code");
+                if((r.statusCode()==400 || r.statusCode()==403) && ACCOUNT_ERRORS.contains(code)) throw new BillingGateway.Failure(true,"REFUND_ACCOUNT_INVALID");
+                if(path.endsWith("/cancel") && r.statusCode()==403 && REFUND_REJECTIONS.contains(code)) throw new BillingGateway.Failure(true,"REFUND_REJECTED");
                 throw new BillingGateway.Failure(r.statusCode()>=400 && r.statusCode()<500 && DECLINES.contains(code),"PAYMENT_REJECTED");
             }
             return n;

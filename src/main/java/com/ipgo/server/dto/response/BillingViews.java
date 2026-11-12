@@ -17,7 +17,11 @@ public final class BillingViews {
     public record Session(String sessionId, String status, String invoiceId, String paymentStatus, String errorCode) { }
     public record Method(String id, String maskedNumber, boolean current, String status) { }
     public record Invoice(String invoiceId, String planId, long amount, String currency, Instant periodStart,
-            Instant periodEnd, String status, String paymentStatus, Instant paidAt, String refundStatus, Instant canceledAt) { }
+            Instant periodEnd, String status, String paymentStatus, Instant paidAt, String refundStatus, Instant canceledAt, String paymentMethod) {
+        public Invoice(String invoiceId,String planId,long amount,String currency,Instant periodStart,Instant periodEnd,String status,String paymentStatus,Instant paidAt,String refundStatus,Instant canceledAt) {
+            this(invoiceId,planId,amount,currency,periodStart,periodEnd,status,paymentStatus,paidAt,refundStatus,canceledAt,null);
+        }
+    }
     public record InvoicePage(List<Invoice> items, String nextCursor) { }
     public record Refund(String invoiceId,String status,Instant canceledAt) { }
     public record Accepted(String invoiceId, String status) { }

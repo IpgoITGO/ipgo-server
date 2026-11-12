@@ -31,6 +31,10 @@ dependencies {
 	implementation 'org.springframework.boot:spring-boot-starter-mail'
 	implementation 'software.amazon.awssdk:s3'
 	implementation 'software.amazon.awssdk:sqs'
+	implementation('nl.martijndwars:web-push:5.1.2') { exclude group: 'org.bouncycastle', module: 'bcprov-jdk15on' }
+	implementation 'org.apache.httpcomponents:httpclient:4.5.14'
+	implementation 'org.bouncycastle:bcprov-jdk18on:1.83'
+	implementation 'org.bitbucket.b_c:jose4j:0.9.6'
 	implementation 'org.flywaydb:flyway-database-postgresql'
 	compileOnly 'org.projectlombok:lombok'
 	developmentOnly 'org.springframework.boot:spring-boot-devtools'
@@ -52,6 +56,7 @@ tasks.named('test') {
 	useJUnitPlatform()
 	// DB 접속값/비밀값은 캐시 입력에 기록하지 않는다. 서로 다른 검증 환경의 결과 재사용을 막는다.
 	def externalDatabase = (System.getenv('IPGO_TEST_DB_URL') ?: '').trim() != '' ||
+        (System.getenv('IPGO_PUSH_TEST_DB_URL') ?: '').trim() != '' ||
 		System.getenv('IPGO_ENGINE_LOCAL_POSTGRES') == 'true'
 	inputs.property('integrationDatabaseKind', externalDatabase ? 'external' : 'h2')
 	outputs.upToDateWhen { !externalDatabase }

@@ -92,7 +92,7 @@ migration_count="$(docker exec "${database_container}" \
 table_count="$(docker exec "${database_container}" \
   psql -U ipgo_migrator -d ipgo -Atc \
   "SELECT COUNT(*) FROM pg_tables WHERE schemaname = 'public' AND tablename <> 'flyway_schema_history'")"
-if [[ "${migration_count}" != "27" || "${table_count}" != "40" ]]; then
+if [[ "${migration_count}" != "28" || "${table_count}" != "42" ]]; then
   echo "unexpected schema: migrations=${migration_count}, tables=${table_count}" >&2
   exit 1
 fi
@@ -238,6 +238,18 @@ SQL
 expect_denied ipgo_server "INSERT INTO push_subscriptions(user_id,endpoint_hash,endpoint,p256dh,auth_secret,created_at,updated_at) VALUES (901,repeat('a',64),'https://fcm.googleapis.com/x','p','a',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)"
 expect_denied ipgo_server "UPDATE notification_settings SET send_hour=24 WHERE user_id=901"
 expect_denied ipgo_server "INSERT INTO notification_settings(user_id,kind,channel,enabled,send_hour,time_zone,updated_at) VALUES (901,'REPLENISHMENT_NEEDED','SMS',TRUE,9,'Asia/Seoul',CURRENT_TIMESTAMP)"
+# V28: 하루1회 요약/기기별 상태. 서버 쓰기·unique·AI 접근 차단 확인.
+docker exec -i "${database_container}" psql -v ON_ERROR_STOP=1 -U ipgo_server -d ipgo >/dev/null <<'SQL'
+INSERT INTO push_daily_summaries(user_id,business_date,time_zone,created_at,expires_at)
+VALUES(901,DATE '2026-11-12','Asia/Seoul',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP+INTERVAL '1 hour');
+INSERT INTO push_deliveries(summary_id,subscription_id,subscription_updated_at,state,next_attempt_at,updated_at)
+SELECT s.id,p.id,p.updated_at,'PENDING',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP
+FROM push_daily_summaries s JOIN push_subscriptions p ON p.user_id=s.user_id WHERE s.user_id=901;
+UPDATE push_deliveries SET state='SENT',provider_status=201;
+SQL
+expect_denied ipgo_server "INSERT INTO push_daily_summaries(user_id,business_date,time_zone,created_at,expires_at) VALUES(901,DATE '2026-11-12','UTC',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)"
+expect_denied ipgo_ai_reader "SELECT * FROM push_daily_summaries"
+expect_denied ipgo_ai_service_reader "SELECT * FROM push_deliveries"
 expect_denied ipgo_ai_reader "SELECT endpoint FROM push_subscriptions"
 expect_denied ipgo_ai_service_reader "SELECT * FROM notification_settings"
 # 회원 행을 지우면 구독 · 설정도 같이 지워진다.

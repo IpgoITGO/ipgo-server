@@ -69,6 +69,11 @@ ipgo:
   push:
     # #190 Web Push VAPID 공개키(base64url). 비어 있으면 알림 등록 API가 503 PUSH_UNAVAILABLE을 돌려준다.
     public-key: ${IPGO_PUSH_PUBLIC_KEY:}
+    delivery:
+      enabled: ${IPGO_PUSH_DELIVERY_ENABLED:false}
+      private-key: ${IPGO_PUSH_PRIVATE_KEY:}
+      subject: ${IPGO_PUSH_SUBJECT:https://ipgo-dev.iwhya.kr}
+      poll-delay-ms: ${IPGO_PUSH_POLL_DELAY_MS:60000}
   upload:
     storage: ${IPGO_UPLOAD_STORAGE:local}
     directory: ${IPGO_UPLOAD_DIR:./storage/uploads}

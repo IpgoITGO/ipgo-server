@@ -34,6 +34,10 @@ springdoc:
   show-actuator: false
 
 ipgo:
+  payment:
+    enabled: ${IPGO_PAYMENT_ENABLED:false}
+    secret-key: ${IPGO_PAYMENT_SECRET_KEY:}
+    merchant-id: ${IPGO_PAYMENT_MERCHANT_ID:}
   billing:
     enabled: ${IPGO_BILLING_ENABLED:false}
     worker-enabled: ${IPGO_BILLING_WORKER_ENABLED:false}

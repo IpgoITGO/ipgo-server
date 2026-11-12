@@ -47,3 +47,8 @@ python3 -m unittest discover -s scripts/testing -p 'test_*.py' -v
 오래된 승인 SHA로 새 workflow 변경을 자동 배포하지 않는다. 게시 전 Issue 연결·PR·검토·CI·새 정확 SHA 승인 절차를 따른다.
 
 근거: [GitHub upload-artifact v4 고정 소스](https://github.com/actions/upload-artifact/tree/ea165f8d65b6e75b540449e92b4886f43607fa02).
+
+일반결제 TEST 전환 시 `normal_payment_enabled=true`와 `billing_test_enabled=true`를 함께 지정합니다.
+이는 새 결제 승인·입금 확인 작업기를 켜고 기존 자동청구·카드 등록/재개 API를 차단합니다.
+일반결제 Secret은 같은 비공개 TEST JSON Secret의 `checkout_secret_key` 필드로 참조합니다.
+상세 적용 순서와 V27·검증·복구는 [일반결제 이용권](../decisions/0018-normal-payment-pass.md)을 따릅니다.

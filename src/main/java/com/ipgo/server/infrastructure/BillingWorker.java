@@ -20,7 +20,8 @@ public class BillingWorker {
     private final BillingProperties properties;
     private final BillingService service;
     private final com.ipgo.server.service.BillingRefundService refunds;
-    public BillingWorker(BillingProperties p,BillingService s,com.ipgo.server.service.BillingRefundService refunds) { properties=p; service=s; this.refunds=refunds; }
+    private final com.ipgo.server.service.NormalPaymentService normal;
+    public BillingWorker(BillingProperties p,BillingService s,com.ipgo.server.service.BillingRefundService refunds,com.ipgo.server.service.NormalPaymentService normal) { properties=p; service=s; this.refunds=refunds; this.normal=normal; }
     @EventListener(ApplicationReadyEvent.class)
     public void start() {
         if(properties.enabled() && properties.workerEnabled()) executor.scheduleWithFixedDelay(this::poll,0,60,TimeUnit.SECONDS);
@@ -28,7 +29,7 @@ public class BillingWorker {
     @PreDestroy public void close() { executor.shutdownNow(); }
     public void poll() {
         if(!properties.enabled() || !properties.workerEnabled()) return;
-        try { refunds.processOne(); service.prepareRenewals(); service.processOne(); service.retireOneMethod(); }
+        try { normal.processOne(); refunds.processOne(); service.prepareRenewals(); service.processOne(); service.retireOneMethod(); }
         catch(Exception e) { log.warn("Billing worker requires reconciliation; exception type={}",e.getClass().getSimpleName()); }
     }
 }

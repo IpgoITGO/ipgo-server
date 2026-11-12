@@ -271,6 +271,19 @@ class DevDeploymentTests(unittest.TestCase):
             with self.subTest(change=change),self.assertRaises(module.InvalidDeployment):
                 module.render(self.task,IMAGE,dict(env,**change))
 
+    def test_normal_payment_secret_ref_and_safe_rollback(self):
+        secret=f"arn:aws:secretsmanager:ap-northeast-2:{ACCOUNT}:secret:/ipgo/dev/server-billing-test-abc123"
+        env=dict(self.env,NORMAL_PAYMENT_ENABLED='true',BILLING_TEST_ENABLED='true',BILLING_TEST_SECRET_ARN=secret,BILLING_RETURN_ORIGIN='https://ipgo-dev.iwhya.kr')
+        result=module.render(self.task,IMAGE,env)
+        server=result['containerDefinitions'][0]
+        self.assertIn({'name':'IPGO_PAYMENT_ENABLED','value':'true'},server['environment'])
+        self.assertIn({'name':'IPGO_PAYMENT_SECRET_KEY','valueFrom':secret+':checkout_secret_key::'},server['secrets'])
+        rolled=module.render(result,IMAGE,dict(env,NORMAL_PAYMENT_ENABLED='false'))['containerDefinitions'][0]
+        self.assertIn({'name':'IPGO_PAYMENT_ENABLED','value':'false'},rolled['environment'])
+        self.assertFalse(any(e['name']=='IPGO_PAYMENT_SECRET_KEY' for e in rolled['secrets']))
+        with self.assertRaises(module.InvalidDeployment):
+            module.render(self.task,IMAGE,dict(env,BILLING_TEST_ENABLED='false'))
+
 
 if __name__=='__main__':
     unittest.main()

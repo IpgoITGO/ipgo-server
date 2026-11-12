@@ -15,7 +15,8 @@ import org.springframework.web.bind.annotation.*;
 public class BillingController {
     private final BillingService billing;
     private final com.ipgo.server.service.BillingRefundService refunds;
-    public BillingController(BillingService b,com.ipgo.server.service.BillingRefundService refunds) { billing=b; this.refunds=refunds; }
+    private final com.ipgo.server.service.NormalPaymentService normal;
+    public BillingController(BillingService b,com.ipgo.server.service.BillingRefundService refunds,com.ipgo.server.service.NormalPaymentService normal) { billing=b; this.refunds=refunds; this.normal=normal; }
     private long user(Principal p) { return Long.parseLong(p.getName()); }
     private <T> ResponseEntity<T> ok(T body) { return ResponseEntity.ok().cacheControl(CacheControl.noStore()).body(body); }
     @GetMapping("/plans") public ResponseEntity<List<BillingViews.Plan>> plans() { return ok(billing.plans()); }
@@ -37,7 +38,7 @@ public class BillingController {
     @PostMapping("/subscription/resume") public ResponseEntity<BillingViews.Subscription> resume(Principal p,@RequestHeader("Idempotency-Key") String key,@Valid @RequestBody BillingRequests.Resume r) { return ok(billing.resume(user(p),key,r.consentVersion())); }
     @PostMapping("/invoices/{id}/cancel-payment") public ResponseEntity<BillingViews.Refund> cancelPayment(Principal p,@PathVariable String id,
             @RequestHeader("Idempotency-Key") String key,@Valid @RequestBody BillingRequests.CancelPayment r) {
-        var result=refunds.cancel(user(p),id,key,r.reason());
+        var result=normal.ownsInvoice(user(p),id)?normal.refund(user(p),id,key,r.reason()):refunds.cancel(user(p),id,key,r.reason());
         return ResponseEntity.status("CANCELED".equals(result.status())?200:202).cacheControl(CacheControl.noStore()).body(result);
     }
     @PostMapping("/invoices/{id}/retry") public ResponseEntity<BillingViews.Accepted> retry(Principal p,@PathVariable String id,@RequestHeader("Idempotency-Key") String key) {

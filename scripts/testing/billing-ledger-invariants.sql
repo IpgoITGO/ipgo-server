@@ -6,7 +6,7 @@ DECLARE
     owner_id BIGINT;
     other_id BIGINT;
 BEGIN
-    IF (SELECT COUNT(*) FROM pg_tables WHERE schemaname='public') <> 37 THEN
+    IF (SELECT COUNT(*) FROM pg_tables WHERE schemaname='public') <> 43 THEN
         RAISE EXCEPTION 'unexpected billing migration table count';
     END IF;
     FOREACH table_name IN ARRAY ARRAY['billing_subscriptions','billing_methods','billing_sessions','billing_invoices','billing_attempts','billing_commands','billing_webhook_inbox','billing_refunds'] LOOP

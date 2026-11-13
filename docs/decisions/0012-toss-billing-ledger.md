@@ -111,7 +111,8 @@ V17은 미공유·미배포인 로컬 신규 migration이므로 이번 검토에
 
 ## TEST 전액 취소 (Server #171)
 
-- `POST /api/billing/invoices/{id}/cancel-payment`에 Bearer 인증·`Idempotency-Key`·`{reason}`(1~200자)을 보낸다. 본인 최신 승인 청구의 전액만 취소한다. CANCELED이면200, PROCESSING/UNKNOWN/REVIEW_REQUIRED이면202다. 금액을 받지 않으므로 부분 취소로 바꿀 수 없다.
+- #171의 최초 구현 뒤 #208에서 회원 직접 환불 제한을 추가했다. 현재 정책과 운영자 환급 절차는 [README의 환불 제한](../../README.md#결제-완료-후-회원-직접-환불-제한-208)을 함께 따른다. 서버의 운영자 환불 API나 권한 역할은 없으며 회사 귀책 환급은 운영자가 Toss 관리자 화면에서 처리한다.
+- `POST /api/billing/invoices/{id}/cancel-payment`에 Bearer 인증·`Idempotency-Key`·`{reason}`(1~200자)을 보낸다. `IPGO_PAYMENT_REFUND_RESTRICTED=false`인 전환 기간에는 본인 최신 승인 청구의 전액만 취소한다. `true`면 새 회원 환불은 `409 REFUND_NOT_ALLOWED`이며 Toss 취소를 호출하지 않는다. 이미 시작된 환불의 조회·복구는 유지한다. CANCELED이면200, PROCESSING/UNKNOWN/REVIEW_REQUIRED이면202다. 금액을 받지 않으므로 부분 취소로 바꿀 수 없다.
 - 취소 전에 원래 orderId로 조회해 paymentKey 대소문자·MID·원주문·KRW·총액을 확인한다. 토스 `/v1/payments/{paymentKey}/cancel`에 cancelReason과 원장에 고정한 provider 멱등키를 전송한다. CANCELED·잔액0·유효한 canceledAt을 확인한 때만 완료한다.
 - 승인 billing_attempts/SUCCEEDED와 원래 결제 기간을 보존하고 invoice VOID·별도 billing_refunds/CANCELED·subscription CANCELED로 기록한다. 취소 요청은 다음 자동 청구를 중단하고 확정 취소는 이용 권한을 끝낸다. 환불 중에는 재개·새 등록·탈퇴를 차단한다.
 - 응답 유실/DB 반영 실패는 UNKNOWN 또는 처리 lease를 보존해 같은 주문 조회/같은 provider 키로 복구한다. 14일 후에는 REVIEW_REQUIRED로 격리하며 자동 취소를 반복하지 않는다.

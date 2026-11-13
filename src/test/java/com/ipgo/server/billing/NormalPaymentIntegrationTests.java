@@ -20,6 +20,10 @@ import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import static org.assertj.core.api.Assertions.*;
 import static org.mockito.Mockito.*;
 import static org.mockito.ArgumentMatchers.*;
+import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.jwt;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
 
 @SpringBootTest
 @org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc
@@ -70,9 +74,32 @@ class NormalPaymentIntegrationTests extends DatabaseIntegrationTest {
         jdbc.update("insert into users(email,password_hash,created_at) values (?,'fixture',?)",UUID.randomUUID()+"@example.test",java.sql.Timestamp.from(START.minusSeconds(3600)));
         return jdbc.queryForObject("select max(id) from users",Long.class);
     }
-    @AfterEach void cleanup() {
-        for(String table:List.of("billing_normal_orders","billing_commands","billing_invoices","billing_subscriptions")) jdbc.update("delete from "+table+" where user_id in (?,?)",user,other);
+    @AfterEach void cleanup() throws Exception {
+        clearPaymentLedger();
         jdbc.update("delete from users where id in (?,?)",user,other);
+    }
+    private void clearPaymentLedger() throws Exception {
+        var tables=List.of("billing_normal_orders","billing_commands","billing_invoices","billing_subscriptions");
+        try(var connection=jdbc.getDataSource().getConnection()) {
+            if(connection.getMetaData().getDatabaseProductName().contains("PostgreSQL")) {
+                String url=connection.getMetaData().getURL();
+                if(!"temporary".equals(System.getenv("IPGO_BILLING_TEST_DATABASE"))
+                        || !url.endsWith("/ipgo_billing_test") || !url.equals(System.getenv("IPGO_TEST_DB_URL")))
+                    throw new IllegalStateException("Billing tests require an isolated temporary database");
+                // API는 ipgo_server로 검사하고, 시험 행 정리만 폐기용 DB의 소유자 역할로 수행한다.
+                try(var admin=java.sql.DriverManager.getConnection(url,"ipgo_migrator","")) {
+                    admin.setAutoCommit(false);
+                    for(String table:tables) {
+                        try(var statement=admin.prepareStatement("delete from "+table+" where user_id in (?,?)")) {
+                            statement.setLong(1,user); statement.setLong(2,other); statement.executeUpdate();
+                        }
+                    }
+                    admin.commit();
+                }
+                return;
+            }
+        }
+        for(String table:tables) jdbc.update("delete from "+table+" where user_id in (?,?)",user,other);
     }
     NormalPaymentService.Checkout order() { return normal.create(user,UUID.randomUUID().toString(),"seller",BillingPolicy.VERSION,NormalPaymentService.CONSENT); }
     @Test void priceAndConsentAreServerOwnedAndCreateIsIdempotent() {
@@ -348,6 +375,35 @@ class NormalPaymentIntegrationTests extends DatabaseIntegrationTest {
         verify(gateway,never()).cancel(anyString(),anyString(),anyString(),any());
     }
 
+    @Test void restrictedPaidRefundApiRejectsMemberRetriesAndOtherOwnersWithoutProviderCalls() throws Exception {
+        var o=order(); normal.confirm(user,o.orderId(),"key",500);
+        restrictRefunds();
+        String invoice=normal.get(user,o.orderId()).invoiceId();
+        String path="/api/billing/invoices/"+invoice+"/cancel-payment",key=UUID.randomUUID().toString();
+        clearInvocations(gateway,legacy);
+
+        mvc.perform(post(path).header("Idempotency-Key",key).contentType("application/json").content("{\"reason\":\"환급 요청\"}"))
+                .andExpect(status().isUnauthorized());
+        mvc.perform(post(path).with(jwt().jwt(j->j.subject(Long.toString(other))))
+                .header("Idempotency-Key",key).contentType("application/json").content("{\"reason\":\"환급 요청\"}"))
+                .andExpect(status().isForbidden());
+        for(int attempt=0;attempt<2;attempt++) {
+            mvc.perform(post(path).with(jwt().jwt(j->j.subject(Long.toString(user))))
+                    .header("Idempotency-Key",key).contentType("application/json").content("{\"reason\":\"환급 요청\"}"))
+                    .andExpect(status().isConflict()).andExpect(jsonPath("$.code").value("REFUND_NOT_ALLOWED"));
+        }
+        mvc.perform(get("/api/billing/invoices").with(jwt().jwt(j->j.subject(Long.toString(user)))))
+                .andExpect(status().isOk()).andExpect(header().string("Cache-Control","no-store"))
+                .andExpect(jsonPath("$.items[0].invoiceId").value(invoice))
+                .andExpect(jsonPath("$.items[0].status").value("PAID"))
+                .andExpect(jsonPath("$.items[0].refundStatus").isEmpty())
+                .andExpect(jsonPath("$.items[0].canceledAt").isEmpty());
+        assertThat(jdbc.queryForObject("select count(*) from billing_commands where user_id=? and operation like 'REFUND:%'",Integer.class,user)).isZero();
+        assertThat(normal.get(user,o.orderId()).refundStatus()).isNull();
+        assertThat(billing.subscription(user).entitlements().canCalculate()).isTrue();
+        verifyNoInteractions(gateway,legacy);
+    }
+
     // #208 환불 제한을 켜도 입금 전 가상계좌 취소와, 켜기 전에 시작된 환불(계좌 재입력)은 그대로 끝까지 처리한다.
     @Test void restrictedPolicyKeepsUnpaidCancelAndInProgressRefund() {
         var started=virtualOrder(true);String startedInvoice=normal.get(user,started.orderId()).invoiceId();
@@ -409,9 +465,9 @@ class NormalPaymentIntegrationTests extends DatabaseIntegrationTest {
 
     // #208 리뷰 P1: 제한이 켜진 뒤, DB는 입금 대기(PENDING)인데 토스에서는 이미 입금(DONE)된 가상계좌.
     // 계좌를 보내든 안 보내든 환불을 시작하지 않고 결제 완료로만 반영해요. 계좌를 다시 넣어도 우회되지 않아요.
-    @Test void restrictedRefundOfDepositRacingVirtualAccountIsRejectedWithOrWithoutAccount() {
+    @Test void restrictedRefundOfDepositRacingVirtualAccountIsRejectedWithOrWithoutAccount() throws Exception {
         for(boolean withAccount:List.of(false,true)) {
-            for(String table:List.of("billing_normal_orders","billing_invoices","billing_subscriptions")) jdbc.update("delete from "+table+" where user_id=?",user);
+            clearPaymentLedger();
             reset(refundPolicy); clearInvocations(gateway);
             var o=virtualOrder(false);String inv=normal.get(user,o.orderId()).invoiceId();
             restrictRefunds();
@@ -450,8 +506,9 @@ class NormalPaymentIntegrationTests extends DatabaseIntegrationTest {
     }
 
     // #208 리뷰 P2: 토스 관리자 화면에서 환불하면 하루 한 번 다시 조회할 때 주문 · 이용권에 반영해요. 토스에 취소를 다시 보내지 않아요.
-    @Test void adminRefundInProviderConsoleIsReflectedOnDailyRecheck() {
+    @Test void adminRefundInProviderConsoleIsReflectedOnDailyRecheck() throws Exception {
         var o=order(); normal.confirm(user,o.orderId(),"key",500);
+        restrictRefunds();
         when(gateway.lookup("key")).thenReturn(new BillingGateway.Payment("key",o.orderId(),500,"KRW","DONE","new-mid",START));
         normal.checkPaidOne();
         assertThat(normal.get(user,o.orderId()).status()).isEqualTo("PAID");
@@ -469,6 +526,14 @@ class NormalPaymentIntegrationTests extends DatabaseIntegrationTest {
         assertThat(billing.subscription(user).status()).isEqualTo("CANCELED");
         assertThat(billing.subscription(user).entitlements().canCalculate()).isFalse();
         assertThat(billing.invoices(user,null).items().getFirst().status()).isEqualTo("VOID");
+        mvc.perform(get("/api/billing/invoices").with(jwt().jwt(j->j.subject(Long.toString(user)))))
+                .andExpect(status().isOk()).andExpect(header().string("Cache-Control","no-store"))
+                .andExpect(jsonPath("$.items[0].invoiceId").value(normal.get(user,o.orderId()).invoiceId()))
+                .andExpect(jsonPath("$.items[0].status").value("VOID"))
+                .andExpect(jsonPath("$.items[0].refundStatus").value("CANCELED"))
+                .andExpect(jsonPath("$.items[0].canceledAt").value(START.plus(Duration.ofHours(2)).toString()))
+                .andExpect(jsonPath("$.items[0].paidAt").value(START.toString()))
+                .andExpect(jsonPath("$.items[0].amount").value(500));
         assertThat(jdbc.queryForObject("select refund_reason from billing_normal_orders where id=?",String.class,o.orderId())).isEqualTo("토스 관리자 화면 환불");
         normal.checkPaidOne(); normal.processOne();
         verify(gateway,never()).cancel(anyString(),anyString(),anyString());
@@ -528,13 +593,19 @@ class NormalPaymentIntegrationTests extends DatabaseIntegrationTest {
     }
 
     // #208 리뷰 P2: 부분 환불은 이용권 처리 규칙이 없어 운영자 확인으로 넘기고 이용 권한은 그대로 둬요.
-    @Test void partialAdminRefundNeedsReviewAndKeepsAccess() {
+    @Test void partialAdminRefundNeedsReviewAndKeepsAccess() throws Exception {
         var o=order(); normal.confirm(user,o.orderId(),"key",500);
+        restrictRefunds();
         when(gateway.lookup("key")).thenReturn(new BillingGateway.Payment("key",o.orderId(),500,"KRW","PARTIAL_CANCELED","new-mid",START,200,now));
         normal.checkPaidOne();
         assertThat(normal.get(user,o.orderId()).refundStatus()).isEqualTo("REVIEW_REQUIRED");
         assertThat(billing.subscription(user).entitlements().canCalculate()).isTrue();
+        mvc.perform(get("/api/billing/invoices").with(jwt().jwt(j->j.subject(Long.toString(user)))))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.items[0].status").value("PAID"))
+                .andExpect(jsonPath("$.items[0].refundStatus").value("REVIEW_REQUIRED"))
+                .andExpect(jsonPath("$.items[0].canceledAt").isEmpty());
         verify(gateway,never()).cancel(anyString(),anyString(),anyString());
+        verify(gateway,never()).cancel(anyString(),anyString(),anyString(),any());
     }
 
     private void webhook(String body,int expected) throws Exception {

@@ -34,6 +34,24 @@ class InsightRendererTests {
         assertThat(p.values()).doesNotContainKeys("risk_pre","risk_sample_size","risk_post_p100","risk_basis");
         assertThat(p.fallback()).contains("71~126개").doesNotContain("추정치로");
     }
+    @Test void shortHistoryLowGradeAllowsAbsentRangeWithoutInventingFacts() {
+        risk("LOW_GRADE"); r.put("validObservationDays",12).put("accuracyGrade","LOW");
+        r.putNull("forecastRangeLow").putNull("forecastRangeHigh");
+        var p=renderer.prepare(r,"2026-11-13");
+        assertThat(p.values()).doesNotContainKeys("forecast_range_low","forecast_range_high","risk_pre","risk_post_p100");
+        assertThat(p.input().path("riskStatus").asText()).isEqualTo("LOW_GRADE");
+        assertThat(p.fallback()).contains("품절 위험","범위도 산출하지 않았습니다").doesNotContain("~");
+        assertThat(renderer.prepareHistorical(r,"2026-11-13").input().toString()).doesNotContain("forecast_range", "risk_pre");
+    }
+    @Test void malformedLowGradeRangesStillFailClosed() {
+        risk("LOW_GRADE");
+        for (double[] range : List.of(new double[]{-1,20}, new double[]{30,20})) {
+            r.put("forecastRangeLow",range[0]).put("forecastRangeHigh",range[1]);
+            assertThatThrownBy(()->renderer.prepare(r,"2026-11-13")).isInstanceOf(IllegalArgumentException.class);
+        }
+        r.putNull("forecastRangeLow").put("forecastRangeHigh",20);
+        assertThatThrownBy(()->renderer.prepare(r,"2026-11-13")).isInstanceOf(IllegalArgumentException.class);
+    }
     @Test void insufficientSampleDoesNotInventPercentageOrBasis() {
         risk("INSUFFICIENT_SAMPLE"); var p=renderer.prepare(r,"2026-09-01");
         assertThat(p.fallback()).contains("표본이 부족해 산출하지 않았습니다");

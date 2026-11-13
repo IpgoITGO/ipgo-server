@@ -85,7 +85,8 @@ public class InsightRenderer {
             put(v, "risk_pre", probability(number(r, "preArrivalRisk")));
             require(number(r, "riskSampleSize").signum() > 0);
             put(v, "risk_sample_size", integer(number(r, "riskSampleSize")));
-        } else if ("LOW_GRADE".equals(risk)) {
+        } else if ("LOW_GRADE".equals(risk)
+                && (!r.path("forecastRangeLow").isNull() || !r.path("forecastRangeHigh").isNull())) {
             require(number(r, "forecastRangeLow").compareTo(number(r, "forecastRangeHigh")) <= 0);
             put(v, "forecast_range_low", demand(number(r, "forecastRangeLow")));
             put(v, "forecast_range_high", demand(number(r, "forecastRangeHigh")));
@@ -168,7 +169,9 @@ public class InsightRenderer {
         if (r.path("startStockEstimated").asBoolean()) lines.add("현재 재고 {{start_stock}}개는 기준일 {{as_of_date}} 이후의 출고를 예측해 추정한 값입니다.");
         lines.add("OK".equals(risk) ? "{{qty_p100}}개를 넣으면 다음 입고 때 {{ending_p100}}개가 남고 도착 후 품절 위험은 {{risk_basis}} 추정치로 {{risk_post_p100}}입니다(표본 {{risk_sample_size}}건)." : "{{qty_p100}}개를 넣으면 다음 입고 때 {{ending_p100}}개가 남습니다.");
         if ("INSUFFICIENT_SAMPLE".equals(risk)) lines.add("품절 위험은 과거 예측 표본이 부족해 산출하지 않았습니다.");
-        if ("LOW_GRADE".equals(risk)) lines.add("예측 기록이 짧아 품절 위험은 산출하지 않았고, 대신 예상 출고량 범위를 보여 드립니다: {{forecast_range_low}}~{{forecast_range_high}}개.");
+        if ("LOW_GRADE".equals(risk)) lines.add(v.containsKey("forecast_range_low")
+                ? "예측 기록이 짧아 품절 위험은 산출하지 않았고, 대신 예상 출고량 범위를 보여 드립니다: {{forecast_range_low}}~{{forecast_range_high}}개."
+                : "예측 기록이 짧아 품절 위험은 산출하지 않았고, 예상 출고량 범위도 산출하지 않았습니다.");
         for (String type : List.of("P80", "P120")) {
             if (!types.contains(type)) continue;
             String template = "OK".equals(risk) ? "{{qty_X}}개로 {{action_X}} 다음 입고 때 남는 재고는 {{ending_X}}개로 {{dir_ending_X_connect}} 품절 위험은 {{risk_post_X}}로 {{dir_risk_post_X_end}}." : "{{qty_X}}개로 {{action_X}} 다음 입고 때 남는 재고는 {{ending_X}}개로 {{dir_ending_X_end}}.";

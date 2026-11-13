@@ -21,6 +21,8 @@ D0 전용 합성 자료 준비의 비활성 OIDC 경로·권한·적용 및 복�
 
 카드 등록창 실패 후 재진입하면 같은 유효 OPEN 등록을 재사용합니다. 카드 발급 전의 본인 등록 취소는 `POST /api/billing/registration-sessions/{id}/cancel`로 처리하며, 발급 중/결과 미확정 상태는 보존합니다. 자세한 상태·멱등 키·만료 처리는 빌링 계약을 따릅니다.
 
+LOW_GRADE의 범위 하한·상한이 모두 null이면 범위와 위험을 만들지 않고 미산출 사실로 설명합니다. 한쪽 누락·음수·상하 역전은 계속 거부합니다.
+
 현재 설명·시나리오의 확정 계약과 검증 범위·관련 후속은 [계약 대조](docs/decisions/0009-current-insight-scenario-contract.md)에 정리합니다.
 정제·계산 실패/재시도/동시성의 기존 근거와 검증 잔여는 [검증 대조](docs/verification/engine-failures-and-concurrency.md)에 기록합니다.
 

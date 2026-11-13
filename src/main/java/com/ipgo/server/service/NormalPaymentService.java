@@ -153,6 +153,7 @@ public class NormalPaymentService {
                 if("DONE".equals(p.status()) && p.balanceAmount()==i.number("amount") && p.approvedAt()!=null
                         && !p.approvedAt().isAfter(clock.instant().plusSeconds(60)) && !p.approvedAt().isBefore(o.time("created_at"))) {
                     Instant start=p.approvedAt(),end=BillingPolicy.boundary(start,1);
+                    ledger.update("update users set plan_chosen_at=coalesce(plan_chosen_at,?) where id=?",at(start),user);
                     ledger.update("update billing_normal_orders set status='PAID',merchant_id=?,lease_until=case when refund_status is null then null else lease_until end where id=?",p.merchantId(),id);
                     ledger.update("update billing_invoices set status='PAID',paid_at=?,period_start=?,period_end=? where id=?",at(start),at(start),at(end),i.text("id"));
                     ledger.update("update billing_subscriptions set status='ACTIVE',plan_id=?,price_version=?,amount=?,period_start=?,period_end=?,anchor_at=?,cycle_no=?,cancel_at_period_end=true,next_charge_at=null,default_method_id=null where user_id=?",
@@ -271,8 +272,10 @@ public class NormalPaymentService {
                         status=List.of("FAILED","PARTIAL_FAILED").contains(result.virtualRefundStatus()==null?"":result.virtualRefundStatus())?"REVIEW_REQUIRED":"PROCESSING";
                     ledger.update("update billing_normal_orders set status='CANCELED',refund_status=?,canceled_at=?,lease_until=?,refund_account_ciphertext=null,refund_account_fingerprint=? where id=?",
                             status,at(result.canceledAt()),"PROCESSING".equals(status)?at(clock.instant().plusSeconds(60)):null,"PROCESSING".equals(status)?fresh.text("refund_account_fingerprint"):null,id);
-                    if(inv.time("paid_at")==null && result.approvedAt()!=null && !result.approvedAt().isBefore(fresh.time("created_at")) && !result.approvedAt().isAfter(result.canceledAt()))
+                    if(inv.time("paid_at")==null && result.approvedAt()!=null && !result.approvedAt().isBefore(fresh.time("created_at")) && !result.approvedAt().isAfter(result.canceledAt())) {
                         ledger.update("update billing_invoices set paid_at=? where id=?",at(result.approvedAt()),inv.text("id"));
+                        ledger.update("update users set plan_chosen_at=coalesce(plan_chosen_at,?) where id=?",at(result.approvedAt()),user);
+                    }
                     ledger.update("update billing_invoices set status='VOID' where id=?",inv.text("id"));
                     if(funded) ledger.update("update billing_subscriptions set status='CANCELED',cancel_at_period_end=true,next_charge_at=null where user_id=? and cycle_no=?",user,inv.number("cycle_no"));
                 } else ledger.update("update billing_normal_orders set refund_status='UNKNOWN',lease_until=? where id=?",at(clock.instant().plusSeconds(60)),id);

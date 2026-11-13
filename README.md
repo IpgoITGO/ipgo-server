@@ -1,5 +1,7 @@
 # Ipgo Server
 
+신규 계정의 체험은 가입·조회 때가 아니라 명시적으로 선택한 순간 시작합니다. `planChosenAt`·`POST /api/billing/trial/start`·V34 기존 계정 호환 및 Client 연동/적용 조건은 [체험 선택 계약](docs/decisions/0021-explicit-trial-choice.md)을 따릅니다. 해당 Client 연결 전 Server 단독 배포는 하지 않습니다.
+
 토스 TEST 일반결제 1개월 이용권의 API·설정·상태·배포/복구는 [일반결제 계약](docs/decisions/0018-normal-payment-pass.md)을 따릅니다. 구현과 실제 PG 거래·배포 완료는 구분합니다.
 
 개발 배포의 검사한 JAR 재사용·원본/해시 검증·전송 상한/실패 단계·이전 버전 복구 경로는 [빌드 재사용 절차](docs/development/runtime-reuse.md)를 따릅니다. 실제 배포 전에는 변경과 승인 SHA를 별도로 확인합니다.

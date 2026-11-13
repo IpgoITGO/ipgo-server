@@ -80,6 +80,7 @@ class SignupTrialReuseIntegrationTests extends DatabaseIntegrationTest {
 
     @AfterEach void cleanup() {
         for (long id : created) {
+            jdbc.update("DELETE FROM billing_commands WHERE user_id = ?", id);
             jdbc.update("DELETE FROM billing_subscriptions WHERE user_id = ?", id);
             jdbc.update("DELETE FROM users WHERE id = ?", id);
         }
@@ -113,6 +114,7 @@ class SignupTrialReuseIntegrationTests extends DatabaseIntegrationTest {
     @Test void resignupWithinAYearStartsWithoutTrialAndOthersKeepTheirTrial() throws Exception {
         String email = email();
         long first = id(signup(email, Map.of()).andExpect(status().isCreated()));
+        startTrial(first);
         subscription(first).andExpect(jsonPath("status").value("TRIALING"));
 
         withdrawals.withdraw(first, PASSWORD);
@@ -131,6 +133,7 @@ class SignupTrialReuseIntegrationTests extends DatabaseIntegrationTest {
 
         // 처음 가입한 다른 이메일은 지금처럼 14일 체험이에요.
         long fresh = id(signup(email(), Map.of()).andExpect(status().isCreated()));
+        startTrial(fresh);
         subscription(fresh).andExpect(jsonPath("status").value("TRIALING"))
                 .andExpect(jsonPath("entitlements.canUpload").value(true));
     }
@@ -174,6 +177,7 @@ class SignupTrialReuseIntegrationTests extends DatabaseIntegrationTest {
                 secrets.fingerprint(email), Timestamp.from(past), Timestamp.from(past.plus(365, ChronoUnit.DAYS)));
 
         long id = id(signup(email, Map.of()).andExpect(status().isCreated()));
+        startTrial(id);
         subscription(id).andExpect(jsonPath("status").value("TRIALING"));
 
         trialReuse.purgeExpired();
@@ -208,6 +212,11 @@ class SignupTrialReuseIntegrationTests extends DatabaseIntegrationTest {
         long id = mapper.readTree(result.andReturn().getResponse().getContentAsString()).get("userId").longValue();
         created.add(id);
         return id;
+    }
+
+    private void startTrial(long userId) throws Exception {
+        mvc.perform(post("/api/billing/trial/start").with(jwt().jwt(c -> c.subject(Long.toString(userId))))
+                .header("Idempotency-Key", UUID.randomUUID().toString())).andExpect(status().isOk());
     }
 
     private ResultActions subscription(long userId) throws Exception {

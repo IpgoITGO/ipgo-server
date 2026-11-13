@@ -21,6 +21,8 @@ public class BillingController {
     private <T> ResponseEntity<T> ok(T body) { return ResponseEntity.ok().cacheControl(CacheControl.noStore()).body(body); }
     @GetMapping("/plans") public ResponseEntity<List<BillingViews.Plan>> plans() { return ok(billing.plans()); }
     @GetMapping("/subscription") public ResponseEntity<BillingViews.Subscription> subscription(Principal p) { return ok(billing.subscription(user(p))); }
+    @PostMapping("/trial/start") public ResponseEntity<BillingViews.Subscription> startTrial(Principal p,
+            @RequestHeader("Idempotency-Key") String key) { return ok(billing.startTrial(user(p),key)); }
     @GetMapping("/payment-methods") public ResponseEntity<List<BillingViews.Method>> methods(Principal p) { return ok(billing.methods(user(p))); }
     @GetMapping("/invoices") public ResponseEntity<BillingViews.InvoicePage> invoices(Principal p,@RequestParam(required=false) String cursor) { return ok(billing.invoices(user(p),cursor)); }
     @PostMapping("/registration-sessions") public ResponseEntity<BillingViews.Registration> register(Principal p,

@@ -94,7 +94,7 @@ migration_count="$(docker exec "${database_container}" \
 table_count="$(docker exec "${database_container}" \
   psql -U ipgo_migrator -d ipgo -Atc \
   "SELECT COUNT(*) FROM pg_tables WHERE schemaname = 'public' AND tablename <> 'flyway_schema_history'")"
-if [[ "${migration_count}" != "33" || "${table_count}" != "43" ]]; then
+if [[ "${migration_count}" != "34" || "${table_count}" != "43" ]]; then
   echo "unexpected schema: migrations=${migration_count}, tables=${table_count}" >&2
   exit 1
 fi
@@ -428,5 +428,30 @@ ROLLBACK;
 SQL
 expect_denied ipgo_ai_reader "SELECT cancellation_note FROM billing_commands"
 expect_denied ipgo_ai_service_reader "SELECT cancellation_note FROM billing_commands"
+
+# V34: migration 이전 계정의 호환 표시와 이후 계정의 NULL 기본값을 실제 역할로 확인한다.
+docker exec -i "${database_container}" psql -v ON_ERROR_STOP=1 -U ipgo_server -d ipgo >/dev/null <<'SQL'
+BEGIN;
+DO $$ BEGIN
+  IF (SELECT COUNT(*) FROM users WHERE id IN (1,2) AND plan_chosen_at=created_at) <> 2 THEN
+    RAISE EXCEPTION 'legacy plan choice backfill missing';
+  END IF;
+END $$;
+INSERT INTO users(id,email,password_hash) VALUES(990198,'v34-fixture@example.test','fixture');
+DO $$ BEGIN
+  IF (SELECT plan_chosen_at FROM users WHERE id=990198) IS NOT NULL THEN
+    RAISE EXCEPTION 'new account already chose a plan';
+  END IF;
+END $$;
+UPDATE users SET plan_chosen_at=NOW() WHERE id=990198;
+DO $$ BEGIN
+  IF (SELECT plan_chosen_at FROM users WHERE id=990198) IS NULL THEN
+    RAISE EXCEPTION 'server cannot record plan choice';
+  END IF;
+END $$;
+ROLLBACK;
+SQL
+expect_denied ipgo_ai_reader "SELECT plan_chosen_at FROM users"
+expect_denied ipgo_ai_service_reader "SELECT plan_chosen_at FROM users"
 
 echo "PostgreSQL migrations, tenant integrity, and database roles verified."

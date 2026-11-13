@@ -11,7 +11,7 @@ public final class BillingViews {
             int productLimit, Integer monthlyInsightLimit, String reason) { }
     public record Subscription(String planId, String status, Instant trialEnd, Instant periodStart,
             Instant periodEnd, Instant nextChargeAt, boolean cancelAtPeriodEnd, Instant graceUntil,
-            long amount, String priceVersion, Entitlements entitlements) { }
+            long amount, String priceVersion, Entitlements entitlements, Instant planChosenAt) { }
     public record Registration(String sessionId, String customerKey, String state, Instant expiresAt,
             String successUrl, String failUrl) { }
     public record Session(String sessionId, String status, String invoiceId, String paymentStatus, String errorCode) { }

@@ -71,7 +71,7 @@ class NormalPaymentIntegrationTests extends DatabaseIntegrationTest {
         when(gateway.confirm(anyString(),anyString(),anyLong(),anyString())).thenAnswer(i->new BillingGateway.Payment(i.getArgument(0),i.getArgument(1),i.getArgument(2),"KRW","DONE","new-mid",now));
     }
     long addUser() {
-        jdbc.update("insert into users(email,password_hash,created_at) values (?,'fixture',?)",UUID.randomUUID()+"@example.test",java.sql.Timestamp.from(START.minusSeconds(3600)));
+        jdbc.update("insert into users(email,password_hash,created_at,plan_chosen_at) values (?,'fixture',?,?)",UUID.randomUUID()+"@example.test",java.sql.Timestamp.from(START.minusSeconds(3600)),java.sql.Timestamp.from(START.minusSeconds(3600)));
         return jdbc.queryForObject("select max(id) from users",Long.class);
     }
     @AfterEach void cleanup() throws Exception {
@@ -102,6 +102,57 @@ class NormalPaymentIntegrationTests extends DatabaseIntegrationTest {
         for(String table:tables) jdbc.update("delete from "+table+" where user_id in (?,?)",user,other);
     }
     NormalPaymentService.Checkout order() { return normal.create(user,UUID.randomUUID().toString(),"seller",BillingPolicy.VERSION,NormalPaymentService.CONSENT); }
+    @Test void firstNormalApprovalRecordsChoiceAndLaterTrialStartKeepsPaidAccess() {
+        jdbc.update("update users set plan_chosen_at=null where id=?",user);
+        var o=order();
+        assertThat(billing.subscription(user).planChosenAt()).isNull();
+        normal.confirm(user,o.orderId(),"key",500);
+        var paid=billing.subscription(user);
+        assertThat(paid.planChosenAt()).isEqualTo(START);
+        now=START.plus(Duration.ofDays(1));
+        assertThat(billing.startTrial(user,UUID.randomUUID().toString()).planChosenAt()).isEqualTo(START);
+        assertThat(billing.subscription(user).status()).isEqualTo("ACTIVE");
+        assertThat(billing.subscription(user).periodEnd()).isEqualTo(paid.periodEnd());
+    }
+    @Test void trialChoiceSurvivesPaidUpgradeAndUnpaidCancellationDoesNotChooseAPlan() {
+        jdbc.update("update users set plan_chosen_at=null where id=?",user);
+        var pending=virtualOrder(false);
+        assertThat(billing.subscription(user).planChosenAt()).isNull();
+        when(gateway.lookup("key")).thenReturn(va(pending.orderId(),"WAITING_FOR_DEPOSIT","NONE"));
+        when(gateway.cancel(eq("key"),anyString(),anyString())).thenReturn(new BillingGateway.Payment("key",pending.orderId(),500,"KRW","CANCELED","new-mid",null,0,now,"가상계좌","NONE"));
+        assertThat(normal.refund(user,normal.get(user,pending.orderId()).invoiceId(),UUID.randomUUID().toString(),"발급 취소").status()).isEqualTo("CANCELED");
+        assertThat(billing.subscription(user).planChosenAt()).isNull();
+        billing.startTrial(user,UUID.randomUUID().toString());
+        now=START.plus(Duration.ofDays(1));
+        var paid=order();
+        when(gateway.confirm(anyString(),anyString(),anyLong(),anyString())).thenAnswer(i->new BillingGateway.Payment(i.getArgument(0),i.getArgument(1),i.getArgument(2),"KRW","DONE","new-mid",now));
+        normal.confirm(user,paid.orderId(),"paid-key",500);
+        assertThat(billing.subscription(user).planChosenAt()).isEqualTo(START);
+    }
+    @Test void alreadyCanceledPaidVirtualPaymentRecordsChoiceWithoutStartingAnotherTrial() {
+        jdbc.update("update users set plan_chosen_at=null where id=?",user);
+        var o=virtualOrder(false);String invoice=normal.get(user,o.orderId()).invoiceId();now=START.plusSeconds(60);
+        when(gateway.lookup("key")).thenReturn(new BillingGateway.Payment("key",o.orderId(),500,"KRW","CANCELED","new-mid",START,0,now,"가상계좌","COMPLETED"));
+        assertThat(normal.refund(user,invoice,UUID.randomUUID().toString(),"완료된 환급 조회").status()).isEqualTo("CANCELED");
+        var refunded=billing.subscription(user);
+        assertThat(refunded.planChosenAt()).isEqualTo(START);
+        var after=billing.startTrial(user,UUID.randomUUID().toString());
+        assertThat(after.entitlements().canCalculate()).isFalse();
+        assertThat(after.trialEnd()).isEqualTo(refunded.trialEnd());
+        verify(gateway,never()).cancel(anyString(),anyString(),anyString());
+        verify(gateway,never()).cancel(anyString(),anyString(),anyString(),any());
+    }
+    @Test void unknownApprovalRecordsChoiceOnlyAfterProviderReconciliation() {
+        jdbc.update("update users set plan_chosen_at=null where id=?",user);
+        var o=order();
+        when(gateway.confirm(anyString(),anyString(),anyLong(),anyString())).thenThrow(new BillingGateway.Failure(false,"TIMEOUT"));
+        normal.confirm(user,o.orderId(),"key",500);
+        assertThat(billing.subscription(user).planChosenAt()).isNull();
+        now=now.plusSeconds(61);
+        when(gateway.lookup("key")).thenReturn(new BillingGateway.Payment("key",o.orderId(),500,"KRW","DONE","new-mid",START));
+        normal.get(user,o.orderId());
+        assertThat(billing.subscription(user).planChosenAt()).isEqualTo(START);
+    }
     @Test void priceAndConsentAreServerOwnedAndCreateIsIdempotent() {
         String key=UUID.randomUUID().toString();
         var a=normal.create(user,key,"seller",BillingPolicy.VERSION,NormalPaymentService.CONSENT);

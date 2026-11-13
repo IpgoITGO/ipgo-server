@@ -601,7 +601,7 @@ GET은 설정 저장·계산을 시작하지 않습니다. S2로 확정한 조�
 
 | API | 동작 |
 |---|---|
-| `GET /api/replenishment-settings` (S1) | 기본값 조회. 셀러가 저장하기 전에는 `confirmed: false`와 제안값(리드타임 5일, 입고 단위 1개, `reviewCycleSource: "ESTIMATED"`)을 돌려줍니다. 입고 주기를 추정했으면 `reviewCycleBasis: { from, to, productCount }`(본 기간과 센 상품 수)를 같이 줍니다(#166). 저장 뒤에는 `confirmed: true`, `"DEFAULT"`, `reviewCycleBasis: null` |
+| `GET /api/replenishment-settings` (S1) | 기본값 조회. 셀러가 저장하기 전에는 `confirmed: false`와 제안값(리드타임 5일, 입고 단위 1개, `reviewCycleSource: "ESTIMATED"`)을 돌려줍니다. 입고 주기를 추정했으면 `reviewCycleBasis: { from, to, productCount }`(본 기간과 센 상품 수)를 같이 줍니다(#166). 저장 뒤에는 `confirmed: true`, `"DEFAULT"`, `reviewCycleBasis: null`. 저장 여부와 관계없이 지금 수불부로 추정한 입고 주기를 `reviewCycleSuggestion: { reviewCycleDays, from, to, productCount }`로 같이 줘서, 기본값을 바꾼 뒤에도 화면에서 추천값으로 되돌릴 수 있습니다(#214). 알려 주기만 하고 저장하지 않으며, 추정할 수 없으면 null |
 | `PUT /api/replenishment-settings` (S2) | `{leadTimeDays, reviewCycleDays, orderUnitQty, recalculate}`. 세 칸 모두 필수. 응답의 `runId`는 선행 조건을 충족한 계산 번호이며, 조건 미충족·엔진 비활성 때는 null |
 | `PUT /api/products/{productId}/replenishment-settings` (S3) | `{leadTimeDays, reviewCycleDays, orderUnitQty, unitCost}`. 입고 조건 세 칸은 보낸 값으로 모두 바꾸며, 비우면 기본값을 따릅니다. `unitCost`(0 이상)는 보낸 경우에만 바꿉니다. 다른 회원 상품 `403`, 없는 상품 `404` |
 

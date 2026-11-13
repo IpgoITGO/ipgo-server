@@ -23,13 +23,15 @@ public class AuthService implements UserDetailsService {
     private final PasswordEncoder passwordEncoder;
     private final EmailVerificationService verifications;
     private final SignupRules signupRules;
+    private final TrialReuseGuard trialReuse;
 
     public AuthService(UserAccountRepository users, PasswordEncoder passwordEncoder, EmailVerificationService verifications,
-            SignupRules signupRules) {
+            SignupRules signupRules, TrialReuseGuard trialReuse) {
         this.users = users;
         this.passwordEncoder = passwordEncoder;
         this.verifications = verifications;
         this.signupRules = signupRules;
+        this.trialReuse = trialReuse;
     }
 
     @Transactional
@@ -43,6 +45,7 @@ public class AuthService implements UserDetailsService {
             UserAccount user = users.saveAndFlush(new UserAccount(email, passwordEncoder.encode(request.password()),
                     request.companyName(), request.managerName(), businessRegNo));
             signupRules.record(user.getId(), request);
+            trialReuse.decideAtSignup(user.getId(), email);
             return profile(user);
         } catch (DataIntegrityViolationException exception) {
             throw new ResponseStatusException(HttpStatus.CONFLICT, "이미 가입된 이메일입니다.");

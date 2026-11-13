@@ -78,6 +78,44 @@ class AccountRecoveryIntegrationTests extends DatabaseIntegrationTest {
                 .andExpect(jsonPath("details.field").value("managerName"));
     }
 
+    // #206 사업자등록번호 + 담당자 이름으로 찾는다. 하이픈 · 띄어쓰기 · 대소문자는 무시하고, 둘 중 하나라도 다르면 못 찾는다.
+    @Test void findIdByBusinessNumberAndManager() throws Exception {
+        String tag = UUID.randomUUID().toString().substring(0, 8);
+        String number = businessNumber();
+        String dashed = number.substring(0, 3) + "-" + number.substring(3, 5) + "-" + number.substring(5);
+        user("ol" + UUID.randomUUID() + "@b.test", number, "Hong 길동" + tag);
+        user("se" + UUID.randomUUID() + "@a.test", number, "hong길동" + tag);
+        user("xx" + UUID.randomUUID() + "@c.test", number, "김철수" + tag);          // 다른 담당자
+        user("yy" + UUID.randomUUID() + "@d.test", businessNumber(), "hong길동" + tag); // 다른 번호
+        user("withdrawn-" + UUID.randomUUID() + "@withdrawn.invalid", number, "hong길동" + tag);
+
+        findByNumber(dashed, "HONG 길동" + tag).andExpect(status().isOk())
+                .andExpect(jsonPath("maskedEmails.length()").value(2))
+                .andExpect(jsonPath("maskedEmails[0]").value("se***@a.test"))
+                .andExpect(jsonPath("maskedEmail").value("se***@a.test"));
+        findByNumber(number, "다른사람").andExpect(status().isNotFound()).andExpect(jsonPath("code").value("NOT_FOUND"));
+
+        for (String bad : List.of("123-45", "12345678901", "12345abcde")) {
+            findByNumber(bad, "hong길동" + tag).andExpect(status().isBadRequest())
+                    .andExpect(jsonPath("details.field").value("businessRegNo"));
+        }
+        post("/api/auth/find-id", json(Map.of("businessRegNo", number))).andExpect(status().isBadRequest())
+                .andExpect(jsonPath("details.field").value("managerName"));
+        // 아무것도 없으면 새 방식(사업자등록번호)을 요구해요.
+        post("/api/auth/find-id", "{}").andExpect(status().isBadRequest())
+                .andExpect(jsonPath("details.field").value("businessRegNo"));
+    }
+
+    private ResultActions findByNumber(String number, String manager) throws Exception {
+        return post("/api/auth/find-id", json(Map.of("businessRegNo", number, "managerName", manager)));
+    }
+
+    private void user(String email, String businessNumber, String manager) {
+        jdbc.update("INSERT INTO users (email, password_hash, company_name, manager_name, business_reg_no) VALUES (?, ?, '회사', ?, ?)",
+                email, encoder.encode(OLD_PASSWORD), manager, businessNumber);
+        emails.add(email);
+    }
+
     @Test void findIdShowsAtMostFiveAccounts() throws Exception {
         String tag = UUID.randomUUID().toString().substring(0, 8);
         for (int i = 0; i < 6; i++) account("m" + i + UUID.randomUUID() + "@e.test", "회사" + tag, "담당" + tag);

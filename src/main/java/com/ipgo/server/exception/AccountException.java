@@ -24,6 +24,11 @@ public class AccountException extends RuntimeException {
     }
 
     // field: 틀린 비밀번호를 넣은 칸(탈퇴는 password, 비밀번호 바꾸기는 currentPassword)
+    // #206 가입 동의 · 사업자등록번호처럼 칸 단위로 알려 주는 입력 오류
+    public static AccountException invalidField(String field, String message) {
+        return new AccountException(HttpStatus.BAD_REQUEST, "INVALID_INPUT", message, field);
+    }
+
     public static AccountException wrongPassword(String field) {
         return new AccountException(HttpStatus.BAD_REQUEST, "WRONG_PASSWORD", "비밀번호가 맞지 않아요.", field);
     }

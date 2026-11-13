@@ -26,8 +26,10 @@ public class BillingService {
     private final BillingGateway gateway;
     private final Clock clock;
     private final com.ipgo.server.config.NormalPaymentProperties normal;
-    public BillingService(BillingLedger l,BillingProperties p,BillingSecrets s,BillingGateway g,Clock c,com.ipgo.server.config.NormalPaymentProperties n) {
-        ledger=l; properties=p; secrets=s; gateway=g; clock=c; normal=n;
+    private final TrialReuseGuard trialReuse;
+    public BillingService(BillingLedger l,BillingProperties p,BillingSecrets s,BillingGateway g,Clock c,com.ipgo.server.config.NormalPaymentProperties n,
+            TrialReuseGuard t) {
+        ledger=l; properties=p; secrets=s; gateway=g; clock=c; normal=n; trialReuse=t;
     }
     public void requireEnabled() {
         if(!properties.enabled()) throw new BillingException(503,"BILLING_DISABLED","결제 기능을 준비 중입니다.");
@@ -47,9 +49,12 @@ public class BillingService {
             if(!properties.merchantId().equals(existing.getFirst().text("merchant_id"))) throw BillingException.conflict("BILLING_MERCHANT_CHANGED");
             return;
         }
-        Instant created=ledger.one("select created_at from users where id=?",user).time("created_at");
-        ledger.update("insert into billing_subscriptions(user_id,merchant_id,mode,status,plan_id,price_version,amount,trial_end,customer_key) values (?, ?,'TEST','TRIALING','trial',?,0,?,?)",
-                user,properties.merchantId(),BillingPolicy.VERSION,at(created.plus(Duration.ofDays(14))),uuid());
+        var account=ledger.one("select created_at,email from users where id=?",user);
+        Instant created=account.time("created_at");
+        // #206 탈퇴 후 1년 안에 같은 이메일로 다시 가입했으면 무료 체험 없이 시작한다(체험 끝나는 날 = 가입 시각).
+        boolean reused=trialReuse.usedBefore(account.text("email"));
+        ledger.update("insert into billing_subscriptions(user_id,merchant_id,mode,status,plan_id,price_version,amount,trial_end,customer_key,trial_reused) values (?, ?,'TEST','TRIALING','trial',?,0,?,?,?)",
+                user,properties.merchantId(),BillingPolicy.VERSION,at(reused?created:created.plus(Duration.ofDays(14))),uuid(),reused);
     }
     private Row sub(long user) { return ledger.one("select * from billing_subscriptions where user_id=?",user); }
     public BillingViews.Subscription subscription(long user) { return locked(user,()->view(sub(user))); }
@@ -58,7 +63,7 @@ public class BillingService {
         String status=s.text("status"),reason=null;
         boolean paid=end!=null;
         if("CANCELED".equals(status)) { reason="SUBSCRIPTION_ENDED"; }
-        else if(!paid) { if(!now.isBefore(s.time("trial_end"))) { status="TRIAL_EXPIRED"; reason="TRIAL_ENDED"; } }
+        else if(!paid) { if(!now.isBefore(s.time("trial_end"))) { status="TRIAL_EXPIRED"; reason=s.flag("trial_reused")?"TRIAL_ALREADY_USED":"TRIAL_ENDED"; } }
         else if(!now.isBefore(end)) {
             if(normal.enabled() || s.flag("cancel_at_period_end")) { status="CANCELED"; reason="SUBSCRIPTION_ENDED"; }
             else {

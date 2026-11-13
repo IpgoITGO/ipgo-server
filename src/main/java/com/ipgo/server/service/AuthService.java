@@ -22,21 +22,27 @@ public class AuthService implements UserDetailsService {
     private final UserAccountRepository users;
     private final PasswordEncoder passwordEncoder;
     private final EmailVerificationService verifications;
+    private final SignupRules signupRules;
 
-    public AuthService(UserAccountRepository users, PasswordEncoder passwordEncoder, EmailVerificationService verifications) {
+    public AuthService(UserAccountRepository users, PasswordEncoder passwordEncoder, EmailVerificationService verifications,
+            SignupRules signupRules) {
         this.users = users;
         this.passwordEncoder = passwordEncoder;
         this.verifications = verifications;
+        this.signupRules = signupRules;
     }
 
     @Transactional
     public AccountProfile register(SignupRequest request) {
         String email = EmailNormalizer.normalize(request.email());
+        // #206 동의 · 사업자등록번호를 먼저 검사해, 틀리면 인증 토큰을 쓰지 않고 다시 시도할 수 있게 한다.
+        String businessRegNo = signupRules.check(request);
         if (users.existsByEmail(email)) throw EmailVerificationService.duplicate();
         verifications.consumeToken(email, request.verificationToken());
         try {
             UserAccount user = users.saveAndFlush(new UserAccount(email, passwordEncoder.encode(request.password()),
-                    request.companyName(), request.managerName(), request.businessRegNo()));
+                    request.companyName(), request.managerName(), businessRegNo));
+            signupRules.record(user.getId(), request);
             return profile(user);
         } catch (DataIntegrityViolationException exception) {
             throw new ResponseStatusException(HttpStatus.CONFLICT, "이미 가입된 이메일입니다.");

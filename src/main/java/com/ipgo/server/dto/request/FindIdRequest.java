@@ -1,9 +1,10 @@
 package com.ipgo.server.dto.request;
 
-import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Size;
 
-// #185 아이디 찾기. 회사명 · 담당자 이름은 가입 필수 칸이라 모든 계정을 찾을 수 있다.
-// 사업자등록번호는 쇼핑몰에 공개되는 번호이고 가입 때 선택이라 쓰지 않는다.
-public record FindIdRequest(@NotBlank @Size(max = 50) String companyName, @NotBlank @Size(max = 50) String managerName) {
+// #206 아이디 찾기: 사업자등록번호 + 담당자 이름.
+// 사업자등록번호는 하나로 정확히 맞고, 담당자 이름은 쇼핑몰에 공개되지 않아 함께 쓴다.
+// 프론트가 바뀌는 동안에는 이전 방식(회사명 + 담당자 이름, #185)도 받는다. businessRegNo가 있으면 그쪽을 쓴다.
+public record FindIdRequest(@Size(max = 20) String businessRegNo, @Size(max = 50) String companyName,
+        @Size(max = 50) String managerName) {
 }

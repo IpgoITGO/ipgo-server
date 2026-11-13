@@ -27,7 +27,7 @@ public class AccountRecoveryController {
 
     @PostMapping("/find-id")
     public FoundAccounts findId(@Valid @RequestBody FindIdRequest request) {
-        return recovery.findId(request.companyName(), request.managerName());
+        return recovery.findId(request.businessRegNo(), request.companyName(), request.managerName());
     }
 
     @PostMapping("/password-reset/code")

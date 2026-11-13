@@ -14,7 +14,12 @@ public record SignupRequest(
         @NotBlank @Size(min = 1, max = 50) String companyName,
         @NotBlank @Size(min = 1, max = 50) String managerName,
         @Pattern(regexp = "[0-9]{10}") String businessRegNo,
-        @NotBlank @Pattern(regexp = "[A-Za-z0-9_-]{43}") String verificationToken) {
+        @NotBlank @Pattern(regexp = "[A-Za-z0-9_-]{43}") String verificationToken,
+        Agreements agreements) {
+
+    // #206 가입 동의: [필수] 이용약관, [필수] 개인정보 수집 · 이용. version은 화면에 보여 준 문서의 버전이다.
+    public record Agreements(Boolean terms, Boolean privacy, String version) {
+    }
 
     public SignupRequest {
         email = EmailNormalizer.normalize(email);

@@ -336,6 +336,14 @@ class RuntimeVerificationTests(unittest.TestCase):
         self.service = {
             "serviceName": self.name,
             "status": "ACTIVE",
+            "launchType": "EC2",
+            "schedulingStrategy": "REPLICA",
+            "deploymentController": {"type": "ECS"},
+            "deploymentConfiguration": {
+                "strategy": "ROLLING", "minimumHealthyPercent": 0, "maximumPercent": 100,
+                "deploymentCircuitBreaker": {"enable": True, "rollback": True},
+            },
+            "availabilityZoneRebalancing": "DISABLED",
             "taskDefinition": self.td,
             "desiredCount": 1,
             "runningCount": 1,
@@ -567,6 +575,12 @@ class RuntimeVerificationTests(unittest.TestCase):
 
         with self.assertRaises(PermissionError):
             M.preflight(self.env, "server", read)
+
+    def test_post_check_rejects_changed_infra_policy(self):
+        self.service["deploymentConfiguration"]["maximumPercent"] = 200
+        with self.assertRaisesRegex(M.GateError, "Infra #63"):
+            self.check()
+        self.smoke.assert_not_called()
 
     def test_ai_agent_http_health_and_stopped_worker_are_verified(self):
         old = self.td

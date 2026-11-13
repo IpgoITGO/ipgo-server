@@ -261,9 +261,36 @@ def preflight(env, service, read):
         data["services"][0]["status"] == "ACTIVE" and data["services"][0]["serviceName"] == name,
         "Target service is not active or has the wrong identity",
     )
+    check_onebox_server_policy(env, name, data["services"][0])
     # Detect missing read permissions before ECR push or ECS changes.
     task_list(read, name)
     return {"read_preflight": "passed"}
+
+
+def check_onebox_server_policy(env, name, current):
+    """Validate the Infra #63 contract without changing the service policy."""
+    if env.get("COMPUTE_MODE") != "onebox" or name != "ipgo-dev-onebox-server":
+        return
+    message = "One-box Server policy mismatch; stop deployment and review Infra #63"
+    config = current.get("deploymentConfiguration")
+    controller = current.get("deploymentController")
+    require(isinstance(config, dict) and isinstance(controller, dict), message)
+    breaker = config.get("deploymentCircuitBreaker")
+    require(isinstance(breaker, dict), message)
+    require(
+        current.get("launchType") == "EC2"
+        and current.get("schedulingStrategy") == "REPLICA"
+        and controller.get("type") == "ECS"
+        and config.get("strategy") == "ROLLING"
+        and type(config.get("minimumHealthyPercent")) is int
+        and config["minimumHealthyPercent"] == 0
+        and type(config.get("maximumPercent")) is int
+        and config["maximumPercent"] == 100
+        and breaker.get("enable") is True
+        and breaker.get("rollback") is True
+        and current.get("availabilityZoneRebalancing") == "DISABLED",
+        message,
+    )
 
 
 def service_name(env, service):
@@ -300,6 +327,7 @@ def active_template_arn(env, name, read):
     require(not data.get("failures") and len(data["services"]) == 1, "Template service inspection failed")
     current = data["services"][0]
     require(current["status"] == "ACTIVE" and current["serviceName"] == name, "Unexpected template service")
+    check_onebox_server_policy(env, name, current)
     arn = current["taskDefinition"]
     require_template_arn(env, name, arn)
     deployments = current["deployments"]
@@ -449,6 +477,7 @@ def verify_service(read, env, name, td_arn, count, container, digests, api=True)
         current["status"] == "ACTIVE" and current["serviceName"] == name and current["taskDefinition"] == td_arn,
         "Candidate task definition is not active; possible rollback",
     )
+    check_onebox_server_policy(env, name, current)
     require(
         current["desiredCount"] == count and current["runningCount"] == count and current["pendingCount"] == 0,
         "Approved replica counts are not stable",

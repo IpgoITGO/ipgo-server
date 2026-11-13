@@ -18,11 +18,16 @@ public class BillingWebhookController {
     private final BillingProperties properties;
     private final BillingService billing;
     private final JsonMapper mapper;
-    public BillingWebhookController(BillingProperties p,BillingService b,JsonMapper m) { properties=p; billing=b; mapper=m; }
+    private final com.ipgo.server.service.NormalPaymentService normal;
+    public BillingWebhookController(BillingProperties p,BillingService b,JsonMapper m,com.ipgo.server.service.NormalPaymentService n) {
+        properties=p; billing=b; mapper=m; normal=n;
+    }
     @PostMapping("/api/billing/webhooks/toss")
     public ResponseEntity<Void> webhook(@RequestHeader(value="tosspayments-webhook-transmission-time",required=false) String time,
             @RequestHeader(value="tosspayments-webhook-signature",required=false) String signature,jakarta.servlet.http.HttpServletRequest request) {
         billing.requireEnabled();
+        // #208 결제 상태 웹훅은 토스가 서명하지 않는다. 서명 없는 요청은 "이 주문을 다시 조회해" 신호로만 받는다.
+        if(time==null && signature==null) return unsignedPaymentSignal(request);
         if(time==null || time.length()>100 || signature==null || signature.length()>4096)
             throw BillingException.forbidden();
         if(request.getContentLengthLong()>65536) throw new BillingException(413,"WEBHOOK_TOO_LARGE","웹훅 크기 제한을 초과했습니다.");
@@ -51,6 +56,25 @@ public class BillingWebhookController {
             billing.deletedWebhook(key,BillingSecrets.hash("BILLING_DELETED:"+key.toLowerCase(java.util.Locale.ROOT)));
         }
         // 빌링 승인은 성공 webhook이 없다. 다른 이벤트로 원장을 임의 변경하지 않는다.
+        return ResponseEntity.ok().cacheControl(CacheControl.noStore()).build();
+    }
+
+    // 서명 없는 웹훅: 결제 상태 변경(PAYMENT_STATUS_CHANGED, data.orderId)과 가상계좌 입금 알림(DEPOSIT_CALLBACK, orderId)만 받는다.
+    // 내용(상태 · 금액)은 쓰지 않고 주문번호로 "다시 조회" 표시만 남긴다. 키 비활성화(BILLING_DELETED) 같은 다른 이벤트는 여전히 서명이 있어야 한다.
+    private ResponseEntity<Void> unsignedPaymentSignal(jakarta.servlet.http.HttpServletRequest request) {
+        if(request.getContentLengthLong()>65536) throw new BillingException(413,"WEBHOOK_TOO_LARGE","웹훅 크기 제한을 초과했습니다.");
+        byte[] body;
+        try { body=request.getInputStream().readNBytes(65537); }
+        catch(java.io.IOException e) { throw BillingException.invalid(); }
+        if(body.length>65536) throw new BillingException(413,"WEBHOOK_TOO_LARGE","웹훅 크기 제한을 초과했습니다.");
+        JsonNode event;
+        try { event=mapper.readTree(body); } catch(Exception e) { throw BillingException.invalid(); }
+        String type=event.path("eventType").asText("");
+        String orderId;
+        if("PAYMENT_STATUS_CHANGED".equals(type)) orderId=event.path("data").path("orderId").asText("");
+        else if(event.path("eventType").isMissingNode() && event.has("secret") && event.has("orderId")) orderId=event.path("orderId").asText("");
+        else throw BillingException.forbidden();
+        normal.nudge(orderId);
         return ResponseEntity.ok().cacheControl(CacheControl.noStore()).build();
     }
 }

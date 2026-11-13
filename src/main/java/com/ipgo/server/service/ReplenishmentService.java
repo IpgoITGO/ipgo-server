@@ -34,17 +34,21 @@ public class ReplenishmentService {
     @Transactional(readOnly = true)
     public DefaultSettings defaults(long userId) {
         var warehouse = warehouses.findDefault(userId);
-        if (warehouse.isEmpty() || warehouse.get().hasConfirmedDefaults()) {
-            return DefaultSettings.from(warehouse, suggestions.defaults(warehouse), null);
-        }
-        // 확인 전에는 최근 12개월 입고 기록으로 추정한 주기와 그 근거를 같이 보여 준다(#166).
+        if (warehouse.isEmpty()) return DefaultSettings.from(warehouse, suggestions.defaults(warehouse), null, null);
+        // 최근 12개월 입고 기록으로 추정한 주기(#166). 확인한 뒤에도 추천값으로 되돌릴 수 있게 늘 같이 준다(#214).
         var estimate = suggestions.estimate(warehouse.get());
+        var suggestion = estimate.reviewCycleDays() == null ? null : new DefaultSettings.ReviewCycleSuggestion(
+                estimate.reviewCycleDays(), estimate.from(), estimate.to(), estimate.productCount());
+        if (warehouse.get().hasConfirmedDefaults()) {
+            return DefaultSettings.from(warehouse, suggestions.defaults(warehouse), null, suggestion);
+        }
+        // 확인 전에는 추정한 주기를 기본값 칸에 채우고 그 근거를 같이 보여 준다(#166).
         var stored = com.ipgo.server.dto.response.ProductSettings.defaults(warehouse);
         var values = new com.ipgo.server.dto.response.ProductSettings(stored.leadTimeDays(), estimate.reviewCycleDays(),
                 stored.orderUnitQty());
-        var basis = estimate.reviewCycleDays() == null ? null
+        var basis = suggestion == null ? null
                 : new DefaultSettings.ReviewCycleBasis(estimate.from(), estimate.to(), estimate.productCount());
-        return DefaultSettings.from(warehouse, values, basis);
+        return DefaultSettings.from(warehouse, values, basis, suggestion);
     }
 
     @Transactional

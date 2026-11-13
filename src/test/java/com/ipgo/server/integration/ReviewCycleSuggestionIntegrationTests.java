@@ -55,7 +55,12 @@ class ReviewCycleSuggestionIntegrationTests extends DatabaseIntegrationTest {
         mvc.perform(get("/api/replenishment-settings").with(jwt().jwt(j -> j.subject(""+owner))))
                 .andExpect(jsonPath("reviewCycleBasis.from").value("2025-11-01"))
                 .andExpect(jsonPath("reviewCycleBasis.to").value("2026-10-31"))
-                .andExpect(jsonPath("reviewCycleBasis.productCount").value(1));
+                .andExpect(jsonPath("reviewCycleBasis.productCount").value(1))
+                // #214 확인 전에도 추천값을 같은 모양으로 준다(기본값 칸과 같은 값).
+                .andExpect(jsonPath("reviewCycleSuggestion.reviewCycleDays").value(18))
+                .andExpect(jsonPath("reviewCycleSuggestion.from").value("2025-11-01"))
+                .andExpect(jsonPath("reviewCycleSuggestion.to").value("2026-10-31"))
+                .andExpect(jsonPath("reviewCycleSuggestion.productCount").value(1));
         mvc.perform(get("/api/products").with(jwt().jwt(j -> j.subject(""+owner))))
                 .andExpect(status().isOk()).andExpect(jsonPath("items[0].settings.reviewCycleDays").value(18))
                 .andExpect(jsonPath("items[0].overridden").isEmpty());
@@ -71,7 +76,8 @@ class ReviewCycleSuggestionIntegrationTests extends DatabaseIntegrationTest {
         done(warehouse,"2026-10",1,1,20);
         s1(null,"ESTIMATED",false);
         mvc.perform(get("/api/replenishment-settings").with(jwt().jwt(j -> j.subject(""+owner))))
-                .andExpect(jsonPath("reviewCycleBasis").isEmpty());
+                .andExpect(jsonPath("reviewCycleBasis").isEmpty())
+                .andExpect(jsonPath("reviewCycleSuggestion").isEmpty());
     }
     @Test void medianAcrossProductsIsRoundedLikeTheEngine() throws Exception {
         jdbc.update("INSERT INTO products(user_id,sku_barcode,sku_name) VALUES (?,'B','상품B')", owner);
@@ -122,6 +128,16 @@ class ReviewCycleSuggestionIntegrationTests extends DatabaseIntegrationTest {
         replenishment.saveDefaults(owner,new DefaultSettingsRequest(5,11,1L,false));
         jdbc.update("INSERT INTO replenishment_settings(product_id,lead_time_days,review_cycle_days,order_unit_qty,updated_at) VALUES (?,NULL,19,NULL,CURRENT_TIMESTAMP)",product);
         done(warehouse,"2026-10",1,1,8,15); s1(11,"DEFAULT",true);
+        // #214 기본값을 바꾼 뒤에도 추천값(10/1 · 8 · 15 → 7일)과 근거를 준다. 기본값 칸과 출처는 그대로다.
+        mvc.perform(get("/api/replenishment-settings").with(jwt().jwt(j -> j.subject(""+owner))))
+                .andExpect(jsonPath("reviewCycleDays").value(11))
+                .andExpect(jsonPath("reviewCycleBasis").isEmpty())
+                .andExpect(jsonPath("reviewCycleSuggestion.reviewCycleDays").value(7))
+                .andExpect(jsonPath("reviewCycleSuggestion.from").value("2025-11-01"))
+                .andExpect(jsonPath("reviewCycleSuggestion.to").value("2026-10-31"))
+                .andExpect(jsonPath("reviewCycleSuggestion.productCount").value(1));
+        // 추천값을 알려 주기만 하고 저장하지 않는다.
+        assertThat(jdbc.queryForObject("SELECT default_review_cycle_days FROM warehouses WHERE id = ?",Integer.class,warehouse)).isEqualTo(11);
         mvc.perform(get("/api/products").with(jwt().jwt(j -> j.subject(""+owner))))
                 .andExpect(jsonPath("items[0].settings.reviewCycleDays").value(19));
         mvc.perform(get("/api/products/{id}/detail",product).with(jwt().jwt(j -> j.subject(""+owner))))

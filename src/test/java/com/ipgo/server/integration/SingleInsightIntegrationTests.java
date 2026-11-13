@@ -309,9 +309,20 @@ class SingleInsightIntegrationTests extends DatabaseIntegrationTest {
         assertThat(sent.path("input").path("startStockEstimated").asBoolean()).isTrue();
         assertThat(sent.path("input").path("hasNoDateReceipts").asBoolean()).isTrue();
     }
-    @Test void lowGradeRequiresActualStoredBounds() {
+    @Test void lowGradeWithoutBoundsExplainsOnlyAvailableStoredFacts() {
         jdbc.update("UPDATE calculation_results SET valid_observation_days=10,risk_basis=NULL,pre_arrival_risk=NULL WHERE id=811");
-        jdbc.update("UPDATE scenario_results SET post_arrival_risk=NULL WHERE result_id=811"); unavailable();
+        jdbc.update("UPDATE scenario_results SET post_arrival_risk=NULL WHERE result_id=811");
+        single.regenerate(owner,811);
+        assertThat(calls).hasValue(1);
+        assertThat(sent.path("input").path("riskStatus").asText()).isEqualTo("LOW_GRADE");
+        assertThat(sent.path("input").path("placeholders").toString())
+                .contains("qty_p100").doesNotContain("forecast_range", "risk_pre", "risk_post");
+        assertThat(insights.insight(owner,811).orElseThrow().text()).doesNotContain("{{", "~", "%");
+    }
+    @Test void lowGradeWithOnlyOneStoredBoundRemainsUnavailable() {
+        jdbc.update("UPDATE calculation_results SET valid_observation_days=10,risk_basis=NULL,pre_arrival_risk=NULL,forecast_range_low=20 WHERE id=811");
+        jdbc.update("UPDATE scenario_results SET post_arrival_risk=NULL WHERE result_id=811");
+        unavailable();
     }
     @Test void lowGradeWithStoredBoundsDoesNotInventRiskPercentages() {
         jdbc.update("UPDATE calculation_results SET valid_observation_days=10,risk_basis=NULL,pre_arrival_risk=NULL,forecast_range_low=20,forecast_range_high=40 WHERE id=811");

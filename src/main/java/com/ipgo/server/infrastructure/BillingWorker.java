@@ -29,7 +29,7 @@ public class BillingWorker {
     @PreDestroy public void close() { executor.shutdownNow(); }
     public void poll() {
         if(!properties.enabled() || !properties.workerEnabled()) return;
-        try { normal.processOne(); refunds.processOne(); service.prepareRenewals(); service.processOne(); service.retireOneMethod(); }
+        try { normal.processOne(); normal.checkPaidOne(); refunds.processOne(); service.prepareRenewals(); service.processOne(); service.retireOneMethod(); }
         catch(Exception e) { log.warn("Billing worker requires reconciliation; exception type={}",e.getClass().getSimpleName()); }
     }
 }

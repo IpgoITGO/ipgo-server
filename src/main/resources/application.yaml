@@ -38,6 +38,9 @@ ipgo:
     enabled: ${IPGO_PAYMENT_ENABLED:false}
     secret-key: ${IPGO_PAYMENT_SECRET_KEY:}
     merchant-id: ${IPGO_PAYMENT_MERCHANT_ID:}
+    refund-policy:
+      # #208 결제 완료 후 회원 직접 환불 제한. 프론트가 결제 화면 고지를 넣고 환불 버튼을 뺀 배포와 같이 true로 켠다.
+      restricted: ${IPGO_PAYMENT_REFUND_RESTRICTED:false}
   billing:
     enabled: ${IPGO_BILLING_ENABLED:false}
     worker-enabled: ${IPGO_BILLING_WORKER_ENABLED:false}

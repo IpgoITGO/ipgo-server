@@ -32,6 +32,8 @@ class NormalPaymentIntegrationTests extends DatabaseIntegrationTest {
     @MockitoBean NormalPaymentGateway gateway;
     @MockitoBean BillingGateway legacy;
     @MockitoBean Clock clock;
+    // #208 기본은 실제 값(환불 제한 꺼짐)이고, 환불 제한 테스트에서만 켠다.
+    @org.springframework.test.context.bean.override.mockito.MockitoSpyBean com.ipgo.server.config.RefundPolicyProperties refundPolicy;
     static final Instant START=Instant.parse("2026-01-31T01:00:00Z");
     Instant now;
     long user,other;
@@ -54,6 +56,11 @@ class NormalPaymentIntegrationTests extends DatabaseIntegrationTest {
             for(String s:sql.split(";")) if(!s.isBlank()) jdbc.execute(s);
             String upgrade=new org.springframework.core.io.ClassPathResource("db/migration/V30__support_virtual_account_refunds.sql").getContentAsString(StandardCharsets.UTF_8).split("-- PostgreSQL 전용")[0];
             for(String statement:upgrade.split(";")) if(!statement.isBlank()) jdbc.execute(statement);
+        }
+        // #208 주문별 결제 동의 버전 · 시각(V32)
+        if(jdbc.queryForObject("select count(*) from information_schema.columns where lower(table_name)='billing_normal_orders' and lower(column_name)='consent_version'",Integer.class)==0) {
+            String consent=new org.springframework.core.io.ClassPathResource("db/migration/V32__record_normal_payment_consent.sql").getContentAsString(StandardCharsets.UTF_8);
+            for(String statement:consent.split(";")) if(!statement.isBlank()) jdbc.execute(statement);
         }
         now=START; when(clock.instant()).thenAnswer(i->now);
         user=addUser(); other=addUser();
@@ -314,6 +321,52 @@ class NormalPaymentIntegrationTests extends DatabaseIntegrationTest {
         assertThat(normal.refund(user,inv,UUID.randomUUID().toString(),"환불",account()).status()).isEqualTo("CANCELED");
         assertThat(billing.subscription(user).status()).isEqualTo("CANCELED");
     }
+    private void restrictRefunds() {
+        when(refundPolicy.restricted()).thenReturn(true);
+        when(refundPolicy.consentVersion()).thenReturn(com.ipgo.server.config.RefundPolicyProperties.CONSENT_NO_REFUND);
+    }
+    private static String code(Throwable t) { return ((BillingException) t).code(); }
+
+    // #208 환불 제한을 켜면 새 결제 동의 버전(v2)만 받고, 주문에 버전 · 시각을 남기며, 결제 완료 건의 새 환불은 거절한다.
+    @Test void restrictedPolicyRequiresNewConsentAndRejectsRefundOfPaidOrder() {
+        restrictRefunds();
+        assertThat(billing.plans().getFirst().consentVersion()).isEqualTo(com.ipgo.server.config.RefundPolicyProperties.CONSENT_NO_REFUND);
+        assertThatThrownBy(()->normal.create(user,UUID.randomUUID().toString(),"seller",BillingPolicy.VERSION,NormalPaymentService.CONSENT))
+                .satisfies(t->assertThat(code(t)).isEqualTo("BILLING_CONSENT_REQUIRED"));
+        var o=normal.create(user,UUID.randomUUID().toString(),"seller",BillingPolicy.VERSION,com.ipgo.server.config.RefundPolicyProperties.CONSENT_NO_REFUND);
+        var row=jdbc.queryForMap("select consent_version,consented_at from billing_normal_orders where id=?",o.orderId());
+        assertThat(row.get("consent_version")).isEqualTo(com.ipgo.server.config.RefundPolicyProperties.CONSENT_NO_REFUND);
+        assertThat(row.get("consented_at")).isNotNull();
+
+        normal.confirm(user,o.orderId(),"key",500);
+        String invoice=normal.get(user,o.orderId()).invoiceId();
+        assertThatThrownBy(()->normal.refund(user,invoice,UUID.randomUUID().toString(),"환불"))
+                .satisfies(t->assertThat(code(t)).isEqualTo("REFUND_NOT_ALLOWED"));
+        assertThat(normal.get(user,o.orderId()).refundStatus()).isNull();
+        assertThat(billing.subscription(user).entitlements().canCalculate()).isTrue();
+        verify(gateway,never()).cancel(anyString(),anyString(),anyString());
+        verify(gateway,never()).cancel(anyString(),anyString(),anyString(),any());
+    }
+
+    // #208 환불 제한을 켜도 입금 전 가상계좌 취소와, 켜기 전에 시작된 환불(계좌 재입력)은 그대로 끝까지 처리한다.
+    @Test void restrictedPolicyKeepsUnpaidCancelAndInProgressRefund() {
+        var started=virtualOrder(true);String startedInvoice=normal.get(user,started.orderId()).invoiceId();
+        when(gateway.lookup("key")).thenReturn(va(started.orderId(),"DONE","NONE"));
+        assertThat(normal.refund(user,startedInvoice,UUID.randomUUID().toString(),"환불").status()).isEqualTo("ACCOUNT_REQUIRED");
+
+        restrictRefunds();
+        when(gateway.cancel(eq("key"),anyString(),anyString(),eq(account()))).thenReturn(va(started.orderId(),"CANCELED","COMPLETED"));
+        assertThat(normal.refund(user,startedInvoice,UUID.randomUUID().toString(),"환불",account()).status()).isEqualTo("CANCELED");
+
+        var pending=normal.create(other,UUID.randomUUID().toString(),"seller",BillingPolicy.VERSION,com.ipgo.server.config.RefundPolicyProperties.CONSENT_NO_REFUND);
+        when(gateway.confirm(anyString(),anyString(),anyLong(),anyString())).thenReturn(new BillingGateway.Payment("other-key",pending.orderId(),500,"KRW","WAITING_FOR_DEPOSIT","new-mid",null,0,null,"가상계좌","NONE"));
+        normal.confirm(other,pending.orderId(),"other-key",500);
+        String pendingInvoice=normal.get(other,pending.orderId()).invoiceId();
+        when(gateway.lookup("other-key")).thenReturn(new BillingGateway.Payment("other-key",pending.orderId(),500,"KRW","WAITING_FOR_DEPOSIT","new-mid",null,0,null,"가상계좌","NONE"));
+        when(gateway.cancel(eq("other-key"),anyString(),anyString())).thenReturn(new BillingGateway.Payment("other-key",pending.orderId(),500,"KRW","CANCELED","new-mid",null,0,now,"가상계좌","NONE"));
+        assertThat(normal.refund(other,pendingInvoice,UUID.randomUUID().toString(),"발급 취소").status()).isEqualTo("CANCELED");
+    }
+
     @Test void refundAccountIsRedactedAndOtherOwnersCannotCancel() {
         var o=virtualOrder(true);String inv=normal.get(user,o.orderId()).invoiceId();clearInvocations(gateway);
         assertThatThrownBy(()->normal.refund(other,inv,UUID.randomUUID().toString(),"환불",account())).isInstanceOf(BillingException.class);
@@ -354,4 +407,139 @@ class NormalPaymentIntegrationTests extends DatabaseIntegrationTest {
         assertThat(billing.subscription(user).status()).isEqualTo("ACTIVE");
     }
 
+    // #208 리뷰 P1: 제한이 켜진 뒤, DB는 입금 대기(PENDING)인데 토스에서는 이미 입금(DONE)된 가상계좌.
+    // 계좌를 보내든 안 보내든 환불을 시작하지 않고 결제 완료로만 반영해요. 계좌를 다시 넣어도 우회되지 않아요.
+    @Test void restrictedRefundOfDepositRacingVirtualAccountIsRejectedWithOrWithoutAccount() {
+        for(boolean withAccount:List.of(false,true)) {
+            for(String table:List.of("billing_normal_orders","billing_invoices","billing_subscriptions")) jdbc.update("delete from "+table+" where user_id=?",user);
+            reset(refundPolicy); clearInvocations(gateway);
+            var o=virtualOrder(false);String inv=normal.get(user,o.orderId()).invoiceId();
+            restrictRefunds();
+            when(gateway.lookup("key")).thenReturn(va(o.orderId(),"DONE","NONE"));
+            assertThatThrownBy(()->normal.refund(user,inv,UUID.randomUUID().toString(),"발급 취소",withAccount?account():null))
+                    .satisfies(t->assertThat(code(t)).isEqualTo("REFUND_NOT_ALLOWED"));
+            var row=jdbc.queryForMap("select status,refund_status,refund_account_ciphertext,refund_unpaid_only from billing_normal_orders where id=?",o.orderId());
+            assertThat(row.get("status")).isEqualTo("PAID");
+            assertThat(row.get("refund_status")).isNull();
+            assertThat(row.get("refund_account_ciphertext")).isNull();
+            assertThat(row.get("refund_unpaid_only")).isEqualTo(false);
+            assertThat(billing.subscription(user).status()).isEqualTo("ACTIVE");
+            // 계좌를 다시 넣어 요청해도 결제 완료 건이라 거절돼요.
+            assertThatThrownBy(()->normal.refund(user,inv,UUID.randomUUID().toString(),"발급 취소",account()))
+                    .satisfies(t->assertThat(code(t)).isEqualTo("REFUND_NOT_ALLOWED"));
+            normal.processOne();
+            verify(gateway,never()).cancel(anyString(),anyString(),anyString());
+            verify(gateway,never()).cancel(anyString(),anyString(),anyString(),any());
+        }
+    }
+
+    // #208 리뷰 P1: 발급 취소를 보내는 사이에 입금되어 토스가 환불계좌를 요구하면, 계좌를 받지 않고 다시 조회해 되돌려요.
+    @Test void restrictedUnpaidCancelThatRacesADepositIsReleasedOnRecheck() {
+        var o=virtualOrder(false);String inv=normal.get(user,o.orderId()).invoiceId();
+        restrictRefunds();
+        when(gateway.lookup("key")).thenReturn(va(o.orderId(),"WAITING_FOR_DEPOSIT","NONE"));
+        when(gateway.cancel(eq("key"),anyString(),anyString())).thenThrow(new BillingGateway.Failure(true,"REFUND_ACCOUNT_INVALID"));
+        assertThat(normal.refund(user,inv,UUID.randomUUID().toString(),"발급 취소").status()).isEqualTo("UNKNOWN");
+        when(gateway.lookup("key")).thenReturn(va(o.orderId(),"DONE","NONE"));
+        now=now.plusSeconds(61); normal.processOne();
+        assertThat(normal.get(user,o.orderId()).refundStatus()).isNull();
+        assertThat(normal.get(user,o.orderId()).status()).isEqualTo("PAID");
+        assertThat(billing.subscription(user).status()).isEqualTo("ACTIVE");
+        verify(gateway,times(1)).cancel(anyString(),anyString(),anyString());
+        verify(gateway,never()).cancel(anyString(),anyString(),anyString(),any());
+    }
+
+    // #208 리뷰 P2: 토스 관리자 화면에서 환불하면 하루 한 번 다시 조회할 때 주문 · 이용권에 반영해요. 토스에 취소를 다시 보내지 않아요.
+    @Test void adminRefundInProviderConsoleIsReflectedOnDailyRecheck() {
+        var o=order(); normal.confirm(user,o.orderId(),"key",500);
+        when(gateway.lookup("key")).thenReturn(new BillingGateway.Payment("key",o.orderId(),500,"KRW","DONE","new-mid",START));
+        normal.checkPaidOne();
+        assertThat(normal.get(user,o.orderId()).status()).isEqualTo("PAID");
+
+        // 관리자 화면에서 환불. 하루가 안 지났으면 다시 조회하지 않아요.
+        now=now.plus(Duration.ofHours(2));
+        when(gateway.lookup("key")).thenReturn(new BillingGateway.Payment("key",o.orderId(),500,"KRW","CANCELED","new-mid",START,0,now));
+        normal.checkPaidOne();
+        verify(gateway,times(1)).lookup("key");
+        assertThat(billing.subscription(user).status()).isEqualTo("ACTIVE");
+
+        now=now.plus(Duration.ofDays(1));
+        normal.checkPaidOne();
+        assertThat(normal.get(user,o.orderId()).refundStatus()).isEqualTo("CANCELED");
+        assertThat(billing.subscription(user).status()).isEqualTo("CANCELED");
+        assertThat(billing.subscription(user).entitlements().canCalculate()).isFalse();
+        assertThat(billing.invoices(user,null).items().getFirst().status()).isEqualTo("VOID");
+        assertThat(jdbc.queryForObject("select refund_reason from billing_normal_orders where id=?",String.class,o.orderId())).isEqualTo("토스 관리자 화면 환불");
+        normal.checkPaidOne(); normal.processOne();
+        verify(gateway,never()).cancel(anyString(),anyString(),anyString());
+        verify(gateway,never()).cancel(anyString(),anyString(),anyString(),any());
+    }
+
+    // #208 리뷰 P2: 서명 없는 결제 상태 웹훅은 "다시 조회" 신호로만 써요. 웹훅 내용(상태)은 믿지 않고 토스 조회 결과로만 바꿔요.
+    @Test void unsignedPaymentWebhookOnlyTriggersRecheck() throws Exception {
+        var o=order(); normal.confirm(user,o.orderId(),"key",500);
+        when(gateway.lookup("key")).thenReturn(new BillingGateway.Payment("key",o.orderId(),500,"KRW","DONE","new-mid",START));
+        normal.checkPaidOne();
+        clearInvocations(gateway);
+        // 가짜 웹훅이 CANCELED라고 해도 토스 조회가 DONE이면 아무것도 바뀌지 않아요.
+        // 방금 조회한 주문은 신호가 와도 10분이 지나야 다시 조회해요.
+        webhook("{\"eventType\":\"PAYMENT_STATUS_CHANGED\",\"data\":{\"orderId\":\""+o.orderId()+"\",\"status\":\"CANCELED\"}}",200);
+        normal.checkPaidOne();
+        verify(gateway,never()).lookup("key");
+        now=now.plus(Duration.ofMinutes(10));
+        normal.checkPaidOne(); normal.checkPaidOne();
+        verify(gateway,times(1)).lookup("key");
+        assertThat(billing.subscription(user).status()).isEqualTo("ACTIVE");
+
+        // 실제로 관리자 환불된 뒤 온 웹훅(가상계좌 입금 알림 모양)은 하루를 기다리지 않고 반영해요.
+        now=now.plus(Duration.ofMinutes(10));
+        when(gateway.lookup("key")).thenReturn(new BillingGateway.Payment("key",o.orderId(),500,"KRW","CANCELED","new-mid",START,0,now));
+        webhook("{\"secret\":\"fixture\",\"status\":\"CANCELED\",\"orderId\":\""+o.orderId()+"\"}",200);
+        normal.checkPaidOne();
+        assertThat(billing.subscription(user).status()).isEqualTo("CANCELED");
+
+        // 서명 없는 다른 이벤트(카드 키 삭제 등)는 거절하고, 모르는 주문은 아무것도 바꾸지 않아요.
+        webhook("{\"eventType\":\"BILLING_DELETED\",\"data\":{\"billingKey\":\"x\"}}",403);
+        webhook("{\"eventType\":\"PAYMENT_STATUS_CHANGED\",\"data\":{\"orderId\":\"unknown\"}}",200);
+    }
+
+    // #208 재리뷰 P2: 한 주문(A)에 서명 없는 신호를 매분 보내도, 오래 기다린 다른 주문(B)의 관리자 환불 반영을 밀어내지 못해요.
+    // A는 반복 신호로도 10분에 한 번보다 자주 조회되지 않아요.
+    @Test void repeatedSignalsForOneOrderCannotStarveAnotherOrdersRecheck() throws Exception {
+        var a=order(); normal.confirm(user,a.orderId(),"key",500);
+        var b=normal.create(other,UUID.randomUUID().toString(),"seller",BillingPolicy.VERSION,NormalPaymentService.CONSENT);
+        normal.confirm(other,b.orderId(),"other-key",500);
+        // 둘 다 마지막 조회가 이틀 전(A가 1분 더 오래됨)
+        jdbc.update("update billing_normal_orders set provider_checked_at=? where id=?",java.sql.Timestamp.from(now.minus(Duration.ofDays(2)).minusSeconds(60)),a.orderId());
+        jdbc.update("update billing_normal_orders set provider_checked_at=? where id=?",java.sql.Timestamp.from(now.minus(Duration.ofDays(2))),b.orderId());
+        when(gateway.lookup("key")).thenReturn(new BillingGateway.Payment("key",a.orderId(),500,"KRW","DONE","new-mid",START));
+        when(gateway.lookup("other-key")).thenReturn(new BillingGateway.Payment("other-key",b.orderId(),500,"KRW","CANCELED","new-mid",START,0,now));
+        clearInvocations(gateway);
+        for(int tick=0;tick<3;tick++) {
+            webhook("{\"eventType\":\"PAYMENT_STATUS_CHANGED\",\"data\":{\"orderId\":\""+a.orderId()+"\"}}",200);
+            normal.checkPaidOne();
+            now=now.plusSeconds(60);
+        }
+        assertThat(normal.get(other,b.orderId()).status()).isEqualTo("CANCELED");
+        assertThat(billing.subscription(other).status()).isEqualTo("CANCELED");
+        assertThat(billing.subscription(user).status()).isEqualTo("ACTIVE");
+        verify(gateway,times(1)).lookup("key");
+        verify(gateway,never()).cancel(anyString(),anyString(),anyString());
+    }
+
+    // #208 리뷰 P2: 부분 환불은 이용권 처리 규칙이 없어 운영자 확인으로 넘기고 이용 권한은 그대로 둬요.
+    @Test void partialAdminRefundNeedsReviewAndKeepsAccess() {
+        var o=order(); normal.confirm(user,o.orderId(),"key",500);
+        when(gateway.lookup("key")).thenReturn(new BillingGateway.Payment("key",o.orderId(),500,"KRW","PARTIAL_CANCELED","new-mid",START,200,now));
+        normal.checkPaidOne();
+        assertThat(normal.get(user,o.orderId()).refundStatus()).isEqualTo("REVIEW_REQUIRED");
+        assertThat(billing.subscription(user).entitlements().canCalculate()).isTrue();
+        verify(gateway,never()).cancel(anyString(),anyString(),anyString());
+    }
+
+    private void webhook(String body,int expected) throws Exception {
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post("/api/billing/webhooks/toss")
+                .contentType("application/json").content(body))
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.status().is(expected));
+    }
 }

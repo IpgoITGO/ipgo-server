@@ -22,7 +22,8 @@ import static com.ipgo.server.repository.BillingLedger.at;
 /** One-off payment authentication is client-side; approval and entitlement checks are server-side. */
 @Service
 public class NormalPaymentService {
-    public static final String CONSENT="one-time-month-2026-11-v1";
+    // #208 환불 제한 전(v1) 결제 동의 버전. 지금 받는 버전은 RefundPolicyProperties.consentVersion()이다.
+    public static final String CONSENT=com.ipgo.server.config.RefundPolicyProperties.CONSENT_BEFORE;
     private final NormalPaymentProperties properties;
     private final BillingProperties billingProperties;
     private final BillingService billing;
@@ -30,10 +31,12 @@ public class NormalPaymentService {
     private final NormalPaymentGateway gateway;
     private final Clock clock;
     private final BillingSecrets secrets;
+    private final com.ipgo.server.config.RefundPolicyProperties refundPolicy;
     public record Checkout(String orderId,String customerKey,long amount,String orderName,String successUrl,String failUrl,Instant expiresAt) { }
     public record Result(String orderId,String invoiceId,String status,String refundStatus,Instant canceledAt) { }
-    public NormalPaymentService(NormalPaymentProperties p,BillingProperties bp,BillingService b,BillingLedger l,NormalPaymentGateway g,Clock c,BillingSecrets s) {
-        properties=p; billingProperties=bp; billing=b; ledger=l; gateway=g; clock=c; secrets=s;
+    public NormalPaymentService(NormalPaymentProperties p,BillingProperties bp,BillingService b,BillingLedger l,NormalPaymentGateway g,Clock c,BillingSecrets s,
+            com.ipgo.server.config.RefundPolicyProperties r) {
+        properties=p; billingProperties=bp; billing=b; ledger=l; gateway=g; clock=c; secrets=s; refundPolicy=r;
     }
     private <T> T locked(long user,Supplier<T> action) {
         if(!properties.enabled()) throw new BillingException(503,"PAYMENT_DISABLED","일반결제를 준비 중입니다.");
@@ -50,7 +53,8 @@ public class NormalPaymentService {
     }
     public Checkout create(long user,String key,String planId,String version,String consent) {
         if(key==null || !key.matches("[A-Za-z0-9_-]{8,100}")) throw BillingException.invalid();
-        if(!CONSENT.equals(consent)) throw BillingException.conflict("BILLING_CONSENT_REQUIRED");
+        // #208 지금 결제 화면 고지에 맞는 동의 버전만 받는다(환불 제한을 켜면 v2).
+        if(!refundPolicy.consentVersion().equals(consent)) throw BillingException.conflict("BILLING_CONSENT_REQUIRED");
         var plan=BillingPolicy.plan(planId);
         if("trial".equals(planId) || !plan.priceVersion().equals(version)) throw BillingException.conflict("PRICE_CHANGED");
         String hash=BillingSecrets.hash(planId+"|"+version+"|"+consent);
@@ -80,8 +84,9 @@ public class NormalPaymentService {
             long cycle=ledger.one("select coalesce(max(cycle_no),0)+1 as n from billing_invoices where user_id=?",user).number("n");
             ledger.update("insert into billing_invoices(id,user_id,cycle_no,plan_id,price_version,amount,order_name,currency,period_start,period_end,status) values (?,?,?,?,?,?,?,'KRW',?,?,'OPEN')",
                     inv,user,cycle,planId,version,plan.amount(),"Ipgo "+planId+" 1개월 이용권",at(start),at(BillingPolicy.boundary(start,1)));
-            ledger.update("insert into billing_normal_orders(id,user_id,invoice_id,command_key,body_hash,customer_key,status,provider_key,created_at,expires_at) values (?,?,?,?,?,?,'OPEN',?,?,?)",
-                    id,user,inv,key,hash,uuid(),uuid(),at(start),at(start.plusSeconds(1800)));
+            // #208 주문마다 회원이 동의한 결제 동의 버전과 시각을 남긴다.
+            ledger.update("insert into billing_normal_orders(id,user_id,invoice_id,command_key,body_hash,customer_key,status,provider_key,created_at,expires_at,consent_version,consented_at) values (?,?,?,?,?,?,'OPEN',?,?,?,?,?)",
+                    id,user,inv,key,hash,uuid(),uuid(),at(start),at(start.plusSeconds(1800)),consent,at(start));
             return checkout(owned(user,id));
         });
     }
@@ -189,14 +194,21 @@ public class NormalPaymentService {
                 return null;
             }
             boolean paid="PAID".equals(o.text("status")) && i.number("cycle_no")==sub.number("cycle_no");
+            // #208 환불 제한: 결제 완료 건의 새 환불 요청은 받지 않는다. 진행 중인 환불(ACCOUNT_REQUIRED 계좌 재입력 포함)과
+            // 입금 전 가상계좌 취소(PENDING)는 그대로 처리한다. 회사 귀책 환급은 운영자가 토스 관리자 화면에서 한다.
+            if(refundPolicy.restricted() && "PAID".equals(o.text("status")) && o.text("refund_status")==null) throw BillingException.conflict("REFUND_NOT_ALLOWED");
             if(!paid && !"PENDING".equals(o.text("status"))) throw BillingException.conflict("ONLY_CURRENT_PAYMENT_REFUNDABLE");
             if(pending(user).stream().anyMatch(row->!row.orderId().equals(o.text("id")))) throw BillingException.conflict("BILLING_IN_PROGRESS");
             if(account!=null && o.text("payment_method")!=null && !"가상계좌".equals(o.text("payment_method"))) throw BillingException.invalid();
-            ledger.update("update billing_normal_orders set refund_status='PROCESSING',refund_reason=?,refund_key=?,refund_started_at=?,lease_until=?,refund_account_ciphertext=?,refund_account_fingerprint=? where id=?",
-                    reason,uuid(),at(clock.instant()),at(clock.instant().plusSeconds(180)),payload==null?null:secrets.encrypt(payload),fingerprint,o.text("id"));
+            // #208 제한이 켜진 뒤 받은 요청은 입금 전 발급 취소만 할 수 있다고 표시해 둔다(켜기 전부터 진행 중인 환불은 그대로).
+            // DB가 아직 PENDING이어도 토스에서 이미 입금됐으면 performRefund가 환불하지 않고 요청을 되돌린다.
+            boolean unpaidOnly=o.flag("refund_unpaid_only") || (refundPolicy.restricted() && o.text("refund_status")==null);
+            if(unpaidOnly && "ACCOUNT_REQUIRED".equals(o.text("refund_status"))) throw BillingException.conflict("REFUND_NOT_ALLOWED");
+            ledger.update("update billing_normal_orders set refund_status='PROCESSING',refund_reason=?,refund_key=?,refund_started_at=?,lease_until=?,refund_account_ciphertext=?,refund_account_fingerprint=?,refund_unpaid_only=? where id=?",
+                    reason,uuid(),at(clock.instant()),at(clock.instant().plusSeconds(180)),payload==null?null:secrets.encrypt(payload),fingerprint,unpaidOnly,o.text("id"));
             return o.text("id");
         });
-        if(id!=null) performRefund(user,id,true);
+        if(id!=null && performRefund(user,id,true)) throw BillingException.conflict("REFUND_NOT_ALLOWED");
         return locked(user,()->{
             Row o=ledger.one("select * from billing_normal_orders where invoice_id=? and user_id=?",invoiceId,user);
             return new BillingViews.Refund(invoiceId,o.text("refund_status"),o.time("canceled_at"));
@@ -204,6 +216,10 @@ public class NormalPaymentService {
     }
     private void refundReview(String id) {
         ledger.update("update billing_normal_orders set refund_status='REVIEW_REQUIRED',lease_until=null,refund_account_ciphertext=null,refund_account_fingerprint=null where id=?",id);
+    }
+    // 환불 요청을 없던 일로 되돌린다. 주문 · 이용권 상태는 그대로 둔다.
+    private void releaseRefund(String id) {
+        ledger.update("update billing_normal_orders set refund_status=null,refund_reason=null,refund_key=null,refund_started_at=null,lease_until=null,refund_account_ciphertext=null,refund_account_fingerprint=null,refund_unpaid_only=false where id=?",id);
     }
     private void accountRequired(String id) {
         ledger.update("update billing_normal_orders set refund_status='ACCOUNT_REQUIRED',lease_until=null,refund_account_ciphertext=null,refund_account_fingerprint=null where id=?",id);
@@ -214,27 +230,32 @@ public class NormalPaymentService {
         if(parts.length!=3) throw new IllegalStateException("Invalid encrypted refund account");
         return new NormalPaymentGateway.RefundAccount(parts[0],parts[1],parts[2]);
     }
-    private void performRefund(long user,String id,boolean cancel) {
+    // 환불 제한으로 요청을 되돌렸으면 true(회원 요청에는 REFUND_NOT_ALLOWED로 답한다).
+    private boolean performRefund(long user,String id,boolean cancel) {
         try {
             Row initial=owned(user,id),initialInvoice=invoice(initial);
             var p=gateway.lookup(initial.text("payment_key"));
-            if(!matches(p,initial,initialInvoice)) { locked(user,()->{ refundReview(id); return null; }); return; }
+            if(!matches(p,initial,initialInvoice)) { locked(user,()->{ refundReview(id); return null; }); return false; }
             String method=p.method();
             if(method!=null && !method.isBlank()) locked(user,()->{ ledger.update("update billing_normal_orders set payment_method=? where id=?",method,id); return null; });
             // A deposit racing an unpaid-account cancellation must first be reconciled.
             // This only queries; the existing paid path grants exactly one period.
             if("DONE".equals(p.status()) && initialInvoice.time("paid_at")==null) {
                 perform(user,id,false);
-                if(invoice(owned(user,id)).time("paid_at")==null) { locked(user,()->{ refundReview(id); return null; }); return; }
+                if(invoice(owned(user,id)).time("paid_at")==null) { locked(user,()->{ refundReview(id); return null; }); return false; }
+            }
+            // #208 제한이 켜진 뒤 받은 요청인데 토스에서는 이미 입금됐다: 결제 완료로 반영만 하고 환불은 하지 않는다.
+            if(initial.flag("refund_unpaid_only") && "DONE".equals(p.status())) {
+                locked(user,()->{ releaseRefund(id); return null; }); return true;
             }
             Row o=owned(user,id),i=invoice(o);
             boolean virtual="가상계좌".equals(p.method()) || "가상계좌".equals(o.text("payment_method"));
             if(cancel && ("DONE".equals(p.status()) || "WAITING_FOR_DEPOSIT".equals(p.status()))) {
                 if(("DONE".equals(p.status()) && p.balanceAmount()!=i.number("amount")) || ("WAITING_FOR_DEPOSIT".equals(p.status()) && !virtual)) {
-                    locked(user,()->{ refundReview(id); return null; }); return;
+                    locked(user,()->{ refundReview(id); return null; }); return false;
                 }
                 var account=refundAccount(o);
-                if(virtual && "DONE".equals(p.status()) && account==null) { locked(user,()->{ accountRequired(id); return null; }); return; }
+                if(virtual && "DONE".equals(p.status()) && account==null) { locked(user,()->{ accountRequired(id); return null; }); return false; }
                 p=virtual && "DONE".equals(p.status())?gateway.cancel(p.paymentKey(),o.text("refund_reason"),o.text("refund_key"),account)
                         :gateway.cancel(p.paymentKey(),o.text("refund_reason"),o.text("refund_key"));
             }
@@ -258,10 +279,15 @@ public class NormalPaymentService {
                 return null;
             });
         } catch(BillingGateway.Failure e) {
-            locked(user,()->{ if(e.rejected() && "REFUND_ACCOUNT_INVALID".equals(e.code())) accountRequired(id);
+            // 발급 취소를 보내는 사이에 입금된 경우 토스가 환불계좌를 요구한다. 제한 요청이면 계좌를 받지 않고 다시 조회해 되돌린다.
+            boolean unpaidOnly=owned(user,id).flag("refund_unpaid_only");
+            locked(user,()->{ if(e.rejected() && "REFUND_ACCOUNT_INVALID".equals(e.code()) && unpaidOnly)
+                    ledger.update("update billing_normal_orders set refund_status='UNKNOWN',lease_until=? where id=?",at(clock.instant().plusSeconds(60)),id);
+                else if(e.rejected() && "REFUND_ACCOUNT_INVALID".equals(e.code())) accountRequired(id);
                 else if(e.rejected() && "REFUND_REJECTED".equals(e.code())) refundReview(id);
                 else ledger.update("update billing_normal_orders set refund_status='UNKNOWN',lease_until=? where id=?",at(clock.instant().plusSeconds(60)),id); return null; });
         } catch(IllegalStateException e) { locked(user,()->{ refundReview(id); return null; }); }
+        return false;
     }
     public void processOne() {
         if(!properties.enabled()) return;
@@ -277,5 +303,55 @@ public class NormalPaymentService {
             });
             if(claim) performRefund(user,o.text("id"),true);
         } else get(user,o.text("id"));
+    }
+
+    // #208 토스 관리자 화면에서 한 환불을 서버에 반영한다. 회원 환불을 막아 두면 예외 환불은 관리자 화면에서만 하기 때문이다.
+    // 이용 기간이 남은 결제 완료 주문을 하루에 한 번 토스에 다시 조회한다. worker가 1분에 1건씩 부른다.
+    // 결제 상태 웹훅 신호가 온 주문은 하루를 기다리지 않지만, 마지막 조회 뒤 10분은 지나야 다시 조회한다.
+    // 순서는 언제나 가장 오래 전에 조회한 주문부터다. 신호를 받은 주문이 오래 기다린 주문을 앞지르지 않는다.
+    static final Duration PAID_RECHECK=Duration.ofDays(1),SIGNAL_RECHECK=Duration.ofMinutes(10);
+    public void checkPaidOne() {
+        if(!properties.enabled()) return;
+        Instant now=clock.instant();
+        var work=ledger.list("""
+                select o.* from billing_normal_orders o
+                join billing_invoices i on i.id=o.invoice_id
+                join users u on u.id=o.user_id
+                where o.status='PAID' and o.refund_status is null and u.withdrawn_at is null and i.period_end>?
+                  and (o.provider_checked_at is null or o.provider_checked_at<=?
+                       or (o.provider_signal_at>=o.provider_checked_at and o.provider_checked_at<=?))
+                order by o.provider_checked_at nulls first,o.created_at,o.id limit 1""",
+                at(now),at(now.minus(PAID_RECHECK)),at(now.minus(SIGNAL_RECHECK)));
+        if(work.isEmpty()) return;
+        Row o=work.getFirst(); long user=o.number("user_id"); String id=o.text("id");
+        // 조회가 실패해도 같은 주문만 계속 붙잡지 않도록 먼저 시각을 남긴다. 실패한 주문은 다음 날(또는 웹훅 신호 때) 다시 본다.
+        ledger.update("update billing_normal_orders set provider_checked_at=? where id=?",at(now),id);
+        BillingGateway.Payment p;
+        try { p=gateway.lookup(o.text("payment_key")); } catch(BillingGateway.Failure e) { return; }
+        String found=locked(user,()->{
+            Row fresh=owned(user,id),inv=invoice(fresh);
+            if(!"PAID".equals(fresh.text("status")) || fresh.text("refund_status")!=null || !matches(p,fresh,inv)) return null;
+            if("PARTIAL_CANCELED".equals(p.status())) {
+                // 부분 환불은 이용권을 어떻게 할지 정해진 규칙이 없어 운영자가 확인한다. 이용 권한은 그대로 둔다.
+                ledger.update("update billing_normal_orders set refund_status='REVIEW_REQUIRED',refund_reason=?,refund_started_at=? where id=?",
+                        "토스 관리자 화면 부분 환불",at(clock.instant()),id);
+                return null;
+            }
+            if(!"CANCELED".equals(p.status())) return null;
+            ledger.update("update billing_normal_orders set refund_status='PROCESSING',refund_reason=?,refund_key=?,refund_started_at=?,lease_until=? where id=?",
+                    "토스 관리자 화면 환불",uuid(),at(clock.instant()),at(clock.instant().plusSeconds(180)),id);
+            return id;
+        });
+        // 이미 취소된 결제라 토스에 취소를 다시 보내지 않고 조회 결과만 반영한다(가상계좌 환급 대기 중이면 기존 환불 흐름이 이어서 확인).
+        if(found!=null) performRefund(user,id,false);
+    }
+
+    // #208 토스 결제 상태 웹훅(PAYMENT_STATUS_CHANGED · DEPOSIT_CALLBACK)은 서명이 없어 내용을 믿지 않는다.
+    // 결제 완료 주문을 하루보다 일찍 다시 조회해도 된다는 신호로만 쓴다. 실제 상태는 checkPaidOne이 토스에 조회해 정한다.
+    // 마지막 조회 시각과 처리 순서는 건드리지 않고 신호 시각만 남긴다. 같은 주문에 여러 번 와도 하나로 합쳐진다.
+    public void nudge(String orderId) {
+        if(!properties.enabled() || orderId==null || orderId.isBlank() || orderId.length()>100) return;
+        ledger.update("update billing_normal_orders set provider_signal_at=? where id=? and status='PAID' and refund_status is null",
+                at(clock.instant()),orderId);
     }
 }

@@ -92,6 +92,11 @@ public final class UploadTestDatabase {
             } catch (java.io.IOException e) { throw new IllegalStateException(e); }
         }
         // #190 탈퇴하면 알림 구독 · 설정(V26)도 지운다.
+        if (jdbc.queryForObject("SELECT COUNT(*) FROM information_schema.columns WHERE LOWER(table_name)='billing_commands' AND LOWER(column_name)='cancellation_reason_codes'", Integer.class) == 0) {
+            new org.springframework.jdbc.datasource.init.ResourceDatabasePopulator(
+                    new org.springframework.core.io.ClassPathResource("db/migration/V33__store_subscription_cancellation_feedback.sql"))
+                    .execute(java.util.Objects.requireNonNull(jdbc.getDataSource()));
+        }
         pushSchema(jdbc);
         // #206 가입 동의 기록 · 체험 재사용 확인값(V31). 결제 원장(V17) 뒤에 적용한다.
         if (jdbc.queryForObject("SELECT COUNT(*) FROM information_schema.tables WHERE LOWER(table_name) = 'trial_reuse_fingerprints'", Integer.class) == 0) {

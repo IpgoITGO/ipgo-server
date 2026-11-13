@@ -13,6 +13,7 @@ import java.time.Clock;
 import java.time.Instant;
 import java.time.Duration;
 import java.util.Base64;
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.Executors;
@@ -128,6 +129,71 @@ class BillingIntegrationTests extends DatabaseIntegrationTest {
         now=a.trialEnd(); assertThat(service.subscription(user).entitlements().reason()).isEqualTo("TRIAL_ENDED");
         assertThatThrownBy(()->service.assertWriteAllowed(user)).isInstanceOf(BillingException.class);
         assertThat(service.subscription(user).trialEnd()).isEqualTo(a.trialEnd());
+    }
+    @Test void cancellationFeedbackIsIdempotentAndChangedBodyCannotOverwriteIt() throws Exception {
+        activate(); Instant end=service.subscription(user).periodEnd(); String key=UUID.randomUUID().toString();
+        mvc.perform(post("/api/billing/subscription/cancel").with(jwt().jwt(j->j.subject(""+user)))
+                .header("Idempotency-Key",key).contentType("application/json")
+                .content("{\"reasons\":[\"PRICE\",\"OTHER_SERVICE\",\"PRICE\"],\"note\":\"  fixture feedback  \"}"))
+                .andExpect(status().isOk()).andExpect(jsonPath("cancelAtPeriodEnd").value(true))
+                .andExpect(jsonPath("entitlements.canCalculate").value(true));
+        mvc.perform(post("/api/billing/subscription/cancel").with(jwt().jwt(j->j.subject(""+user)))
+                .header("Idempotency-Key",key).contentType("application/json")
+                .content("{\"reasons\":[\"OTHER_SERVICE\",\"PRICE\"],\"note\":\"fixture feedback\"}"))
+                .andExpect(status().isOk());
+        assertThat(jdbc.queryForObject("select cancellation_reason_codes from billing_commands where user_id=? and operation='CANCEL'",String.class,user)).isEqualTo("OTHER_SERVICE,PRICE");
+        assertThat(jdbc.queryForObject("select cancellation_note from billing_commands where user_id=? and operation='CANCEL'",String.class,user)).isEqualTo("fixture feedback");
+        assertThat(jdbc.queryForObject("select count(*) from billing_commands where user_id=? and operation='CANCEL'",Integer.class,user)).isEqualTo(1);
+        assertThat(service.subscription(user).periodEnd()).isEqualTo(end);
+        service.resume(user,UUID.randomUUID().toString(),BillingPolicy.CONSENT);
+        mvc.perform(post("/api/billing/subscription/cancel").with(jwt().jwt(j->j.subject(""+user)))
+                .header("Idempotency-Key",key).contentType("application/json").content("{\"reasons\":[\"NOT_USING\"]}"))
+                .andExpect(status().isConflict()).andExpect(jsonPath("code").value("IDEMPOTENCY_KEY_REUSED"));
+        assertThat(service.subscription(user).cancelAtPeriodEnd()).isFalse();
+        verify(gateway,times(1)).charge(anyString(),any(),anyString());
+    }
+    @Test void bodylessEmptyAndLegacySingleReasonCancellationRemainCompatible() throws Exception {
+        activate();String key=UUID.randomUUID().toString();
+        mvc.perform(post("/api/billing/subscription/cancel").with(jwt().jwt(j->j.subject(""+user))).header("Idempotency-Key",key))
+                .andExpect(status().isOk());
+        mvc.perform(post("/api/billing/subscription/cancel").with(jwt().jwt(j->j.subject(""+user)))
+                .header("Idempotency-Key",key).contentType("application/json").content("{\"reasons\":[],\"note\":\" \"}"))
+                .andExpect(status().isOk());
+        assertThat(jdbc.queryForObject("select cancellation_reason_codes from billing_commands where user_id=? and operation='CANCEL'",String.class,user)).isNull();
+        mvc.perform(post("/api/billing/subscription/cancel").with(jwt().jwt(j->j.subject(""+user)))
+                .header("Idempotency-Key",UUID.randomUUID().toString()).contentType("application/json").content("{\"reason\":\"MISSING_FEATURE\"}"))
+                .andExpect(status().isOk());
+        assertThat(jdbc.queryForObject("select count(*) from billing_commands where user_id=? and cancellation_reason_codes='MISSING_FEATURE'",Integer.class,user)).isEqualTo(1);
+    }
+    @Test void invalidCancellationFeedbackNeverChangesSubscription() throws Exception {
+        activate();
+        for(String body:List.of("{\"reason\":\"UNKNOWN\"}","{\"reasons\":[null]}",
+                "{\"reason\":\"PRICE\",\"reasons\":[\"OTHER\"]}",
+                mapper.writeValueAsString(Map.of("note","x".repeat(501))),
+                "{\"note\":\"bad\\u0000note\"}")) {
+            mvc.perform(post("/api/billing/subscription/cancel").with(jwt().jwt(j->j.subject(""+user)))
+                    .header("Idempotency-Key",UUID.randomUUID().toString()).contentType("application/json").content(body))
+                    .andExpect(status().isBadRequest());
+        }
+        assertThat(service.subscription(user).cancelAtPeriodEnd()).isFalse();
+        assertThat(jdbc.queryForObject("select count(*) from billing_commands where user_id=? and operation='CANCEL'",Integer.class,user)).isZero();
+        assertThat(new BillingRequests.Cancellation(null,null,"private fixture note").toString()).doesNotContain("private fixture note");
+    }
+    @Test void feedbackInsertFailureRollsBackCancellation() {
+        activate();String key=UUID.randomUUID().toString();
+        doThrow(new org.springframework.dao.DataAccessResourceFailureException("fixture feedback insert failure"))
+                .when(ledger).update(argThat(sql->sql.contains("cancellation_reason_codes") && sql.contains("insert into")),any(Object[].class));
+        assertThatThrownBy(()->service.cancel(user,key,new BillingRequests.Cancellation(BillingRequests.CancellationReason.PRICE,null,null)))
+                .isInstanceOf(org.springframework.dao.DataAccessResourceFailureException.class);
+        assertThat(service.subscription(user).cancelAtPeriodEnd()).isFalse();
+        assertThat(jdbc.queryForObject("select count(*) from billing_commands where user_id=? and operation='CANCEL'",Integer.class,user)).isZero();
+    }
+    @Test void withdrawalErasesFreeTextCancellationNoteAndRetainsReasonCode() {
+        activate();jdbc.update("update users set password_hash=? where id=?",encoder.encode("Fixture123!"),user);
+        service.cancel(user,UUID.randomUUID().toString(),new BillingRequests.Cancellation(BillingRequests.CancellationReason.OTHER,null,"fixture personal note"));
+        withdrawals.withdraw(user,"Fixture123!");
+        assertThat(jdbc.queryForObject("select cancellation_note from billing_commands where user_id=? and operation='CANCEL'",String.class,user)).isNull();
+        assertThat(jdbc.queryForObject("select cancellation_reason_codes from billing_commands where user_id=? and operation='CANCEL'",String.class,user)).isEqualTo("OTHER");
     }
     @Test void registrationReentryReusesOpenSessionWithoutExtendingExpiry() {
         var first=registration(); now=now.plusSeconds(60);

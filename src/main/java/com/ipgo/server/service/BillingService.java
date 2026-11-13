@@ -272,12 +272,31 @@ public class BillingService {
         });
     }
     public BillingViews.Subscription cancel(long user,String key) {
+        return cancel(user,key,null);
+    }
+    public BillingViews.Subscription cancel(long user,String key,BillingRequests.Cancellation request) {
         if(normal.enabled()) throw BillingException.conflict("AUTOMATIC_PAYMENT_DISABLED");
+        var reasons=request==null || request.reasons()==null?List.<BillingRequests.CancellationReason>of():request.reasons();
+        if(reasons.size()>6 || reasons.stream().anyMatch(java.util.Objects::isNull)) throw BillingException.invalid();
+        if(request!=null && request.reason()!=null) {
+            if(!reasons.isEmpty()) throw BillingException.invalid();
+            reasons=List.of(request.reason());
+        }
+        String codes=reasons.stream().map(Enum::name).distinct().sorted().collect(java.util.stream.Collectors.joining(","));
+        String stripped=request==null || request.note()==null?null:request.note().strip();
+        String note=stripped==null || stripped.isEmpty()?null:stripped;
+        if(note!=null && (note.length()>500 || note.indexOf('\0')>=0)) throw BillingException.invalid();
+        // 빈 선택은 기존 본문 없는 요청과 같은 hash다. 사유 코드에는 개행이 없어 note와 경계가 섞이지 않는다.
+        String body=codes.isEmpty() && note==null?"":codes+"\n"+(note==null?"":note);
         return locked(user,()->{
-            if(command(user,"CANCEL",key,"")!=null) return view(sub(user));
+            if(command(user,"CANCEL",key,body)!=null) return view(sub(user));
             ensureNoFlight(user);
             stopCharges(user);
-            remember(user,"CANCEL",key,"",uuid()); return view(sub(user));
+            ledger.update("""
+                    insert into billing_commands(user_id,operation,command_key,body_hash,result_id,created_at,
+                        cancellation_reason_codes,cancellation_note) values (?,'CANCEL',?,?,?,?,?,?)
+                    """,user,key,BillingSecrets.hash(body),uuid(),at(clock.instant()),codes.isEmpty()?null:codes,note);
+            return view(sub(user));
         });
     }
     /**
@@ -290,6 +309,8 @@ public class BillingService {
         if(ledger.list("select user_id from billing_subscriptions where user_id=?",user).isEmpty()) return;
         ensureNoFlight(user);
         stopCharges(user);
+        // 자유 입력에는 개인정보가 들어갈 수 있다. 탈퇴 때 본문만 지우고 비식별 사유 코드/명령 이력은 보존한다.
+        ledger.update("UPDATE billing_commands SET cancellation_note=NULL WHERE user_id=? AND cancellation_note IS NOT NULL",user);
     }
     private void stopCharges(long user) {
         ledger.update("update billing_sessions set status='CANCELED' where user_id=? and purpose='START_SUBSCRIPTION' and status in ('OPEN','ISSUING')",user);

@@ -26,10 +26,8 @@ public class BillingService {
     private final BillingGateway gateway;
     private final Clock clock;
     private final com.ipgo.server.config.NormalPaymentProperties normal;
-    private final TrialReuseGuard trialReuse;
-    public BillingService(BillingLedger l,BillingProperties p,BillingSecrets s,BillingGateway g,Clock c,com.ipgo.server.config.NormalPaymentProperties n,
-            TrialReuseGuard t) {
-        ledger=l; properties=p; secrets=s; gateway=g; clock=c; normal=n; trialReuse=t;
+    public BillingService(BillingLedger l,BillingProperties p,BillingSecrets s,BillingGateway g,Clock c,com.ipgo.server.config.NormalPaymentProperties n) {
+        ledger=l; properties=p; secrets=s; gateway=g; clock=c; normal=n;
     }
     public void requireEnabled() {
         if(!properties.enabled()) throw new BillingException(503,"BILLING_DISABLED","결제 기능을 준비 중입니다.");
@@ -49,10 +47,11 @@ public class BillingService {
             if(!properties.merchantId().equals(existing.getFirst().text("merchant_id"))) throw BillingException.conflict("BILLING_MERCHANT_CHANGED");
             return;
         }
-        var account=ledger.one("select created_at,email from users where id=?",user);
+        var account=ledger.one("select created_at,trial_reused from users where id=?",user);
         Instant created=account.time("created_at");
         // #206 탈퇴 후 1년 안에 같은 이메일로 다시 가입했으면 무료 체험 없이 시작한다(체험 끝나는 날 = 가입 시각).
-        boolean reused=trialReuse.usedBefore(account.text("email"));
+        // 판정은 가입할 때 정해 둔 값을 쓴다. 첫 조회가 늦어져 확인값이 만료돼도 바뀌지 않는다.
+        boolean reused=account.flag("trial_reused");
         ledger.update("insert into billing_subscriptions(user_id,merchant_id,mode,status,plan_id,price_version,amount,trial_end,customer_key,trial_reused) values (?, ?,'TEST','TRIALING','trial',?,0,?,?,?)",
                 user,properties.merchantId(),BillingPolicy.VERSION,at(reused?created:created.plus(Duration.ofDays(14))),uuid(),reused);
     }

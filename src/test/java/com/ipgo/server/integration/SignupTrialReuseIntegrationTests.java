@@ -135,6 +135,38 @@ class SignupTrialReuseIntegrationTests extends DatabaseIntegrationTest {
                 .andExpect(jsonPath("entitlements.canUpload").value(true));
     }
 
+    @Test void decisionIsFixedAtSignupEvenIfTheRecordExpiresBeforeFirstLook() throws Exception {
+        // 확인값이 살아 있을 때 가입하고, 첫 구독 조회 전에 확인값이 만료됐다가 정리돼도 체험이 생기지 않아요.
+        String expiring = email();
+        Instant withdrawn = Instant.now().minus(364, ChronoUnit.DAYS);
+        jdbc.update("INSERT INTO trial_reuse_fingerprints (email_fingerprint, withdrawn_at, expires_at) VALUES (?, ?, ?)",
+                secrets.fingerprint(expiring), Timestamp.from(withdrawn), Timestamp.from(Instant.now().plus(1, ChronoUnit.HOURS)));
+        long late = id(signup(expiring, Map.of()).andExpect(status().isCreated()));
+        jdbc.update("UPDATE trial_reuse_fingerprints SET expires_at = ? WHERE email_fingerprint = ?",
+                Timestamp.from(Instant.now().minus(1, ChronoUnit.MINUTES)), secrets.fingerprint(expiring));
+        trialReuse.purgeExpired();
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM trial_reuse_fingerprints WHERE email_fingerprint = ?",
+                Integer.class, secrets.fingerprint(expiring))).isZero();
+        expectNoTrial(late);
+
+        // 확인값을 바로 지운 경우(정리 · 수동 삭제)도 같아요.
+        String deleted = email();
+        withdrawals.withdraw(id(signup(deleted, Map.of()).andExpect(status().isCreated())), PASSWORD);
+        long again = id(signup(deleted, Map.of()).andExpect(status().isCreated()));
+        jdbc.update("DELETE FROM trial_reuse_fingerprints WHERE email_fingerprint = ?", secrets.fingerprint(deleted));
+        expectNoTrial(again);
+    }
+
+    private void expectNoTrial(long userId) throws Exception {
+        Instant joined = jdbc.queryForObject("SELECT created_at FROM users WHERE id = ?", Timestamp.class, userId).toInstant();
+        String trialEnd = mapper.readTree(subscription(userId).andExpect(jsonPath("status").value("TRIAL_EXPIRED"))
+                .andExpect(jsonPath("entitlements.reason").value("TRIAL_ALREADY_USED"))
+                .andExpect(jsonPath("entitlements.canUpload").value(false))
+                .andExpect(jsonPath("entitlements.canCalculate").value(false))
+                .andReturn().getResponse().getContentAsString()).get("trialEnd").stringValue();
+        assertThat(Instant.parse(trialEnd)).isEqualTo(joined);
+    }
+
     @Test void afterOneYearTheRecordIsIgnoredAndPurged() throws Exception {
         String email = email();
         Instant past = Instant.now().minus(400, ChronoUnit.DAYS);

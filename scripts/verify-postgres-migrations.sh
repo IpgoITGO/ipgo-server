@@ -381,6 +381,10 @@ expect_denied ipgo_ai_service_reader "SELECT refund_account_ciphertext FROM bill
 docker exec -i "${database_container}" psql -v ON_ERROR_STOP=1 -U ipgo_server -d ipgo >/dev/null <<'SQL'
 BEGIN;
 INSERT INTO users(id,email,password_hash,agreement_version,agreed_at) VALUES (990031,'v31-fixture@example.test','fixture','2026-11-v1',NOW());
+UPDATE users SET trial_reused = TRUE WHERE id = 990031;
+DO $$ BEGIN
+    IF (SELECT trial_reused FROM users WHERE id = 990031) IS NOT TRUE THEN RAISE EXCEPTION 'server role must record trial reuse at signup'; END IF;
+END $$;
 INSERT INTO billing_subscriptions(user_id,merchant_id,mode,status,plan_id,price_version,amount,trial_end,customer_key,trial_reused)
 VALUES (990031,'fixture','TEST','TRIALING','trial','fixture',0,NOW(),'v31-customer',TRUE);
 INSERT INTO trial_reuse_fingerprints(email_fingerprint,withdrawn_at,expires_at) VALUES (repeat('b',64),NOW(),NOW()+INTERVAL '1 year');

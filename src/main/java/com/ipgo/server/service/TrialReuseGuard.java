@@ -49,8 +49,13 @@ public class TrialReuseGuard {
         }
     }
 
+    // 가입 transaction 안에서 부른다. 이때의 판정을 계정에 남겨, 나중에 확인값이 만료 · 삭제돼도 바뀌지 않게 한다.
+    public void decideAtSignup(long userId, String email) {
+        if (usedBefore(email)) jdbc.update("UPDATE users SET trial_reused = TRUE WHERE id = ?", userId);
+    }
+
     // 지울 시각이 지난 기록은 하루 정리 전이라도 없는 것으로 본다.
-    public boolean usedBefore(String email) {
+    boolean usedBefore(String email) {
         if (!active() || email == null) return false;
         return !jdbc.queryForList("SELECT email_fingerprint FROM trial_reuse_fingerprints WHERE email_fingerprint = ? AND expires_at > ?",
                 String.class, secrets.fingerprint(email), Timestamp.from(clock.instant())).isEmpty();

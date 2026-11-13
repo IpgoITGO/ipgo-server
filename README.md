@@ -13,6 +13,8 @@ D0 전용 합성 자료 준비의 비활성 OIDC 경로·권한·적용 및 복�
 
 토스 테스트 카드 월 구독의 서버 원장·API·로컬 검증은 [빌링 계약](docs/decisions/0012-toss-billing-ledger.md)을 따릅니다. 기본 API/청구 작업기는 OFF이며, 실제 키 확인·토스 테스트 결제·클라이언트 연결·배포는 별도 단계입니다.
 
+구독 해지는 사유 없이도 요청할 수 있습니다. 선택한 단일/복수 사유와 메모를 서버에 저장하는 #159의 계약·멱등 처리·V33 적용 순서는 [해지 사유 저장](docs/decisions/0020-cancellation-feedback.md)을 따릅니다.
+
 카드 등록창 실패 후 재진입하면 같은 유효 OPEN 등록을 재사용합니다. 카드 발급 전의 본인 등록 취소는 `POST /api/billing/registration-sessions/{id}/cancel`로 처리하며, 발급 중/결과 미확정 상태는 보존합니다. 자세한 상태·멱등 키·만료 처리는 빌링 계약을 따릅니다.
 
 현재 설명·시나리오의 확정 계약과 검증 범위·관련 후속은 [계약 대조](docs/decisions/0009-current-insight-scenario-contract.md)에 정리합니다.

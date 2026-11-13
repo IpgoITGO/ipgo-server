@@ -94,7 +94,7 @@ migration_count="$(docker exec "${database_container}" \
 table_count="$(docker exec "${database_container}" \
   psql -U ipgo_migrator -d ipgo -Atc \
   "SELECT COUNT(*) FROM pg_tables WHERE schemaname = 'public' AND tablename <> 'flyway_schema_history'")"
-if [[ "${migration_count}" != "32" || "${table_count}" != "43" ]]; then
+if [[ "${migration_count}" != "33" || "${table_count}" != "43" ]]; then
   echo "unexpected schema: migrations=${migration_count}, tables=${table_count}" >&2
   exit 1
 fi
@@ -403,5 +403,30 @@ expect_denied ipgo_ai_service_reader "SELECT * FROM trial_reuse_fingerprints"
 # V32: 서버 역할은 이용권 주문의 결제 동의 버전 · 시각을 쓴다(#208). AI 역할은 결제 주문을 볼 수 없다.
 docker exec "${database_container}" psql -v ON_ERROR_STOP=1 -U ipgo_server -d ipgo -c "BEGIN; UPDATE billing_normal_orders SET consent_version='one-time-month-2026-11-v2', consented_at=NOW(), refund_unpaid_only=TRUE, provider_checked_at=NOW(), provider_signal_at=NOW() WHERE false; SELECT refund_unpaid_only, provider_checked_at, provider_signal_at FROM billing_normal_orders LIMIT 0; ROLLBACK;" >/dev/null
 expect_denied ipgo_ai_reader "SELECT consent_version FROM billing_normal_orders"
+
+# V33: 해지 사유는 기존 명령 원장에 저장하며 서버 역할만 읽고 쓴다(#159).
+docker exec -i "${database_container}" psql -v ON_ERROR_STOP=1 -U ipgo_server -d ipgo >/dev/null <<'SQL'
+BEGIN;
+INSERT INTO users(id,email,password_hash) VALUES (990159,'v33-fixture@example.test','fixture');
+INSERT INTO billing_subscriptions(user_id,merchant_id,mode,status,plan_id,price_version,amount,trial_end,customer_key)
+VALUES (990159,'fixture','TEST','TRIALING','trial','fixture',0,NOW(),'v33-customer');
+INSERT INTO billing_commands(user_id,operation,command_key,body_hash,result_id,created_at,cancellation_reason_codes,cancellation_note)
+VALUES (990159,'CANCEL','fixture-cancel-159',repeat('a',64),'00000000-0000-0000-0000-000000000159',NOW(),'OTHER,PRICE','fixture only');
+DO $$ BEGIN
+    IF (SELECT cancellation_reason_codes FROM billing_commands WHERE user_id=990159) <> 'OTHER,PRICE' THEN RAISE EXCEPTION 'cancellation reasons not stored'; END IF;
+    BEGIN
+        INSERT INTO billing_commands(user_id,operation,command_key,body_hash,result_id,created_at,cancellation_note)
+        VALUES (990159,'RESUME','fixture-invalid-159',repeat('a',64),'00000000-0000-0000-0000-000000000159',NOW(),'invalid');
+        RAISE EXCEPTION 'non-cancellation feedback must be rejected';
+    EXCEPTION WHEN check_violation THEN NULL; END;
+END $$;
+UPDATE billing_commands SET cancellation_note=NULL WHERE user_id=990159;
+DO $$ BEGIN
+    IF (SELECT cancellation_note FROM billing_commands WHERE user_id=990159) IS NOT NULL THEN RAISE EXCEPTION 'note erasure failed'; END IF;
+END $$;
+ROLLBACK;
+SQL
+expect_denied ipgo_ai_reader "SELECT cancellation_note FROM billing_commands"
+expect_denied ipgo_ai_service_reader "SELECT cancellation_note FROM billing_commands"
 
 echo "PostgreSQL migrations, tenant integrity, and database roles verified."

@@ -6,6 +6,12 @@ import jakarta.validation.constraints.Size;
 
 public final class BillingRequests {
     private BillingRequests() { }
+    public enum CancellationReason { PRICE, NOT_USING, MISSING_FEATURE, PREDICTION_QUALITY, OTHER_SERVICE, OTHER }
+    public record Cancellation(CancellationReason reason,
+            @Size(max=6) java.util.List<@jakarta.validation.constraints.NotNull CancellationReason> reasons,
+            @Size(max=500) @Pattern(regexp="[^\\x00]*") String note) {
+        @Override public String toString() { return "BillingCancellation[redacted]"; }
+    }
     public record Registration(@NotBlank @Pattern(regexp="START_SUBSCRIPTION|REPLACE_METHOD") String purpose,
             @Pattern(regexp="seller|business") String planId, @Size(max=40) String priceVersion,
             @NotBlank @Size(max=40) String consentVersion) { }

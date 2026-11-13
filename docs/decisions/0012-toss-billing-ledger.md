@@ -30,7 +30,7 @@
 | POST `/api/billing/registration-sessions` | `{purpose,planId?,priceVersion?,consentVersion}`. purpose는 START_SUBSCRIPTION 또는 REPLACE_METHOD. 시작은 유료 plan/priceVersion 필수, 교체는 두 필드 생략. 201 `{sessionId,customerKey,state,expiresAt,successUrl,failUrl}` |
 | POST `/api/billing/registration-sessions/{id}/complete` | `{authKey,customerKey,state}`. 동일 로그인 사용자·등록 세션·고객키·state·15분 만료 확인. 202 세션 상태 |
 | GET `/api/billing/registration-sessions/{id}` | sessionId, status, invoiceId, paymentStatus, errorCode. 카드 등록과 실제 결제 성공을 구분 |
-| POST `/api/billing/subscription/cancel` | 본문 없음. 해지 예약. DISPATCHING/UNKNOWN/REVIEW_REQUIRED 등 미확정 시409 |
+| POST `/api/billing/subscription/cancel` | 선택 `{reasons:[코드],note?}` 또는 기존 `{reason:코드,note?}`. 본문 없이도 해지 예약. DISPATCHING/UNKNOWN/REVIEW_REQUIRED 등 미확정 시409 |
 | POST `/api/billing/subscription/resume` | `{consentVersion}`. 기간 내 해지 예약 해제, 유효 수단 확인 |
 | POST `/api/billing/invoices/{id}/retry` | 본문 없음. 확정 거절된 미납 청구서만 새 시도 생성, 202 `{invoiceId,status}` |
 | POST `/api/billing/webhooks/toss` | 이 경로만 사용자 JWT 예외. 토스 원본 bytes+전송시각의 HMAC 서명 검증 후 BILLING_DELETED를 저장/반영. 재전송·복수 v1 서명 지원, 읽기 전/중64KiB 본문 제한 |

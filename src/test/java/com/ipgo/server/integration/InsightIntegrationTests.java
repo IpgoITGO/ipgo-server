@@ -184,13 +184,13 @@ class InsightIntegrationTests extends DatabaseIntegrationTest {
                     selection_snapshot, created_at, completed_at)
                 VALUES (?, 'CALCULATE', ?, 'DONE', '0.0.0', JSON '{}', ?, ?)
                 """, warehouse, AS_OF, Timestamp.from(Instant.now()), Timestamp.from(Instant.now()));
-        long run = jdbc.queryForObject("SELECT MAX(id) FROM calculation_runs", Long.class);
+        long run = jdbc.queryForObject("SELECT MAX(id) FROM calculation_runs WHERE warehouse_id = ?", Long.class, warehouse);
         jdbc.update("""
                 INSERT INTO calculation_results (run_id, product_id, origin_date, start_date, multiplier, horizon_days,
                     status, reason, input_snapshot)
                 VALUES (?, ?, ?, ?, 1.000, 30, ?, ?, JSON '{}')
                 """, run, product, AS_OF, AS_OF, status, reason);
-        return jdbc.queryForObject("SELECT MAX(id) FROM calculation_results", Long.class);
+        return jdbc.queryForObject("SELECT id FROM calculation_results WHERE run_id = ? AND product_id = ?", Long.class, run, product);
     }
 
     private void explanation(long resultId, String mode, String reasonCode, String text) {

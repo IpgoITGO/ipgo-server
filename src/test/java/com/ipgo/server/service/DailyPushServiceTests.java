@@ -27,6 +27,8 @@ class DailyPushServiceTests {
     TransactionTemplate tx;
     DashboardService dashboard;
     PushSender sender;
+    ExpiryService expiry;
+    PlannedReceiptService receipts;
     MutableClock clock;
     DailyPushService service;
     ReplenishmentNeeds needs;
@@ -75,7 +77,32 @@ class DailyPushServiceTests {
         when(dashboard.needs(1L,"shortage")).thenReturn(needs);
         sender = mock(PushSender.class);
         when(sender.send(anyString(),anyString(),anyString(),any())).thenReturn(new PushSender.Result(201));
-        service = new DailyPushService(jdbc,tx,dashboard,sender,clock,new PushDeliveryProperties(true,"test","https://example.test"));
+        // #207 유통기한 · 도착 지연은 기본 0건
+        expiry = mock(ExpiryService.class);
+        receipts = mock(PlannedReceiptService.class);
+        lots(0, 0);
+        overdue(0);
+        service = service(true);
+    }
+    DailyPushService service(boolean enabled) {
+        return new DailyPushService(jdbc,tx,dashboard,sender,clock,
+                new PushDeliveryProperties(enabled,enabled?"test":"","https://example.test"),expiry,receipts);
+    }
+    void lots(int expired, int imminent) {
+        when(expiry.list(1L,null,null)).thenReturn(new com.ipgo.server.dto.response.ExpiryList(null,30,
+                new com.ipgo.server.dto.response.ExpiryList.Summary(expired,imminent,0,0),List.of()));
+    }
+    void overdue(int count) {
+        var items = new java.util.ArrayList<com.ipgo.server.dto.response.PlannedReceiptItem>();
+        for (long i = 0; i < count; i++) items.add(new com.ipgo.server.dto.response.PlannedReceiptItem(i,1L,"상품",1L,
+                LocalDate.of(2026,11,1),null,"OVERDUE",true));
+        items.add(new com.ipgo.server.dto.response.PlannedReceiptItem(99L,1L,"상품",1L,LocalDate.of(2026,12,1),null,"PENDING",true));
+        when(receipts.list(1L)).thenReturn(new com.ipgo.server.dto.response.PlannedReceiptItem.Page(items,items.size()));
+    }
+    String sentBody() {
+        var payload = org.mockito.ArgumentCaptor.forClass(byte[].class);
+        verify(sender,atLeastOnce()).send(anyString(),anyString(),anyString(),payload.capture());
+        return new String(payload.getValue(),StandardCharsets.UTF_8);
     }
     @org.junit.jupiter.api.AfterEach void close() throws Exception {
         source.close();
@@ -91,12 +118,12 @@ class DailyPushServiceTests {
 
     @Test void restartAndMultiplePollsSendOnceWithMinimalPayload() {
         service.tick(); service.tick();
-        var restarted = new DailyPushService(jdbc,tx,dashboard,sender,clock,new PushDeliveryProperties(true,"test","https://example.test"));
+        var restarted = service(true);
         restarted.tick();
         var payload = org.mockito.ArgumentCaptor.forClass(byte[].class);
         verify(sender,times(1)).send(anyString(),anyString(),anyString(),payload.capture());
         String body = new String(payload.getValue(),StandardCharsets.UTF_8);
-        assertThat(body).contains("daily-1","지금 넣어야 할 상품 1개","/dashboard").doesNotContain("skuName","amount","email");
+        assertThat(body).contains("daily-1","입고 필요 1개","/dashboard").doesNotContain("유통기한","도착 지연","skuName","amount","email");
         assertThat(state()).isEqualTo("SENT");
     }
     @Test void concurrentServersClaimOnlyOneSummaryAndOneDelivery() throws Exception {
@@ -167,6 +194,30 @@ class DailyPushServiceTests {
         when(needs.daysSinceAsOf()).thenReturn(1L);when(needs.items()).thenReturn(List.of());service.prepare(1);
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM push_daily_summaries",Integer.class)).isZero();verifyNoInteractions(sender);
     }
+    // #207 입고 필요가 0개여도 유통기한 · 도착 지연이 있으면 한 알림으로 보내고, 0건 항목은 문장에서 뺀다.
+    @Test void expiryAndOverdueAloneStillSendOneCombinedSummary() {
+        when(needs.items()).thenReturn(List.of());
+        lots(3, 2);
+        overdue(1);
+        service.tick(); service.tick();
+        verify(sender,times(1)).send(anyString(),anyString(),anyString(),any());
+        assertThat(sentBody()).contains("유통기한 지남 3건 · 유통기한 임박 2건 · 도착 지연 1건","/dashboard")
+                .doesNotContain("입고 필요","skuName","amount");
+    }
+    // #207 계산이 오래돼 입고 필요는 세지 않아도, 유통기한은 계산과 상관없이 알린다.
+    @Test void staleCalculationDropsOnlyTheReplenishmentPart() {
+        when(needs.resultStatus()).thenReturn("STALE");
+        lots(1, 0);
+        service.tick();
+        assertThat(sentBody()).contains("유통기한 지남 1건").doesNotContain("입고 필요","임박","도착 지연");
+    }
+    // #207 미해결 항목은 다음 날에도 다시 요약한다(처음 생겼을 때만 보내지 않는다).
+    @Test void unresolvedItemsAreSummarizedAgainTheNextDay() {
+        when(needs.items()).thenReturn(List.of());
+        lots(1, 0);
+        service.tick(); clock.advance(Duration.ofDays(1)); service.tick();
+        verify(sender,times(2)).send(anyString(),anyString(),anyString(),any());
+    }
     @Test void uploadNotIncludedInLatestCalculationIsNotUsedForNotification() {
         when(needs.latestUploadId()).thenReturn(2L);service.prepare(1);
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM push_daily_summaries",Integer.class)).isZero();
@@ -190,7 +241,7 @@ class DailyPushServiceTests {
         service.tick();clock.advance(Duration.ofDays(1));service.tick();
         verify(sender,times(2)).send(anyString(),anyString(),anyString(),any());
         reset(sender);
-        new DailyPushService(jdbc,tx,dashboard,sender,clock,new PushDeliveryProperties(false,"","https://example.test")).tick();
+        service(false).tick();
         verifyNoInteractions(sender);
     }
     @Test void timezoneDayBoundaryGraceAndDstAreExplicit() {

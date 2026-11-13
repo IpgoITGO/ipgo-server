@@ -47,9 +47,13 @@ public class BillingService {
             if(!properties.merchantId().equals(existing.getFirst().text("merchant_id"))) throw BillingException.conflict("BILLING_MERCHANT_CHANGED");
             return;
         }
-        Instant created=ledger.one("select created_at from users where id=?",user).time("created_at");
-        ledger.update("insert into billing_subscriptions(user_id,merchant_id,mode,status,plan_id,price_version,amount,trial_end,customer_key) values (?, ?,'TEST','TRIALING','trial',?,0,?,?)",
-                user,properties.merchantId(),BillingPolicy.VERSION,at(created.plus(Duration.ofDays(14))),uuid());
+        var account=ledger.one("select created_at,trial_reused from users where id=?",user);
+        Instant created=account.time("created_at");
+        // #206 탈퇴 후 1년 안에 같은 이메일로 다시 가입했으면 무료 체험 없이 시작한다(체험 끝나는 날 = 가입 시각).
+        // 판정은 가입할 때 정해 둔 값을 쓴다. 첫 조회가 늦어져 확인값이 만료돼도 바뀌지 않는다.
+        boolean reused=account.flag("trial_reused");
+        ledger.update("insert into billing_subscriptions(user_id,merchant_id,mode,status,plan_id,price_version,amount,trial_end,customer_key,trial_reused) values (?, ?,'TEST','TRIALING','trial',?,0,?,?,?)",
+                user,properties.merchantId(),BillingPolicy.VERSION,at(reused?created:created.plus(Duration.ofDays(14))),uuid(),reused);
     }
     private Row sub(long user) { return ledger.one("select * from billing_subscriptions where user_id=?",user); }
     public BillingViews.Subscription subscription(long user) { return locked(user,()->view(sub(user))); }
@@ -58,7 +62,7 @@ public class BillingService {
         String status=s.text("status"),reason=null;
         boolean paid=end!=null;
         if("CANCELED".equals(status)) { reason="SUBSCRIPTION_ENDED"; }
-        else if(!paid) { if(!now.isBefore(s.time("trial_end"))) { status="TRIAL_EXPIRED"; reason="TRIAL_ENDED"; } }
+        else if(!paid) { if(!now.isBefore(s.time("trial_end"))) { status="TRIAL_EXPIRED"; reason=s.flag("trial_reused")?"TRIAL_ALREADY_USED":"TRIAL_ENDED"; } }
         else if(!now.isBefore(end)) {
             if(normal.enabled() || s.flag("cancel_at_period_end")) { status="CANCELED"; reason="SUBSCRIPTION_ENDED"; }
             else {

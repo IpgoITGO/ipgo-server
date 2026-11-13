@@ -7,6 +7,7 @@ import com.ipgo.server.exception.AccountRecoveryException;
 import com.ipgo.server.infrastructure.mail.VerificationMailer;
 import com.ipgo.server.repository.EmailVerificationRepository;
 import com.ipgo.server.repository.UserAccountRepository;
+import com.ipgo.server.util.BusinessNumber;
 import com.ipgo.server.util.EmailNormalizer;
 import java.security.SecureRandom;
 import java.time.Clock;
@@ -47,19 +48,33 @@ public class AccountRecoveryService {
 
     static final int MAX_FOUND = 5;
 
-    // #185 회사명 + 담당자 이름이 둘 다 맞는 계정의 가린 이메일을 최근 가입 순으로 최대 5개 준다.
-    // 띄어쓰기 · 영문 대소문자는 무시하고, 회사명은 (주) · 주식회사 · ㈜ 표기 차이도 무시한다. 탈퇴 계정은 빼요.
+    // #206 사업자등록번호 + 담당자 이름이 둘 다 맞는 계정의 가린 이메일을 최근 가입 순으로 최대 5개 준다.
+    // 사업자등록번호는 하이픈 · 공백을 뺀 숫자로, 담당자 이름은 띄어쓰기 · 영문 대소문자를 무시하고 비교한다. 탈퇴 계정은 빼요.
+    // businessRegNo가 없으면 프론트 전환 기간 동안 이전 방식(#185 회사명 + 담당자 이름)으로 찾는다.
     @Transactional(readOnly = true)
-    public FoundAccounts findId(String companyName, String managerName) {
-        String company = companyKey(companyName);
+    public FoundAccounts findId(String businessRegNo, String companyName, String managerName) {
         String manager = managerKey(managerName);
-        if (company.isEmpty()) throw AccountRecoveryException.blankField("companyName");
-        if (manager.isEmpty()) throw AccountRecoveryException.blankField("managerName");
-        List<String> emails = jdbc.query("""
-                SELECT email, company_name FROM users
-                WHERE LOWER(REPLACE(manager_name, ' ', '')) = ? AND email NOT LIKE ? ORDER BY id DESC
-                """, (rs, n) -> company.equals(companyKey(rs.getString(2))) ? rs.getString(1) : null,
-                manager, "%" + WITHDRAWN_DOMAIN).stream().filter(java.util.Objects::nonNull).limit(MAX_FOUND).toList();
+        List<String> emails;
+        if (businessRegNo != null || companyName == null) {
+            if (businessRegNo == null || businessRegNo.isBlank()) throw AccountRecoveryException.blankField("businessRegNo");
+            String number = BusinessNumber.normalize(businessRegNo);
+            if (number == null) throw AccountRecoveryException.blankField("businessRegNo");
+            if (manager.isEmpty()) throw AccountRecoveryException.blankField("managerName");
+            emails = jdbc.queryForList("""
+                    SELECT email FROM users
+                    WHERE business_reg_no = ? AND LOWER(REPLACE(manager_name, ' ', '')) = ? AND email NOT LIKE ?
+                    ORDER BY id DESC
+                    """, String.class, number, manager, "%" + WITHDRAWN_DOMAIN).stream().limit(MAX_FOUND).toList();
+        } else {
+            String company = companyKey(companyName);
+            if (company.isEmpty()) throw AccountRecoveryException.blankField("companyName");
+            if (manager.isEmpty()) throw AccountRecoveryException.blankField("managerName");
+            emails = jdbc.query("""
+                    SELECT email, company_name FROM users
+                    WHERE LOWER(REPLACE(manager_name, ' ', '')) = ? AND email NOT LIKE ? ORDER BY id DESC
+                    """, (rs, n) -> company.equals(companyKey(rs.getString(2))) ? rs.getString(1) : null,
+                    manager, "%" + WITHDRAWN_DOMAIN).stream().filter(java.util.Objects::nonNull).limit(MAX_FOUND).toList();
+        }
         if (emails.isEmpty()) throw AccountRecoveryException.accountNotFound();
         List<String> masked = emails.stream().map(AccountRecoveryService::mask).toList();
         return new FoundAccounts(masked, masked.getFirst());

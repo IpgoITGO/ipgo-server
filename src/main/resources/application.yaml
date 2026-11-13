@@ -66,6 +66,10 @@ ipgo:
   auth:
     jwt-secret: ${IPGO_JWT_SECRET:}
     cookie-secure: ${IPGO_AUTH_COOKIE_SECURE:true}
+  signup:
+    # #206 가입 동의 · 사업자등록번호. false(전환 기간)는 보낸 값만 검사하고, 프론트 동의 화면 배포 뒤 true로 바꾼다.
+    strict: ${IPGO_SIGNUP_STRICT:false}
+    agreement-version: 2026-11-v1
   push:
     # #190 Web Push VAPID 공개키(base64url). 비어 있으면 알림 등록 API가 503 PUSH_UNAVAILABLE을 돌려준다.
     public-key: ${IPGO_PUSH_PUBLIC_KEY:}

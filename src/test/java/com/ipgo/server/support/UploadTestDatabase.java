@@ -93,6 +93,13 @@ public final class UploadTestDatabase {
         }
         // #190 탈퇴하면 알림 구독 · 설정(V26)도 지운다.
         pushSchema(jdbc);
+        // #206 가입 동의 기록 · 체험 재사용 확인값(V31). 결제 원장(V17) 뒤에 적용한다.
+        if (jdbc.queryForObject("SELECT COUNT(*) FROM information_schema.tables WHERE LOWER(table_name) = 'trial_reuse_fingerprints'", Integer.class) == 0) {
+            try (var stream = new org.springframework.core.io.ClassPathResource("db/migration/V31__add_signup_consent_and_trial_reuse.sql").getInputStream()) {
+                String sql = new String(stream.readAllBytes(), java.nio.charset.StandardCharsets.UTF_8).split("-- PostgreSQL 전용")[0];
+                for (String statement : sql.split(";")) if (!statement.isBlank()) jdbc.execute(statement);
+            } catch (java.io.IOException e) { throw new IllegalStateException(e); }
+        }
     }
 
     public static void pushSchema(JdbcTemplate jdbc) {

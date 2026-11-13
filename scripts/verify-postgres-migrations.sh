@@ -94,7 +94,7 @@ migration_count="$(docker exec "${database_container}" \
 table_count="$(docker exec "${database_container}" \
   psql -U ipgo_migrator -d ipgo -Atc \
   "SELECT COUNT(*) FROM pg_tables WHERE schemaname = 'public' AND tablename <> 'flyway_schema_history'")"
-if [[ "${migration_count}" != "30" || "${table_count}" != "42" ]]; then
+if [[ "${migration_count}" != "31" || "${table_count}" != "43" ]]; then
   echo "unexpected schema: migrations=${migration_count}, tables=${table_count}" >&2
   exit 1
 fi
@@ -375,5 +375,29 @@ ROLLBACK;
 SQL
 expect_denied ipgo_ai_reader "SELECT refund_account_ciphertext FROM billing_normal_orders"
 expect_denied ipgo_ai_service_reader "SELECT refund_account_ciphertext FROM billing_normal_orders"
+
+# V31: 서버 역할은 가입 동의 기록과 체험 재사용 확인값을 쓰고 지운다(#206). 확인값은 64자, 지울 시각은 탈퇴 시각보다 뒤다.
+# 체험 재사용 표는 AI 역할이 볼 수 없다.
+docker exec -i "${database_container}" psql -v ON_ERROR_STOP=1 -U ipgo_server -d ipgo >/dev/null <<'SQL'
+BEGIN;
+INSERT INTO users(id,email,password_hash,agreement_version,agreed_at) VALUES (990031,'v31-fixture@example.test','fixture','2026-11-v1',NOW());
+UPDATE users SET trial_reused = TRUE WHERE id = 990031;
+DO $$ BEGIN
+    IF (SELECT trial_reused FROM users WHERE id = 990031) IS NOT TRUE THEN RAISE EXCEPTION 'server role must record trial reuse at signup'; END IF;
+END $$;
+INSERT INTO billing_subscriptions(user_id,merchant_id,mode,status,plan_id,price_version,amount,trial_end,customer_key,trial_reused)
+VALUES (990031,'fixture','TEST','TRIALING','trial','fixture',0,NOW(),'v31-customer',TRUE);
+INSERT INTO trial_reuse_fingerprints(email_fingerprint,withdrawn_at,expires_at) VALUES (repeat('b',64),NOW(),NOW()+INTERVAL '1 year');
+DELETE FROM trial_reuse_fingerprints WHERE expires_at <= NOW() + INTERVAL '2 years';
+DO $$ BEGIN
+    BEGIN
+        INSERT INTO trial_reuse_fingerprints(email_fingerprint,withdrawn_at,expires_at) VALUES (repeat('c',64),NOW(),NOW()-INTERVAL '1 day');
+        RAISE EXCEPTION 'expires_at must be after withdrawn_at';
+    EXCEPTION WHEN check_violation THEN NULL; END;
+END $$;
+ROLLBACK;
+SQL
+expect_denied ipgo_ai_reader "SELECT * FROM trial_reuse_fingerprints"
+expect_denied ipgo_ai_service_reader "SELECT * FROM trial_reuse_fingerprints"
 
 echo "PostgreSQL migrations, tenant integrity, and database roles verified."

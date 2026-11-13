@@ -283,7 +283,7 @@ class EmailVerificationIntegrationTests extends DatabaseIntegrationTest {
     }
 
     private SignupRequest signupRequest(String token) {
-        return new SignupRequest(EMAIL, "Test123!", "테스트 회사", "담당자", null, token);
+        return new SignupRequest(EMAIL, "Test123!", "테스트 회사", "담당자", null, token, null);
     }
 
     private Map<String, Object> signupBody(String token) {

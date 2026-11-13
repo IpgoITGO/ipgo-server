@@ -22,14 +22,16 @@ public class AccountWithdrawalService {
     private final TransactionTemplate transactions;
     private final BillingService billing;
     private final Clock clock;
+    private final TrialReuseGuard trialReuse;
 
     public AccountWithdrawalService(PasswordEncoder passwordEncoder, JdbcTemplate jdbc, TransactionTemplate transactions,
-            BillingService billing, Clock clock) {
+            BillingService billing, Clock clock, TrialReuseGuard trialReuse) {
         this.passwordEncoder = passwordEncoder;
         this.jdbc = jdbc;
         this.transactions = transactions;
         this.billing = billing;
         this.clock = clock;
+        this.trialReuse = trialReuse;
     }
 
     // 모든 단계를 한 transaction에서 회원 row를 잠근 채 처리한다. 결제 요청(BillingService)도 같은 회원 row를 잠그므로
@@ -47,6 +49,8 @@ public class AccountWithdrawalService {
             // #190 알림 구독(브라우저 주소 · 키)과 알림 설정도 지워 탈퇴 뒤에는 알림이 가지 않게 한다.
             jdbc.update("DELETE FROM push_subscriptions WHERE user_id = ?", userId);
             jdbc.update("DELETE FROM notification_settings WHERE user_id = ?", userId);
+            // #206 이메일을 지우기 전에, 1년 안에 같은 이메일로 재가입하면 무료 체험을 주지 않도록 확인값만 남긴다.
+            trialReuse.rememberWithdrawal(jdbc.queryForObject("SELECT email FROM users WHERE id = ?", String.class, userId));
             // 3) 개인정보를 지운다. 이메일은 회원 번호로 바꿔 같은 이메일로 바로 다시 가입할 수 있게 하고,
             //    비밀번호는 아무도 모르는 값으로 바꾼다. .invalid는 실제로 쓸 수 없는 예약 도메인이다.
             //    withdrawn_at이 생기면 늦게 도착한 결제 요청도 BillingService에서 ACCOUNT_WITHDRAWN으로 거절된다.

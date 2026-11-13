@@ -143,6 +143,7 @@ PostgreSQL을 준비한 뒤 실행 환경에 아래 변수를 설정합니다. �
 | `IPGO_AUTH_COOKIE_SECURE` | 기본 `true`. 로컬 HTTP 개발에서만 `false`, 배포에서는 HTTPS와 `true` 사용 |
 | `IPGO_UPLOAD_DATABASE_MAX_BYTES` | DB 원본 전체 상한. 기본/최대 268435456 bytes(256MiB), 양수의 더 작은 검증 한도만 허용 |
 | `IPGO_UPLOAD_DIR` | 원본·보관 정보 저장 폴더. 기본값은 실행 디렉터리의 `./storage/uploads` |
+| `IPGO_SIGNUP_STRICT` | 가입 동의·사업자등록번호 필수 여부(#206). 기본 `false`(전환 기간, 보낸 값만 검사). 프론트 동의 화면 배포 뒤 `true` |
 | `IPGO_PUSH_PUBLIC_KEY` | Web Push VAPID 공개키(base64url, #190). 비어 있으면 알림 등록 API가 `503 PUSH_UNAVAILABLE`. 비밀키는 아래 별도 발송 secret으로 주입 |
 
 현재 `.env` 파일을 자동으로 읽는 별도 설정은 없습니다. 터미널 또는 IDE의 실행 환경변수로 전달해야 합니다.
@@ -230,13 +231,16 @@ IPGO_TEST_DB_USERNAME=ipgo IPGO_TEST_DB_PASSWORD=<임시 비밀번호> ./gradlew
   "password": "Test123!",
   "companyName": "테스트 회사",
   "managerName": "담당자",
-  "businessRegNo": "0123456789",
-  "verificationToken": "<A7에서 받은 토큰>"
+  "businessRegNo": "1248100998",
+  "verificationToken": "<A7에서 받은 토큰>",
+  "agreements": { "terms": true, "privacy": true, "version": "2026-11-v1" }
 }
 ```
 
 - `companyName`, `managerName`: 앞뒤 공백을 제거한 뒤 1~50자, 필수.
-- `businessRegNo`: 선택. 생략·null·빈 문자열은 미입력으로 처리하며, 입력하면 숫자 10자리여야 합니다. 실제 사업자 등록 여부는 조회하지 않습니다.
+- `businessRegNo`(#206): 숫자 10자리. 실제 사업자 등록 여부는 조회하지 않습니다.
+- `agreements`(#206): [필수] 이용약관 `terms`, [필수] 개인정보 수집·이용 `privacy`, 화면에 보여 준 문서 버전 `version`(지금 `2026-11-v1`, `ipgo.signup.agreement-version`). 둘 중 하나라도 `true`가 아니거나 버전이 다르면 `400 INVALID_INPUT`(`details.field: agreements`)이며, 이때는 인증 토큰을 쓰지 않아 고쳐서 다시 보낼 수 있습니다. 동의한 버전과 시각은 `users.agreement_version`·`agreed_at`(V31)에 남습니다.
+- **전환 기간(`IPGO_SIGNUP_STRICT=false`, 기본)**: 지금 가입 화면이 깨지지 않도록 `agreements`·`businessRegNo`가 없어도 가입됩니다. 보낸 `agreements`는 위처럼 검사합니다. 프론트 동의 화면이 배포된 뒤 `true`로 바꾸면 둘 다 필수가 되고, `businessRegNo`는 국세청 검증 숫자(마지막 자리)까지 맞아야 합니다(틀리면 `400`, `details.field: businessRegNo`). 이미 가입한 계정은 다시 동의받지 않습니다.
 - 응답 ID 이름은 명세대로 `userId`입니다. 이전 `id`, `createdAt` 응답은 제거했습니다.
 - 신규 가입 비밀번호는 **8~16자**이며, 영문 대문자(`A-Z`)·소문자(`a-z`)·숫자(`0-9`)·특수기호를 각각 1개 이상 포함해야 합니다. 허용 문자는 공백을 제외한 ASCII 문자(`U+0021`~`U+007E`)이며, 특수기호는 이 범위에서 영문·숫자를 제외한 모든 기호입니다. 공백·줄바꿈·탭·한글·이모지는 허용하지 않으며 비밀번호의 앞뒤 공백을 자동 제거하지 않습니다.
 - 정책 위반 시 `400 INVALID_INPUT`, `details.field=password`와 비밀번호 규칙을 설명하는 `message`를 반환합니다. 프론트도 동일한 길이·문자·복잡도 검증을 적용해야 합니다. 비밀번호 정책 변경은 신규 가입에만 적용하며 기존 회원의 비밀번호 해시는 유지합니다.
@@ -293,6 +297,7 @@ IPGO_TEST_DB_USERNAME=ipgo IPGO_TEST_DB_PASSWORD=<임시 비밀번호> ./gradlew
 1. 구독이 있으면 해지와 같은 처리로 다음 결제를 멈춥니다(`BillingService.stopForWithdrawal`, 결제 기능이 꺼져 있어도 동작). 결제가 진행 중이면 `409 BILLING_IN_PROGRESS`로 탈퇴를 막고, 다시 시도할 때도 매번 결제 상태를 확인합니다.
 2. 모든 로그인 세션을 폐기합니다. 서버가 요청마다 세션을 확인하므로 이미 받은 access token도 바로 `401`이 됩니다. 탈퇴와 겹쳐 늦게 처리되는 결제 요청(구독 재개·새 구독·재결제)은 `409 ACCOUNT_WITHDRAWN`으로 거절됩니다.
 3. 개인정보를 지웁니다. 이메일은 `withdrawn-{회원번호}@withdrawn.invalid`, 비밀번호는 아무도 모르는 값, 회사명·담당자명·사업자번호는 비우고 `withdrawn_at`(V24)을 남깁니다. 원래 이메일은 바로 비므로 같은 이메일로 다시 가입할 수 있고, 새 계정이라 옛 데이터는 보이지 않습니다.
+4. **무료 체험 재사용 막기(#206)**: 이메일을 지우기 전에 이메일 확인값(결제 조회용 키 `IPGO_BILLING_LOOKUP_KEY`로 만든 HMAC, 원래 이메일로 되돌릴 수 없음)만 `trial_reuse_fingerprints`(V31)에 탈퇴일로부터 1년간 남깁니다. 1년 안에 같은 이메일(대소문자 무시)로 다시 가입하면 가입하는 순간 `users.trial_reused`에 표시해 두고 체험 없이 시작해 구독 응답이 `status: TRIAL_EXPIRED`, `entitlements.reason: TRIAL_ALREADY_USED`, `trialEnd`=가입 시각이 되고 업로드·계산은 결제 후에 됩니다. 1년이 지난 확인값은 무시하고 매일 03:30(한국 시간)에 지워서, 그 뒤 재가입하면 다시 14일 체험을 받습니다. 같은 이메일로 또 탈퇴하면 그때부터 다시 1년입니다. 결제 기능이 꺼진 환경에서는 체험 제한도 없어서 확인값을 남기지 않습니다. 다른 이메일로 가입하는 것은 막지 않습니다. 판정은 가입할 때 한 번만 하므로, 가입 뒤 첫 구독 조회 전에 확인값이 만료·삭제돼도 체험이 생기지 않습니다.
 
 회원 행은 지우지 않습니다. 법으로 보관하는 결제 원장(V17)과 최소 30일 보관하는 DB 원본(V15)이 회원·업로드를 가리키기 때문입니다. 수불부·상품·계산 결과는 로그인할 수 없는 탈퇴 계정에 남고, 보관 기간이 지난 뒤 정리하는 작업은 후속입니다. 알림 구독·설정(V26)은 탈퇴할 때 지웁니다(#190).
 
@@ -392,12 +397,12 @@ SMTP 연결·읽기·쓰기 제한은 각각 5초입니다. SMTP 설정이 없�
 
 | API | 동작 |
 |---|---|
-| `POST /api/auth/find-id` | `{ companyName, managerName }`(#185). 둘 다 맞는 계정의 가린 이메일(앞 두 글자만, 예: `se***@a.com`)을 `{ maskedEmails, maskedEmail }`로 줍니다. `maskedEmails`는 최근 가입 순 최대 5개, `maskedEmail`은 그중 가장 최근 1개입니다. 띄어쓰기·영문 대소문자는 무시하고, 회사명은 `(주)`·`주식회사`·`㈜` 표기 차이도 무시합니다. 없으면 `404 NOT_FOUND`, 비었으면 `400 INVALID_INPUT`(`details.field: companyName` 또는 `managerName`) |
+| `POST /api/auth/find-id` | `{ businessRegNo, managerName }`(#206). 둘 다 맞는 계정의 가린 이메일(앞 두 글자만, 예: `se***@a.com`)을 `{ maskedEmails, maskedEmail }`로 줍니다. `maskedEmails`는 최근 가입 순 최대 5개, `maskedEmail`은 그중 가장 최근 1개입니다. 사업자등록번호는 하이픈·공백을 뺀 숫자 10자리로, 담당자 이름은 띄어쓰기·영문 대소문자를 무시하고 비교합니다. 없으면 `404 NOT_FOUND`, 비었거나 형식이 틀리면 `400 INVALID_INPUT`(`details.field: businessRegNo` 또는 `managerName`). **프론트 전환 기간에는** `businessRegNo` 없이 `{ companyName, managerName }`(#185 방식, `(주)`·`주식회사`·`㈜` 표기 차이 무시)도 받습니다 |
 | `POST /api/auth/password-reset/code` | `{ email }`. **항상 `204`**입니다. 가입한 이메일이면 "Ipgo 비밀번호 재설정" 메일로 6자리 코드(10분)를 보내고, 없는 이메일이나 1분 안 재요청은 조용히 아무것도 하지 않습니다. 메일 서버 장애만 `503 EMAIL_DELIVERY_UNAVAILABLE`입니다 |
 | `POST /api/auth/password-reset/verify` | `{ email, code }` → `{ resetToken }`(30분, 한 번만). 틀림·만료·5번 실패·가입하지 않은 이메일은 모두 `400 INVALID_CODE`(`details.field: code`)입니다 |
 | `POST /api/auth/password-reset` | `{ resetToken, newPassword }` → `204`. 비밀번호 규칙은 가입과 같고 틀리면 `400 INVALID_INPUT`(`details.field: newPassword`), 토큰이 없거나 만료·사용됐으면 `400 INVALID_TOKEN`입니다. 바꾸면 그 계정의 모든 로그인 세션을 폐기합니다 |
 
-아이디 찾기는 회사명·담당자 이름(둘 다 가입 필수 칸)으로 찾아서 기존 계정도 모두 쓸 수 있습니다. 쇼핑몰에 공개되는 사업자등록번호로는 찾지 않습니다(#185). 그래도 이름을 아는 사람은 가린 이메일을 볼 수 있으므로, 공개 운영 전에는 IP별 요청 제한을 함께 두어야 합니다.
+아이디 찾기는 사업자등록번호(가입 필수, #206)와 담당자 이름을 함께 씁니다. 사업자등록번호는 쇼핑몰에 공개되는 번호라 혼자서는 쓰지 않고, 공개되지 않는 담당자 이름과 둘 다 맞아야 찾아집니다. 사업자등록번호가 없는 기존 실험용 계정은 전환 기간 동안 회사명 방식으로 찾을 수 있습니다. 그래도 두 값을 아는 사람은 가린 이메일을 볼 수 있으므로, 공개 운영 전에는 IP별 요청 제한을 함께 두어야 합니다.
 
 ### 개발용 Gmail (#82)
 
@@ -837,7 +842,7 @@ scripts/testing/verify-insight-contract.sh /path/to/ipgo-ai
 
 ## Database 변경과 복구
 
-이미 병합된 migration은 Flyway 이력을 보존하기 위해 수정하지 않습니다. 새 DB에서는 승인한 범위의 migration을 순서대로 적용합니다. #90 구현은 V16까지 필요하며 운영 적용은 별도 승인입니다. V4는 `warehouses`·`products`·`inventory_units`, V5는 `upload_files`, V6은 `replenishment_settings`, V7은 `planned_receipts`, V8은 `auth_sessions`·`refresh_tokens`, V9는 `calculation_runs`·`calculation_results`, V10은 일별 수불 2개 표, V11은 계산 출처·시나리오·백테스트·AI 인사이트 4개 표를 추가합니다. V12는 PostgreSQL tenant 무결성 trigger, V13은 FastAPI view와 역할별 권한을 적용하고, V14는 `engine_jobs`·입력 hash·정제 조회 view를 추가합니다. V15의 DB 원본 저장 전환(Server #77·AI #60)은 보류 상태입니다. V16은 입고 사건·배정·업로드 판정 기록을 추가하며 기존 원본 저장 모드를 바꾸지 않습니다. V16을 위해 전체 migration 경로를 실행하기 전 V15의 보류/실제 DB 이력을 함께 확인해야 합니다. V19는 창고 보관 요율 칸과 `product_boxes`를 추가합니다(#111). 기존 행은 바꾸지 않고, 되돌릴 때는 새 칸과 표만 지우면 됩니다. V21은 내 입고량 `product_planned_quantities`를 추가합니다(#119, V20은 #137 입고 정정). 되돌릴 때는 이 표만 지우면 됩니다. V23은 `inventory_units.expiry_date`와 `warehouses.expiry_imminent_days` 칸을 추가합니다(#168, V22는 인사이트 월 사용량). 기존 행은 NULL로 남고, 되돌릴 때는 두 칸만 지우면 됩니다. V24는 회원 탈퇴 시각 `users.withdrawn_at` 칸을 추가합니다(#172). 기존 행은 NULL로 남고, 되돌릴 때는 이 칸만 지우면 됩니다. V26은 Web Push 알림의 브라우저 구독 `push_subscriptions`와 알림 설정 `notification_settings`를 추가합니다(#190, V25는 결제 환불 원장). 새 표만 만들어 기존 행은 바뀌지 않고, 다른 표가 참조하지 않아 되돌릴 때는 두 표만 지우면 됩니다. AI 역할은 두 표를 볼 수 없습니다. 실제 DB 적용은 V15~V18과 같은 순서 확인과 별도 승인을 따릅니다. 전체 관계와 변경 규칙은 [Database ERD v1](docs/database/erd-v1.md)에 있습니다. Hibernate는 스키마를 자동 수정하지 않고 검증만 수행합니다.
+이미 병합된 migration은 Flyway 이력을 보존하기 위해 수정하지 않습니다. 새 DB에서는 승인한 범위의 migration을 순서대로 적용합니다. #90 구현은 V16까지 필요하며 운영 적용은 별도 승인입니다. V4는 `warehouses`·`products`·`inventory_units`, V5는 `upload_files`, V6은 `replenishment_settings`, V7은 `planned_receipts`, V8은 `auth_sessions`·`refresh_tokens`, V9는 `calculation_runs`·`calculation_results`, V10은 일별 수불 2개 표, V11은 계산 출처·시나리오·백테스트·AI 인사이트 4개 표를 추가합니다. V12는 PostgreSQL tenant 무결성 trigger, V13은 FastAPI view와 역할별 권한을 적용하고, V14는 `engine_jobs`·입력 hash·정제 조회 view를 추가합니다. V15의 DB 원본 저장 전환(Server #77·AI #60)은 보류 상태입니다. V16은 입고 사건·배정·업로드 판정 기록을 추가하며 기존 원본 저장 모드를 바꾸지 않습니다. V16을 위해 전체 migration 경로를 실행하기 전 V15의 보류/실제 DB 이력을 함께 확인해야 합니다. V19는 창고 보관 요율 칸과 `product_boxes`를 추가합니다(#111). 기존 행은 바꾸지 않고, 되돌릴 때는 새 칸과 표만 지우면 됩니다. V21은 내 입고량 `product_planned_quantities`를 추가합니다(#119, V20은 #137 입고 정정). 되돌릴 때는 이 표만 지우면 됩니다. V23은 `inventory_units.expiry_date`와 `warehouses.expiry_imminent_days` 칸을 추가합니다(#168, V22는 인사이트 월 사용량). 기존 행은 NULL로 남고, 되돌릴 때는 두 칸만 지우면 됩니다. V24는 회원 탈퇴 시각 `users.withdrawn_at` 칸을 추가합니다(#172). 기존 행은 NULL로 남고, 되돌릴 때는 이 칸만 지우면 됩니다. V26은 Web Push 알림의 브라우저 구독 `push_subscriptions`와 알림 설정 `notification_settings`를 추가합니다(#190, V25는 결제 환불 원장). 새 표만 만들어 기존 행은 바뀌지 않고, 다른 표가 참조하지 않아 되돌릴 때는 두 표만 지우면 됩니다. AI 역할은 두 표를 볼 수 없습니다. V31은 가입 동의 기록 `users.agreement_version`·`agreed_at`, 무료 체험 재사용 확인값 표 `trial_reuse_fingerprints`, 가입 때 정한 체험 재사용 여부 `users.trial_reused`, 체험 없이 시작한 구독 표시 `billing_subscriptions.trial_reused`를 추가합니다(#206). 기존 행은 비어 있거나 `FALSE`로 남고, 되돌릴 때는 새 칸 4개와 표 1개만 지우면 됩니다. AI 역할은 확인값 표를 볼 수 없습니다. 실제 DB 적용은 V15~V18과 같은 순서 확인과 별도 승인을 따릅니다. 전체 관계와 변경 규칙은 [Database ERD v1](docs/database/erd-v1.md)에 있습니다. Hibernate는 스키마를 자동 수정하지 않고 검증만 수행합니다.
 
 초기 PostgreSQL은 administrator가 `database/bootstrap/create_roles.sql`을 먼저 실행한 뒤 `ipgo_migrator`로 Flyway를 적용합니다. 새 DB의 bootstrap SQL은 `ipgo_migrator`·`ipgo_server`·`ipgo_ai_reader`·`ipgo_ai_service_reader` 역할을 만들고 비밀번호는 설정하지 않습니다. 비밀번호는 repository·shell history·Terraform state에 남기지 않고 승인된 Secrets Manager 절차로 설정합니다. Spring runtime은 `ipgo_server`, FastAPI는 `ipgo_ai_reader`를 사용하며 runtime에서는 `SPRING_FLYWAY_ENABLED=false`로 migration 자격 증명을 분리합니다.
 

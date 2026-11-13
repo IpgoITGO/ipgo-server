@@ -94,7 +94,7 @@ migration_count="$(docker exec "${database_container}" \
 table_count="$(docker exec "${database_container}" \
   psql -U ipgo_migrator -d ipgo -Atc \
   "SELECT COUNT(*) FROM pg_tables WHERE schemaname = 'public' AND tablename <> 'flyway_schema_history'")"
-if [[ "${migration_count}" != "34" || "${table_count}" != "43" ]]; then
+if [[ "${migration_count}" != "35" || "${table_count}" != "43" ]]; then
   echo "unexpected schema: migrations=${migration_count}, tables=${table_count}" >&2
   exit 1
 fi
@@ -453,5 +453,29 @@ ROLLBACK;
 SQL
 expect_denied ipgo_ai_reader "SELECT plan_chosen_at FROM users"
 expect_denied ipgo_ai_service_reader "SELECT plan_chosen_at FROM users"
+
+# V35: 현재 Server 역할만 관리자 정기결제 취소 조회 표시를 읽고 쓸 수 있다.
+docker exec -i "${database_container}" psql -v ON_ERROR_STOP=1 -U ipgo_server -d ipgo >/dev/null <<'SQL'
+BEGIN;
+INSERT INTO users(id,email,password_hash) VALUES(990171,'v35-fixture@example.test','fixture');
+INSERT INTO billing_subscriptions(user_id,merchant_id,mode,status,plan_id,price_version,amount,trial_end,customer_key)
+VALUES(990171,'v35-fixture','TEST','TRIALING','trial','fixture',0,NOW(),'v35-customer');
+INSERT INTO billing_invoices(id,user_id,cycle_no,plan_id,price_version,amount,order_name,currency,period_start,period_end,status)
+VALUES('v35-invoice',990171,1,'seller','fixture',500,'fixture','KRW',NOW(),NOW()+INTERVAL '1 month','OPEN');
+DO $$ BEGIN
+  IF EXISTS(SELECT 1 FROM billing_invoices WHERE id='v35-invoice' AND (provider_checked_at IS NOT NULL OR provider_signal_at IS NOT NULL)) THEN
+    RAISE EXCEPTION 'new invoice already has a provider check';
+  END IF;
+END $$;
+UPDATE billing_invoices SET provider_checked_at=NOW(),provider_signal_at=NOW() WHERE id='v35-invoice';
+DO $$ BEGIN
+  IF EXISTS(SELECT 1 FROM billing_invoices WHERE id='v35-invoice' AND (provider_checked_at IS NULL OR provider_signal_at IS NULL)) THEN
+    RAISE EXCEPTION 'server cannot write monthly provider check';
+  END IF;
+END $$;
+ROLLBACK;
+SQL
+expect_denied ipgo_ai_reader "SELECT provider_checked_at,provider_signal_at FROM billing_invoices"
+expect_denied ipgo_ai_service_reader "SELECT provider_checked_at,provider_signal_at FROM billing_invoices"
 
 echo "PostgreSQL migrations, tenant integrity, and database roles verified."

@@ -29,7 +29,16 @@ public class BillingWorker {
     @PreDestroy public void close() { executor.shutdownNow(); }
     public void poll() {
         if(!properties.enabled() || !properties.workerEnabled()) return;
-        try { normal.processOne(); normal.checkPaidOne(); refunds.processOne(); service.prepareRenewals(); service.processOne(); service.retireOneMethod(); }
-        catch(Exception e) { log.warn("Billing worker requires reconciliation; exception type={}",e.getClass().getSimpleName()); }
+        run("normal-payment",normal::processOne);
+        run("normal-admin-refund",normal::checkPaidOne);
+        run("subscription-refund",refunds::processOne);
+        run("subscription-admin-refund",refunds::checkPaidOne);
+        run("renewals",service::prepareRenewals);
+        run("subscription-payment",service::processOne);
+        run("retire-method",service::retireOneMethod);
+    }
+    private void run(String step,Runnable work) {
+        try { work.run(); }
+        catch(Exception e) { log.warn("Billing worker requires reconciliation; step={}, exception type={}",step,e.getClass().getSimpleName()); }
     }
 }

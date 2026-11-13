@@ -768,6 +768,194 @@ class BillingIntegrationTests extends DatabaseIntegrationTest {
         var row=jdbc.queryForMap("select a.payment_key,a.order_id,i.amount,i.paid_at from billing_attempts a join billing_invoices i on i.id=a.invoice_id where a.invoice_id=? and a.status='SUCCEEDED'",invoice);
         return new BillingGateway.Payment(row.get("payment_key").toString(),row.get("order_id").toString(),((Number)row.get("amount")).longValue(),"KRW",status,"test-merchant",START,balance,"CANCELED".equals(status)?now:null);
     }
+    private void pollBillingWorker() {
+        var properties=mock(com.ipgo.server.config.BillingProperties.class);
+        when(properties.enabled()).thenReturn(true);
+        when(properties.workerEnabled()).thenReturn(true);
+        var worker=new com.ipgo.server.infrastructure.BillingWorker(properties,service,refunds,
+                mock(com.ipgo.server.service.NormalPaymentService.class));
+        try { worker.poll(); } finally { worker.close(); }
+    }
+    @Test void administratorCancellationIsDiscoveredWithoutMemberRefundRequest() throws Exception {
+        String invoice=paidInvoice();
+        var paidAt=jdbc.queryForObject("select paid_at from billing_invoices where id=?",java.sql.Timestamp.class,invoice);
+        var periodEnd=service.subscription(user).periodEnd();
+        now=START.plusSeconds(60);
+        when(refundPolicy.restricted()).thenReturn(true);
+        when(gateway.lookup(anyString())).thenReturn(refundPayment(invoice,"CANCELED",0));
+        clearInvocations(gateway);
+
+        pollBillingWorker();
+
+        assertThat(jdbc.queryForObject("select status from billing_invoices where id=?",String.class,invoice)).isEqualTo("VOID");
+        assertThat(jdbc.queryForObject("select paid_at from billing_invoices where id=?",java.sql.Timestamp.class,invoice)).isEqualTo(paidAt);
+        assertThat(jdbc.queryForObject("select status from billing_attempts where invoice_id=?",String.class,invoice)).isEqualTo("SUCCEEDED");
+        assertThat(service.invoices(user,null).items().getFirst().refundStatus()).isEqualTo("CANCELED");
+        assertThat(service.subscription(user).status()).isEqualTo("CANCELED");
+        assertThat(service.subscription(user).nextChargeAt()).isNull();
+        assertThat(service.subscription(user).periodEnd()).isEqualTo(periodEnd);
+        mvc.perform(get("/api/billing/invoices").with(jwt().jwt(j->j.subject(Long.toString(user)))))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.items[0].status").value("VOID"))
+                .andExpect(jsonPath("$.items[0].refundStatus").value("CANCELED"))
+                .andExpect(jsonPath("$.items[0].canceledAt").value(now.toString()))
+                .andExpect(jsonPath("$.items[0].amount").value(500));
+        verify(gateway,never()).cancel(anyString(),anyString(),anyString());
+        verify(gateway,never()).charge(anyString(),any(),anyString());
+    }
+    @Test void administratorPartialCancellationNeedsReviewAndPreservesCurrentAccessAndSchedule() {
+        String invoice=paidInvoice(); var next=service.subscription(user).nextChargeAt();
+        when(gateway.lookup(anyString())).thenReturn(refundPayment(invoice,"PARTIAL_CANCELED",200));
+        clearInvocations(gateway);
+        refunds.checkPaidOne(); refunds.checkPaidOne();
+        assertThat(service.invoices(user,null).items().getFirst().refundStatus()).isEqualTo("REVIEW_REQUIRED");
+        assertThat(service.invoices(user,null).items().getFirst().status()).isEqualTo("PAID");
+        assertThat(service.subscription(user).entitlements().canCalculate()).isTrue();
+        assertThat(service.subscription(user).nextChargeAt()).isEqualTo(next);
+        verify(gateway,times(1)).lookup(anyString());
+        verify(gateway,never()).cancel(anyString(),anyString(),anyString());
+    }
+    @Test void successfulPaymentRechecksAreDurableAndDoNotCreateRefunds() {
+        String invoice=paidInvoice();
+        when(gateway.lookup(anyString())).thenReturn(refundPayment(invoice,"DONE",500));
+        clearInvocations(gateway);
+        refunds.checkPaidOne(); refunds.checkPaidOne();
+        assertThat(jdbc.queryForObject("select provider_checked_at from billing_invoices where id=?",java.sql.Timestamp.class,invoice).toInstant()).isEqualTo(now);
+        assertThat(jdbc.queryForObject("select count(*) from billing_refunds",Integer.class)).isZero();
+        verify(gateway,times(1)).lookup(anyString());
+        now=now.plus(Duration.ofDays(1)); refunds.checkPaidOne();
+        verify(gateway,times(2)).lookup(anyString());
+    }
+    @Test void failedAdministratorLookupIsRateLimitedWithoutChangingAccess() {
+        String invoice=paidInvoice();
+        when(gateway.lookup(anyString())).thenThrow(new BillingGateway.Failure(false,"TIMEOUT"));
+        clearInvocations(gateway);
+        refunds.checkPaidOne(); refunds.checkPaidOne();
+        verify(gateway,times(1)).lookup(anyString());
+        assertThat(service.subscription(user).status()).isEqualTo("ACTIVE");
+        assertThat(jdbc.queryForObject("select count(*) from billing_refunds",Integer.class)).isZero();
+        assertThat(jdbc.queryForObject("select status from billing_invoices where id=?",String.class,invoice)).isEqualTo("PAID");
+    }
+    @Test void foreignMerchantAndWithdrawnInvoicesAreNotSentToCurrentProvider() {
+        String invoice=paidInvoice();
+        jdbc.update("update billing_subscriptions set merchant_id='previous-merchant' where user_id=?",user);
+        clearInvocations(gateway); refunds.checkPaidOne();
+        verify(gateway,never()).lookup(anyString());
+        jdbc.update("update billing_subscriptions set merchant_id='test-merchant' where user_id=?",user);
+        jdbc.update("update users set withdrawn_at=? where id=?",java.sql.Timestamp.from(now),user);
+        refunds.checkPaidOne();
+        verify(gateway,never()).lookup(anyString());
+        assertThat(jdbc.queryForObject("select provider_checked_at from billing_invoices where id=?",java.sql.Timestamp.class,invoice)).isNull();
+    }
+    @Test void cancelledOldCycleDoesNotEndSubscriptionApprovedDuringLookup() {
+        String invoice=paidInvoice(); Instant end=service.subscription(user).periodEnd();
+        now=START.plusSeconds(60); var cancelled=refundPayment(invoice,"CANCELED",0);
+        when(gateway.lookup(anyString())).thenAnswer(invocation->{
+            now=end; service.prepareRenewals(); service.processOne(); return cancelled;
+        });
+        refunds.checkPaidOne();
+        assertThat(jdbc.queryForObject("select status from billing_invoices where id=?",String.class,invoice)).isEqualTo("VOID");
+        assertThat(service.subscription(user).status()).isEqualTo("ACTIVE");
+        assertThat(service.subscription(user).periodStart()).isEqualTo(end);
+        assertThat(service.subscription(user).nextChargeAt()).isNotNull();
+    }
+    @Test void malformedAdministratorCancellationCannotChangeLedger() {
+        String invoice=paidInvoice(); now=START.plusSeconds(120);
+        var valid=refundPayment(invoice,"CANCELED",0);
+        var invalid=List.of(
+                new BillingGateway.Payment(valid.paymentKey(),valid.orderId(),501,"KRW","CANCELED","test-merchant",START,0,now),
+                new BillingGateway.Payment(valid.paymentKey(),valid.orderId(),500,"USD","CANCELED","test-merchant",START,0,now),
+                new BillingGateway.Payment(valid.paymentKey(),valid.orderId(),500,"KRW","CANCELED","foreign-merchant",START,0,now),
+                new BillingGateway.Payment("different-key",valid.orderId(),500,"KRW","CANCELED","test-merchant",START,0,now),
+                new BillingGateway.Payment(valid.paymentKey(),"different-order",500,"KRW","CANCELED","test-merchant",START,0,now),
+                new BillingGateway.Payment(valid.paymentKey(),valid.orderId(),500,"KRW","CANCELED","test-merchant",START,0,null),
+                new BillingGateway.Payment(valid.paymentKey(),valid.orderId(),500,"KRW","CANCELED","test-merchant",START,0,now.plusSeconds(61)),
+                new BillingGateway.Payment(valid.paymentKey(),valid.orderId(),500,"KRW","CANCELED","test-merchant",START,0,START.minusSeconds(1)));
+        for(var payment:invalid) {
+            jdbc.update("update billing_invoices set provider_checked_at=null where id=?",invoice);
+            when(gateway.lookup(anyString())).thenReturn(payment); refunds.checkPaidOne();
+            assertThat(jdbc.queryForObject("select count(*) from billing_refunds",Integer.class)).isZero();
+            assertThat(jdbc.queryForObject("select status from billing_invoices where id=?",String.class,invoice)).isEqualTo("PAID");
+        }
+        assertThat(service.subscription(user).status()).isEqualTo("ACTIVE");
+        verify(gateway,never()).cancel(anyString(),anyString(),anyString());
+    }
+    @Test void unsignedSignalOnlySchedulesVerifiedMonthlyLookupAfterMinimumInterval() throws Exception {
+        String invoice=paidInvoice();
+        String order=jdbc.queryForObject("select order_id from billing_attempts where invoice_id=?",String.class,invoice);
+        when(gateway.lookup(order)).thenReturn(refundPayment(invoice,"DONE",500));
+        refunds.checkPaidOne(); clearInvocations(gateway);
+        mvc.perform(post("/api/billing/webhooks/toss").contentType("application/json")
+                .content("{\"eventType\":\"PAYMENT_STATUS_CHANGED\",\"data\":{\"orderId\":\""+order+"\",\"status\":\"CANCELED\"}}"))
+                .andExpect(status().isOk());
+        refunds.checkPaidOne(); verify(gateway,never()).lookup(anyString());
+        now=now.plus(Duration.ofMinutes(10));
+        when(gateway.lookup(order)).thenReturn(refundPayment(invoice,"CANCELED",0));
+        refunds.checkPaidOne(); refunds.checkPaidOne();
+        assertThat(service.subscription(user).status()).isEqualTo("CANCELED");
+        verify(gateway,times(1)).lookup(order);
+        verify(gateway,never()).cancel(anyString(),anyString(),anyString());
+    }
+    private String paidInvoiceFor(long owner) {
+        var registration=service.register(owner,UUID.randomUUID().toString(),new BillingRequests.Registration("START_SUBSCRIPTION","seller",BillingPolicy.VERSION,BillingPolicy.CONSENT));
+        service.complete(owner,registration.sessionId(),UUID.randomUUID().toString(),new BillingRequests.Complete("fixture-auth",registration.customerKey(),registration.state()));
+        service.processOne();
+        return jdbc.queryForObject("select id from billing_invoices where user_id=? and status='PAID'",String.class,owner);
+    }
+    @Test void repeatedSignalsCannotStarveAnotherMonthlyRefund() {
+        String first=paidInvoice(),second=paidInvoiceFor(other);
+        var a=refundPayment(first,"DONE",500); var b=refundPayment(second,"CANCELED",0);
+        jdbc.update("update billing_invoices set provider_checked_at=? where id=?",java.sql.Timestamp.from(now.minus(Duration.ofDays(2)).minusSeconds(60)),first);
+        jdbc.update("update billing_invoices set provider_checked_at=? where id=?",java.sql.Timestamp.from(now.minus(Duration.ofDays(2))),second);
+        when(gateway.lookup(a.orderId())).thenReturn(a); when(gateway.lookup(b.orderId())).thenReturn(b);
+        clearInvocations(gateway);
+        for(int tick=0;tick<3;tick++) { refunds.nudge(a.orderId()); refunds.checkPaidOne(); now=now.plusSeconds(60); }
+        assertThat(service.subscription(other).status()).isEqualTo("CANCELED");
+        assertThat(service.subscription(user).status()).isEqualTo("ACTIVE");
+        verify(gateway,times(1)).lookup(a.orderId()); verify(gateway,times(1)).lookup(b.orderId());
+        verify(gateway,never()).cancel(anyString(),anyString(),anyString());
+    }
+    @Test void expiredMonthlyInvoiceDoesNotTriggerAdministratorLookup() {
+        String invoice=paidInvoice(); now=service.subscription(user).periodEnd();
+        clearInvocations(gateway); refunds.checkPaidOne();
+        verify(gateway,never()).lookup(anyString());
+        assertThat(jdbc.queryForObject("select status from billing_invoices where id=?",String.class,invoice)).isEqualTo("PAID");
+    }
+    @Test void foreignMerchantRefundCannotBlockCurrentMerchantRecovery() {
+        String previous=paidInvoiceFor(other);
+        when(gateway.lookup(anyString())).thenThrow(new BillingGateway.Failure(false,"TIMEOUT"));
+        refunds.cancel(other,previous,UUID.randomUUID().toString(),"previous test");
+        jdbc.update("update billing_subscriptions set merchant_id='previous-merchant' where user_id=?",other);
+        now=now.plusSeconds(1); String current=paidInvoice();
+        refunds.cancel(user,current,UUID.randomUUID().toString(),"current test");
+        now=now.plusSeconds(181);
+        var expected=refundPayment(current,"CANCELED",0); doReturn(expected).when(gateway).lookup(expected.orderId());
+        clearInvocations(gateway); refunds.processOne();
+        assertThat(service.invoices(user,null).items().getFirst().refundStatus()).isEqualTo("CANCELED");
+        assertThat(jdbc.queryForObject("select status from billing_refunds where invoice_id=?",String.class,previous)).isEqualTo("UNKNOWN");
+        verify(gateway,times(1)).lookup(expected.orderId());
+        verify(gateway,never()).cancel(anyString(),anyString(),anyString());
+    }
+    @Test void concurrentAdministratorChecksClaimOneProviderLookup() throws Exception {
+        String invoice=paidInvoice();
+        var entered=new CountDownLatch(1); var release=new CountDownLatch(1);
+        when(gateway.lookup(anyString())).thenAnswer(invocation->{
+            entered.countDown();
+            if(!release.await(5,TimeUnit.SECONDS)) throw new AssertionError("provider lookup not released");
+            return refundPayment(invoice,"CANCELED",0);
+        });
+        clearInvocations(gateway);
+        try(var pool=Executors.newFixedThreadPool(2)) {
+            var first=pool.submit(()->refunds.checkPaidOne());
+            try {
+                assertThat(entered.await(5,TimeUnit.SECONDS)).isTrue();
+                pool.submit(()->refunds.checkPaidOne()).get(5,TimeUnit.SECONDS);
+                release.countDown(); first.get(5,TimeUnit.SECONDS);
+            } finally { release.countDown(); }
+        }
+        assertThat(jdbc.queryForObject("select count(*) from billing_refunds where invoice_id=?",Integer.class,invoice)).isOne();
+        verify(gateway,times(1)).lookup(anyString());
+        verify(gateway,never()).cancel(anyString(),anyString(),anyString());
+    }
     @Test void fullRefundPreservesApprovalAndEndsAccessOnlyAfterConfirmedCancel() throws Exception {
         String invoice=paidInvoice();
         when(gateway.lookup(anyString())).thenReturn(refundPayment(invoice,"DONE",500));

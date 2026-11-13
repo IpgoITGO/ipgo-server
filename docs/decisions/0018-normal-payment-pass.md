@@ -19,12 +19,12 @@ Secret 업데이트·DB V27 적용·Server/Client 배포는 실제 SHA·환경·
 
 ## API와 상태
 
-- `GET /api/billing/plans`: 일반결제 모드의 interval=`ONE_TIME`, consentVersion=`one-time-month-2026-11-v1`.
+- `GET /api/billing/plans`: 일반결제 모드의 interval=`ONE_TIME`. consentVersion은 환불 제한이 꺼진 전환 기간에는 `one-time-month-2026-11-v1`, 켜지면 `one-time-month-2026-11-v2`다(#208). Client는 응답 값을 사용한다.
 - `POST /api/billing/payments`: Idempotency-Key 및 planId/priceVersion/consentVersion을 받습니다. 서버가 가격·orderId/customerKey·복귀 주소를 결정합니다.
 - `POST /api/billing/payments/{orderId}/confirm`: paymentKey/amount를 받고 본인 주문·서버 금액과 대조한 뒤 `/v1/payments/confirm`을 호출합니다. 브라우저 복귀만으로 성공 처리하지 않습니다.
 - `GET /api/billing/payments/{orderId}`: 본인 주문 조회. 불확정 승인/입금 대기는 저장한 paymentKey로만 조회하며 새 승인으로 우회하지 않습니다.
 - `GET /api/billing/payments`: 본인 진행 중인 결제/환불. 계정의 상태 확인과 작업기가 같은 상태를 사용합니다.
-- 기존 `POST /api/billing/invoices/{id}/cancel-payment`: 일반결제 주문은 새 gateway로 본인 최신 결제만 전액 취소합니다.
+- 기존 `POST /api/billing/invoices/{id}/cancel-payment`: 환불 제한이 꺼진 전환 기간에는 일반결제 주문을 새 gateway로 본인 최신 결제만 전액 취소한다. 제한이 켜지면 결제 완료 건의 새 회원 환불은 `409 REFUND_NOT_ALLOWED`로 거절하고, 입금 전 가상계좌 발급 취소와 기존 환불 복구만 유지한다. 회사 귀책 환급은 운영자가 Toss 관리자 화면에서 처리하며 별도 운영자 API는 없다. 상세 조건과 상태 반영은 [README의 환불 제한](../../README.md#결제-완료-후-회원-직접-환불-제한-208)을 따른다.
 
 OPEN 주문은30분 유효하며 같은 의도는 재사용합니다. 타인·변조 금액·다른 paymentKey·탈퇴 계정은 거부합니다.
 CONFIRMING lease와 사용자 row lock으로 중복 승인을 막습니다. 타임아웃/응답 유실은 UNKNOWN,

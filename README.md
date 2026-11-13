@@ -136,6 +136,7 @@ PostgreSQL을 준비한 뒤 실행 환경에 아래 변수를 설정합니다. �
 | `IPGO_AUTH_COOKIE_SECURE` | 기본 `true`. 로컬 HTTP 개발에서만 `false`, 배포에서는 HTTPS와 `true` 사용 |
 | `IPGO_UPLOAD_DATABASE_MAX_BYTES` | DB 원본 전체 상한. 기본/최대 268435456 bytes(256MiB), 양수의 더 작은 검증 한도만 허용 |
 | `IPGO_UPLOAD_DIR` | 원본·보관 정보 저장 폴더. 기본값은 실행 디렉터리의 `./storage/uploads` |
+| `IPGO_PAYMENT_REFUND_RESTRICTED` | 결제 완료 후 회원 직접 환불 제한(#208). 기본 `false`. 프론트 결제 화면 환불 제한 고지·환불 버튼 제거 배포와 같이 `true` |
 | `IPGO_SIGNUP_STRICT` | 가입 동의·사업자등록번호 필수 여부(#206). 기본 `false`(전환 기간, 보낸 값만 검사). 프론트 동의 화면 배포 뒤 `true` |
 | `IPGO_PUSH_PUBLIC_KEY` | Web Push VAPID 공개키(base64url, #190). 비어 있으면 알림 등록 API가 `503 PUSH_UNAVAILABLE`. 비밀키는 아래 별도 발송 secret으로 주입 |
 
@@ -831,7 +832,7 @@ scripts/testing/verify-insight-contract.sh /path/to/ipgo-ai
 
 ## Database 변경과 복구
 
-이미 병합된 migration은 Flyway 이력을 보존하기 위해 수정하지 않습니다. 새 DB에서는 승인한 범위의 migration을 순서대로 적용합니다. #90 구현은 V16까지 필요하며 운영 적용은 별도 승인입니다. V4는 `warehouses`·`products`·`inventory_units`, V5는 `upload_files`, V6은 `replenishment_settings`, V7은 `planned_receipts`, V8은 `auth_sessions`·`refresh_tokens`, V9는 `calculation_runs`·`calculation_results`, V10은 일별 수불 2개 표, V11은 계산 출처·시나리오·백테스트·AI 인사이트 4개 표를 추가합니다. V12는 PostgreSQL tenant 무결성 trigger, V13은 FastAPI view와 역할별 권한을 적용하고, V14는 `engine_jobs`·입력 hash·정제 조회 view를 추가합니다. V15의 DB 원본 저장 전환(Server #77·AI #60)은 보류 상태입니다. V16은 입고 사건·배정·업로드 판정 기록을 추가하며 기존 원본 저장 모드를 바꾸지 않습니다. V16을 위해 전체 migration 경로를 실행하기 전 V15의 보류/실제 DB 이력을 함께 확인해야 합니다. V19는 창고 보관 요율 칸과 `product_boxes`를 추가합니다(#111). 기존 행은 바꾸지 않고, 되돌릴 때는 새 칸과 표만 지우면 됩니다. V21은 내 입고량 `product_planned_quantities`를 추가합니다(#119, V20은 #137 입고 정정). 되돌릴 때는 이 표만 지우면 됩니다. V23은 `inventory_units.expiry_date`와 `warehouses.expiry_imminent_days` 칸을 추가합니다(#168, V22는 인사이트 월 사용량). 기존 행은 NULL로 남고, 되돌릴 때는 두 칸만 지우면 됩니다. V24는 회원 탈퇴 시각 `users.withdrawn_at` 칸을 추가합니다(#172). 기존 행은 NULL로 남고, 되돌릴 때는 이 칸만 지우면 됩니다. V26은 Web Push 알림의 브라우저 구독 `push_subscriptions`와 알림 설정 `notification_settings`를 추가합니다(#190, V25는 결제 환불 원장). 새 표만 만들어 기존 행은 바뀌지 않고, 다른 표가 참조하지 않아 되돌릴 때는 두 표만 지우면 됩니다. AI 역할은 두 표를 볼 수 없습니다. V31은 가입 동의 기록 `users.agreement_version`·`agreed_at`, 무료 체험 재사용 확인값 표 `trial_reuse_fingerprints`, 체험 없이 시작한 구독 표시 `billing_subscriptions.trial_reused`를 추가합니다(#206). 기존 행은 비어 있거나 `FALSE`로 남고, 되돌릴 때는 새 칸 3개와 표 1개만 지우면 됩니다. AI 역할은 확인값 표를 볼 수 없습니다. 실제 DB 적용은 V15~V18과 같은 순서 확인과 별도 승인을 따릅니다. 전체 관계와 변경 규칙은 [Database ERD v1](docs/database/erd-v1.md)에 있습니다. Hibernate는 스키마를 자동 수정하지 않고 검증만 수행합니다.
+이미 병합된 migration은 Flyway 이력을 보존하기 위해 수정하지 않습니다. 새 DB에서는 승인한 범위의 migration을 순서대로 적용합니다. #90 구현은 V16까지 필요하며 운영 적용은 별도 승인입니다. V4는 `warehouses`·`products`·`inventory_units`, V5는 `upload_files`, V6은 `replenishment_settings`, V7은 `planned_receipts`, V8은 `auth_sessions`·`refresh_tokens`, V9는 `calculation_runs`·`calculation_results`, V10은 일별 수불 2개 표, V11은 계산 출처·시나리오·백테스트·AI 인사이트 4개 표를 추가합니다. V12는 PostgreSQL tenant 무결성 trigger, V13은 FastAPI view와 역할별 권한을 적용하고, V14는 `engine_jobs`·입력 hash·정제 조회 view를 추가합니다. V15의 DB 원본 저장 전환(Server #77·AI #60)은 보류 상태입니다. V16은 입고 사건·배정·업로드 판정 기록을 추가하며 기존 원본 저장 모드를 바꾸지 않습니다. V16을 위해 전체 migration 경로를 실행하기 전 V15의 보류/실제 DB 이력을 함께 확인해야 합니다. V19는 창고 보관 요율 칸과 `product_boxes`를 추가합니다(#111). 기존 행은 바꾸지 않고, 되돌릴 때는 새 칸과 표만 지우면 됩니다. V21은 내 입고량 `product_planned_quantities`를 추가합니다(#119, V20은 #137 입고 정정). 되돌릴 때는 이 표만 지우면 됩니다. V23은 `inventory_units.expiry_date`와 `warehouses.expiry_imminent_days` 칸을 추가합니다(#168, V22는 인사이트 월 사용량). 기존 행은 NULL로 남고, 되돌릴 때는 두 칸만 지우면 됩니다. V24는 회원 탈퇴 시각 `users.withdrawn_at` 칸을 추가합니다(#172). 기존 행은 NULL로 남고, 되돌릴 때는 이 칸만 지우면 됩니다. V26은 Web Push 알림의 브라우저 구독 `push_subscriptions`와 알림 설정 `notification_settings`를 추가합니다(#190, V25는 결제 환불 원장). 새 표만 만들어 기존 행은 바뀌지 않고, 다른 표가 참조하지 않아 되돌릴 때는 두 표만 지우면 됩니다. AI 역할은 두 표를 볼 수 없습니다. V31은 가입 동의 기록 `users.agreement_version`·`agreed_at`, 무료 체험 재사용 확인값 표 `trial_reuse_fingerprints`, 체험 없이 시작한 구독 표시 `billing_subscriptions.trial_reused`를 추가합니다(#206). 기존 행은 비어 있거나 `FALSE`로 남고, 되돌릴 때는 새 칸 3개와 표 1개만 지우면 됩니다. AI 역할은 확인값 표를 볼 수 없습니다. V32는 이용권 주문의 결제 동의 버전·시각 `billing_normal_orders.consent_version`·`consented_at`을 추가합니다(#208). 기존 주문은 NULL로 남고, 되돌릴 때는 두 칸만 지우면 됩니다. **V31(#211) 뒤에 적용**해야 합니다. 실제 DB 적용은 V15~V18과 같은 순서 확인과 별도 승인을 따릅니다. 전체 관계와 변경 규칙은 [Database ERD v1](docs/database/erd-v1.md)에 있습니다. Hibernate는 스키마를 자동 수정하지 않고 검증만 수행합니다.
 
 초기 PostgreSQL은 administrator가 `database/bootstrap/create_roles.sql`을 먼저 실행한 뒤 `ipgo_migrator`로 Flyway를 적용합니다. 새 DB의 bootstrap SQL은 `ipgo_migrator`·`ipgo_server`·`ipgo_ai_reader`·`ipgo_ai_service_reader` 역할을 만들고 비밀번호는 설정하지 않습니다. 비밀번호는 repository·shell history·Terraform state에 남기지 않고 승인된 Secrets Manager 절차로 설정합니다. Spring runtime은 `ipgo_server`, FastAPI는 `ipgo_ai_reader`를 사용하며 runtime에서는 `SPRING_FLYWAY_ENABLED=false`로 migration 자격 증명을 분리합니다.
 
@@ -1173,6 +1174,21 @@ placeholder만 사용했으며 실제 URL 설정·AWS/HTTP/배포 검증은 실�
 
 DB V25는 refund 원장을 추가하며 다른 미병합 PR의 migration과 번호가 겹치면 배포 전에 최신dev로 통합해 번호를 조정해야 합니다. 특히 기존 회원 탈퇴 변경이 함께 들어오면 refund 원장 보존과 탈퇴/취소 경합도 다시 검증해야 합니다. 비활성화/이전 이미지 복귀 때도 이미 승인/취소된 원장은 삭제하지 않습니다.
 
+
+## 결제 완료 후 회원 직접 환불 제한 (#208)
+
+약관 제16조에 따라 이용권은 결제 완료 후 청약철회·환불이 제한됩니다. 화면에서 버튼만 빼면 API를 직접 불러 환불할 수 있어서 서버에서도 막습니다. `IPGO_PAYMENT_REFUND_RESTRICTED`(기본 `false`)로 켜고 끕니다.
+
+| | 꺼짐(기본, 전환 기간) | 켜짐 |
+|---|---|---|
+| 결제 동의 버전(`consentVersion`) | `one-time-month-2026-11-v1` | `one-time-month-2026-11-v2`(환불 제한 고지 포함). 요금제 응답(`GET /api/billing/plans`)이 지금 받는 버전을 알려 주고, 다른 버전은 `409 BILLING_CONSENT_REQUIRED` |
+| 결제 완료 건의 **새** 환불 요청(`cancel-payment`) | 지금처럼 처리 | `409 REFUND_NOT_ALLOWED`, 토스 요청 없음. 이용권·정기결제 청구 모두 |
+| 입금 전 가상계좌 발급 취소 | 처리 | 처리 |
+| 이미 시작된 환불(계좌 재입력 `ACCOUNT_REQUIRED`·`PROCESSING`·`UNKNOWN`·`REVIEW_REQUIRED`) | 끝까지 처리 | 끝까지 처리 |
+
+- 이용권 주문마다 회원이 동의한 결제 동의 버전과 시각을 `billing_normal_orders.consent_version`·`consented_at`(V32)에 남깁니다.
+- **켜는 순서**: 프론트가 결제 화면에 환불 제한 고지를 넣고 결제 내역의 환불 버튼·계좌 입력을 뺀 배포(IpgoITGO/ipgo-client#332)와 **같이** 켭니다. 프론트는 요금제 응답의 `consentVersion`을 그대로 보내므로, 켜기 전에 v2를 먼저 받지 않습니다.
+- **회사 귀책 환급**: 회원 API가 아니라 운영자가 토스 관리자 화면에서 처리합니다. 가상계좌는 회원에게 고충처리 이메일로 환불계좌를 받아 환급하고, 환급이 끝나면 그 메일과 계좌 정보를 지체 없이 지웁니다(개인정보 처리방침 제1조 3호). 서버 원장과 다르게 바뀐 주문은 다음 조회·대사에서 토스 상태를 따라갑니다.
 
 ## TEST 가상계좌 발급 취소·환불
 

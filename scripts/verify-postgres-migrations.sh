@@ -94,7 +94,7 @@ migration_count="$(docker exec "${database_container}" \
 table_count="$(docker exec "${database_container}" \
   psql -U ipgo_migrator -d ipgo -Atc \
   "SELECT COUNT(*) FROM pg_tables WHERE schemaname = 'public' AND tablename <> 'flyway_schema_history'")"
-if [[ "${migration_count}" != "31" || "${table_count}" != "43" ]]; then
+if [[ "${migration_count}" != "32" || "${table_count}" != "43" ]]; then
   echo "unexpected schema: migrations=${migration_count}, tables=${table_count}" >&2
   exit 1
 fi
@@ -395,5 +395,9 @@ ROLLBACK;
 SQL
 expect_denied ipgo_ai_reader "SELECT * FROM trial_reuse_fingerprints"
 expect_denied ipgo_ai_service_reader "SELECT * FROM trial_reuse_fingerprints"
+
+# V32: 서버 역할은 이용권 주문의 결제 동의 버전 · 시각을 쓴다(#208). AI 역할은 결제 주문을 볼 수 없다.
+docker exec "${database_container}" psql -v ON_ERROR_STOP=1 -U ipgo_server -d ipgo -c "BEGIN; UPDATE billing_normal_orders SET consent_version='one-time-month-2026-11-v2', consented_at=NOW() WHERE false; ROLLBACK;" >/dev/null
+expect_denied ipgo_ai_reader "SELECT consent_version FROM billing_normal_orders"
 
 echo "PostgreSQL migrations, tenant integrity, and database roles verified."

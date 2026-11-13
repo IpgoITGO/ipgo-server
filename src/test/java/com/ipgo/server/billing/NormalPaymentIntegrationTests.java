@@ -32,6 +32,8 @@ class NormalPaymentIntegrationTests extends DatabaseIntegrationTest {
     @MockitoBean NormalPaymentGateway gateway;
     @MockitoBean BillingGateway legacy;
     @MockitoBean Clock clock;
+    // #208 기본은 실제 값(환불 제한 꺼짐)이고, 환불 제한 테스트에서만 켠다.
+    @org.springframework.test.context.bean.override.mockito.MockitoSpyBean com.ipgo.server.config.RefundPolicyProperties refundPolicy;
     static final Instant START=Instant.parse("2026-01-31T01:00:00Z");
     Instant now;
     long user,other;
@@ -54,6 +56,11 @@ class NormalPaymentIntegrationTests extends DatabaseIntegrationTest {
             for(String s:sql.split(";")) if(!s.isBlank()) jdbc.execute(s);
             String upgrade=new org.springframework.core.io.ClassPathResource("db/migration/V30__support_virtual_account_refunds.sql").getContentAsString(StandardCharsets.UTF_8).split("-- PostgreSQL 전용")[0];
             for(String statement:upgrade.split(";")) if(!statement.isBlank()) jdbc.execute(statement);
+        }
+        // #208 주문별 결제 동의 버전 · 시각(V32)
+        if(jdbc.queryForObject("select count(*) from information_schema.columns where lower(table_name)='billing_normal_orders' and lower(column_name)='consent_version'",Integer.class)==0) {
+            String consent=new org.springframework.core.io.ClassPathResource("db/migration/V32__record_normal_payment_consent.sql").getContentAsString(StandardCharsets.UTF_8);
+            for(String statement:consent.split(";")) if(!statement.isBlank()) jdbc.execute(statement);
         }
         now=START; when(clock.instant()).thenAnswer(i->now);
         user=addUser(); other=addUser();
@@ -314,6 +321,52 @@ class NormalPaymentIntegrationTests extends DatabaseIntegrationTest {
         assertThat(normal.refund(user,inv,UUID.randomUUID().toString(),"환불",account()).status()).isEqualTo("CANCELED");
         assertThat(billing.subscription(user).status()).isEqualTo("CANCELED");
     }
+    private void restrictRefunds() {
+        when(refundPolicy.restricted()).thenReturn(true);
+        when(refundPolicy.consentVersion()).thenReturn(com.ipgo.server.config.RefundPolicyProperties.CONSENT_NO_REFUND);
+    }
+    private static String code(Throwable t) { return ((BillingException) t).code(); }
+
+    // #208 환불 제한을 켜면 새 결제 동의 버전(v2)만 받고, 주문에 버전 · 시각을 남기며, 결제 완료 건의 새 환불은 거절한다.
+    @Test void restrictedPolicyRequiresNewConsentAndRejectsRefundOfPaidOrder() {
+        restrictRefunds();
+        assertThat(billing.plans().getFirst().consentVersion()).isEqualTo(com.ipgo.server.config.RefundPolicyProperties.CONSENT_NO_REFUND);
+        assertThatThrownBy(()->normal.create(user,UUID.randomUUID().toString(),"seller",BillingPolicy.VERSION,NormalPaymentService.CONSENT))
+                .satisfies(t->assertThat(code(t)).isEqualTo("BILLING_CONSENT_REQUIRED"));
+        var o=normal.create(user,UUID.randomUUID().toString(),"seller",BillingPolicy.VERSION,com.ipgo.server.config.RefundPolicyProperties.CONSENT_NO_REFUND);
+        var row=jdbc.queryForMap("select consent_version,consented_at from billing_normal_orders where id=?",o.orderId());
+        assertThat(row.get("consent_version")).isEqualTo(com.ipgo.server.config.RefundPolicyProperties.CONSENT_NO_REFUND);
+        assertThat(row.get("consented_at")).isNotNull();
+
+        normal.confirm(user,o.orderId(),"key",500);
+        String invoice=normal.get(user,o.orderId()).invoiceId();
+        assertThatThrownBy(()->normal.refund(user,invoice,UUID.randomUUID().toString(),"환불"))
+                .satisfies(t->assertThat(code(t)).isEqualTo("REFUND_NOT_ALLOWED"));
+        assertThat(normal.get(user,o.orderId()).refundStatus()).isNull();
+        assertThat(billing.subscription(user).entitlements().canCalculate()).isTrue();
+        verify(gateway,never()).cancel(anyString(),anyString(),anyString());
+        verify(gateway,never()).cancel(anyString(),anyString(),anyString(),any());
+    }
+
+    // #208 환불 제한을 켜도 입금 전 가상계좌 취소와, 켜기 전에 시작된 환불(계좌 재입력)은 그대로 끝까지 처리한다.
+    @Test void restrictedPolicyKeepsUnpaidCancelAndInProgressRefund() {
+        var started=virtualOrder(true);String startedInvoice=normal.get(user,started.orderId()).invoiceId();
+        when(gateway.lookup("key")).thenReturn(va(started.orderId(),"DONE","NONE"));
+        assertThat(normal.refund(user,startedInvoice,UUID.randomUUID().toString(),"환불").status()).isEqualTo("ACCOUNT_REQUIRED");
+
+        restrictRefunds();
+        when(gateway.cancel(eq("key"),anyString(),anyString(),eq(account()))).thenReturn(va(started.orderId(),"CANCELED","COMPLETED"));
+        assertThat(normal.refund(user,startedInvoice,UUID.randomUUID().toString(),"환불",account()).status()).isEqualTo("CANCELED");
+
+        var pending=normal.create(other,UUID.randomUUID().toString(),"seller",BillingPolicy.VERSION,com.ipgo.server.config.RefundPolicyProperties.CONSENT_NO_REFUND);
+        when(gateway.confirm(anyString(),anyString(),anyLong(),anyString())).thenReturn(new BillingGateway.Payment("other-key",pending.orderId(),500,"KRW","WAITING_FOR_DEPOSIT","new-mid",null,0,null,"가상계좌","NONE"));
+        normal.confirm(other,pending.orderId(),"other-key",500);
+        String pendingInvoice=normal.get(other,pending.orderId()).invoiceId();
+        when(gateway.lookup("other-key")).thenReturn(new BillingGateway.Payment("other-key",pending.orderId(),500,"KRW","WAITING_FOR_DEPOSIT","new-mid",null,0,null,"가상계좌","NONE"));
+        when(gateway.cancel(eq("other-key"),anyString(),anyString())).thenReturn(new BillingGateway.Payment("other-key",pending.orderId(),500,"KRW","CANCELED","new-mid",null,0,now,"가상계좌","NONE"));
+        assertThat(normal.refund(other,pendingInvoice,UUID.randomUUID().toString(),"발급 취소").status()).isEqualTo("CANCELED");
+    }
+
     @Test void refundAccountIsRedactedAndOtherOwnersCannotCancel() {
         var o=virtualOrder(true);String inv=normal.get(user,o.orderId()).invoiceId();clearInvocations(gateway);
         assertThatThrownBy(()->normal.refund(other,inv,UUID.randomUUID().toString(),"환불",account())).isInstanceOf(BillingException.class);

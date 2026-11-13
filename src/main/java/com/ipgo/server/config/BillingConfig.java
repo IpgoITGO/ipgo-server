@@ -6,7 +6,7 @@ import org.springframework.boot.context.properties.EnableConfigurationProperties
 import org.springframework.context.annotation.Configuration;
 
 @Configuration
-@EnableConfigurationProperties({BillingProperties.class,NormalPaymentProperties.class})
+@EnableConfigurationProperties({BillingProperties.class,NormalPaymentProperties.class,RefundPolicyProperties.class})
 public class BillingConfig {
     public BillingConfig(BillingProperties p) {
         if (!"TEST".equals(p.mode())) throw new IllegalStateException("Billing supports TEST mode only");

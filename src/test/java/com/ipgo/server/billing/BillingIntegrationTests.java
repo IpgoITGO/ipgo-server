@@ -50,6 +50,8 @@ class BillingIntegrationTests extends DatabaseIntegrationTest {
     @Autowired JsonMapper mapper;
     @MockitoBean BillingGateway gateway;
     @MockitoBean Clock clock;
+    // #208 기본은 실제 값(환불 제한 꺼짐)이고, 환불 제한 테스트에서만 켠다.
+    @org.springframework.test.context.bean.override.mockito.MockitoSpyBean com.ipgo.server.config.RefundPolicyProperties refundPolicy;
     @org.springframework.test.context.bean.override.mockito.MockitoSpyBean com.ipgo.server.repository.BillingLedger ledger;
     @Autowired com.ipgo.server.service.AccountWithdrawalService withdrawals;
     @Autowired org.springframework.security.crypto.password.PasswordEncoder encoder;
@@ -638,6 +640,17 @@ class BillingIntegrationTests extends DatabaseIntegrationTest {
         assertThat(service.invoices(user,null).items().getFirst().refundStatus()).isEqualTo("CANCELED");
         assertThat(service.invoices(user,null).items().getFirst().canceledAt()).isNotNull();
         assertThat(service.subscription(user).nextChargeAt()).isNull();
+    }
+    // #208 환불 제한을 켜면 정기결제 청구도 회원이 API로 직접 환불할 수 없다(409 REFUND_NOT_ALLOWED, 토스 요청 없음).
+    @Test void restrictedPolicyRejectsSubscriptionRefundThroughApi() throws Exception {
+        when(refundPolicy.restricted()).thenReturn(true);
+        String invoice=paidInvoice();
+        mvc.perform(post("/api/billing/invoices/"+invoice+"/cancel-payment").with(jwt().jwt(j->j.subject(Long.toString(user))))
+                .header("Idempotency-Key",UUID.randomUUID().toString()).contentType("application/json").content("{\"reason\":\"직접 환불 시도\"}"))
+                .andExpect(status().isConflict()).andExpect(jsonPath("$.code").value("REFUND_NOT_ALLOWED"));
+        verify(gateway,never()).cancel(anyString(),anyString(),anyString());
+        assertThat(service.subscription(user).entitlements().canCalculate()).isTrue();
+        assertThat(jdbc.queryForObject("select count(*) from billing_refunds where invoice_id=?",Integer.class,invoice)).isZero();
     }
     @Test void refundIsOwnedAndDoesNotCallProviderForAnotherUser() {
         String invoice=paidInvoice();

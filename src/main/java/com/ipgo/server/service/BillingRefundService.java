@@ -21,8 +21,10 @@ public class BillingRefundService {
     private final BillingProperties properties;
     private final BillingGateway gateway;
     private final Clock clock;
-    public BillingRefundService(BillingLedger ledger,BillingProperties properties,BillingGateway gateway,Clock clock) {
-        this.ledger=ledger; this.properties=properties; this.gateway=gateway; this.clock=clock;
+    private final com.ipgo.server.config.RefundPolicyProperties refundPolicy;
+    public BillingRefundService(BillingLedger ledger,BillingProperties properties,BillingGateway gateway,Clock clock,
+            com.ipgo.server.config.RefundPolicyProperties refundPolicy) {
+        this.ledger=ledger; this.properties=properties; this.gateway=gateway; this.clock=clock; this.refundPolicy=refundPolicy;
     }
     private <T> T locked(long user,Supplier<T> action) {
         if(!properties.enabled() || !"TEST".equals(properties.mode()))
@@ -56,6 +58,8 @@ public class BillingRefundService {
                         || (existing.time("lease_until")!=null && clock.instant().isBefore(existing.time("lease_until")))) return null;
                 claim(existing.text("id")); return existing.text("id");
             }
+            // #208 환불 제한: 이미 시작된 환불은 위에서 끝까지 처리하고, 새 환불 요청은 받지 않는다.
+            if(refundPolicy.restricted()) throw BillingException.conflict("REFUND_NOT_ALLOWED");
             Row sub=ledger.one("select * from billing_subscriptions where user_id=?",user);
             if(!"TEST".equals(sub.text("mode")) || !properties.merchantId().equals(sub.text("merchant_id")))
                 throw BillingException.conflict("BILLING_MERCHANT_CHANGED");

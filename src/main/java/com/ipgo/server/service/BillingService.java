@@ -27,14 +27,15 @@ public class BillingService {
     private final Clock clock;
     private final com.ipgo.server.config.NormalPaymentProperties normal;
     private final TrialReuseGuard trialReuse;
+    private final com.ipgo.server.config.RefundPolicyProperties refundPolicy;
     public BillingService(BillingLedger l,BillingProperties p,BillingSecrets s,BillingGateway g,Clock c,com.ipgo.server.config.NormalPaymentProperties n,
-            TrialReuseGuard t) {
-        ledger=l; properties=p; secrets=s; gateway=g; clock=c; normal=n; trialReuse=t;
+            TrialReuseGuard t,com.ipgo.server.config.RefundPolicyProperties r) {
+        ledger=l; properties=p; secrets=s; gateway=g; clock=c; normal=n; trialReuse=t; refundPolicy=r;
     }
     public void requireEnabled() {
         if(!properties.enabled()) throw new BillingException(503,"BILLING_DISABLED","결제 기능을 준비 중입니다.");
     }
-    public List<BillingViews.Plan> plans() { requireEnabled(); return BillingPolicy.plans().stream().map(p->normal.enabled()?new BillingViews.Plan(p.planId(),p.priceVersion(),p.amount(),p.currency(),"ONE_TIME",p.products(),p.monthlyInsights(),p.testMode(),p.trialDays(),NormalPaymentService.CONSENT):p).toList(); }
+    public List<BillingViews.Plan> plans() { requireEnabled(); return BillingPolicy.plans().stream().map(p->normal.enabled()?new BillingViews.Plan(p.planId(),p.priceVersion(),p.amount(),p.currency(),"ONE_TIME",p.products(),p.monthlyInsights(),p.testMode(),p.trialDays(),refundPolicy.consentVersion()):p).toList(); }
     private <T> T locked(long user,Supplier<T> f) {
         requireEnabled(); return ledger.transaction(()->{ ledger.lock(user); ensureNotWithdrawn(user); initialize(user); return f.get(); });
     }

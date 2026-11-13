@@ -22,7 +22,8 @@ import static com.ipgo.server.repository.BillingLedger.at;
 /** One-off payment authentication is client-side; approval and entitlement checks are server-side. */
 @Service
 public class NormalPaymentService {
-    public static final String CONSENT="one-time-month-2026-11-v1";
+    // #208 환불 제한 전(v1) 결제 동의 버전. 지금 받는 버전은 RefundPolicyProperties.consentVersion()이다.
+    public static final String CONSENT=com.ipgo.server.config.RefundPolicyProperties.CONSENT_BEFORE;
     private final NormalPaymentProperties properties;
     private final BillingProperties billingProperties;
     private final BillingService billing;
@@ -30,10 +31,12 @@ public class NormalPaymentService {
     private final NormalPaymentGateway gateway;
     private final Clock clock;
     private final BillingSecrets secrets;
+    private final com.ipgo.server.config.RefundPolicyProperties refundPolicy;
     public record Checkout(String orderId,String customerKey,long amount,String orderName,String successUrl,String failUrl,Instant expiresAt) { }
     public record Result(String orderId,String invoiceId,String status,String refundStatus,Instant canceledAt) { }
-    public NormalPaymentService(NormalPaymentProperties p,BillingProperties bp,BillingService b,BillingLedger l,NormalPaymentGateway g,Clock c,BillingSecrets s) {
-        properties=p; billingProperties=bp; billing=b; ledger=l; gateway=g; clock=c; secrets=s;
+    public NormalPaymentService(NormalPaymentProperties p,BillingProperties bp,BillingService b,BillingLedger l,NormalPaymentGateway g,Clock c,BillingSecrets s,
+            com.ipgo.server.config.RefundPolicyProperties r) {
+        properties=p; billingProperties=bp; billing=b; ledger=l; gateway=g; clock=c; secrets=s; refundPolicy=r;
     }
     private <T> T locked(long user,Supplier<T> action) {
         if(!properties.enabled()) throw new BillingException(503,"PAYMENT_DISABLED","일반결제를 준비 중입니다.");
@@ -50,7 +53,8 @@ public class NormalPaymentService {
     }
     public Checkout create(long user,String key,String planId,String version,String consent) {
         if(key==null || !key.matches("[A-Za-z0-9_-]{8,100}")) throw BillingException.invalid();
-        if(!CONSENT.equals(consent)) throw BillingException.conflict("BILLING_CONSENT_REQUIRED");
+        // #208 지금 결제 화면 고지에 맞는 동의 버전만 받는다(환불 제한을 켜면 v2).
+        if(!refundPolicy.consentVersion().equals(consent)) throw BillingException.conflict("BILLING_CONSENT_REQUIRED");
         var plan=BillingPolicy.plan(planId);
         if("trial".equals(planId) || !plan.priceVersion().equals(version)) throw BillingException.conflict("PRICE_CHANGED");
         String hash=BillingSecrets.hash(planId+"|"+version+"|"+consent);
@@ -80,8 +84,9 @@ public class NormalPaymentService {
             long cycle=ledger.one("select coalesce(max(cycle_no),0)+1 as n from billing_invoices where user_id=?",user).number("n");
             ledger.update("insert into billing_invoices(id,user_id,cycle_no,plan_id,price_version,amount,order_name,currency,period_start,period_end,status) values (?,?,?,?,?,?,?,'KRW',?,?,'OPEN')",
                     inv,user,cycle,planId,version,plan.amount(),"Ipgo "+planId+" 1개월 이용권",at(start),at(BillingPolicy.boundary(start,1)));
-            ledger.update("insert into billing_normal_orders(id,user_id,invoice_id,command_key,body_hash,customer_key,status,provider_key,created_at,expires_at) values (?,?,?,?,?,?,'OPEN',?,?,?)",
-                    id,user,inv,key,hash,uuid(),uuid(),at(start),at(start.plusSeconds(1800)));
+            // #208 주문마다 회원이 동의한 결제 동의 버전과 시각을 남긴다.
+            ledger.update("insert into billing_normal_orders(id,user_id,invoice_id,command_key,body_hash,customer_key,status,provider_key,created_at,expires_at,consent_version,consented_at) values (?,?,?,?,?,?,'OPEN',?,?,?,?,?)",
+                    id,user,inv,key,hash,uuid(),uuid(),at(start),at(start.plusSeconds(1800)),consent,at(start));
             return checkout(owned(user,id));
         });
     }
@@ -189,6 +194,9 @@ public class NormalPaymentService {
                 return null;
             }
             boolean paid="PAID".equals(o.text("status")) && i.number("cycle_no")==sub.number("cycle_no");
+            // #208 환불 제한: 결제 완료 건의 새 환불 요청은 받지 않는다. 진행 중인 환불(ACCOUNT_REQUIRED 계좌 재입력 포함)과
+            // 입금 전 가상계좌 취소(PENDING)는 그대로 처리한다. 회사 귀책 환급은 운영자가 토스 관리자 화면에서 한다.
+            if(refundPolicy.restricted() && "PAID".equals(o.text("status")) && o.text("refund_status")==null) throw BillingException.conflict("REFUND_NOT_ALLOWED");
             if(!paid && !"PENDING".equals(o.text("status"))) throw BillingException.conflict("ONLY_CURRENT_PAYMENT_REFUNDABLE");
             if(pending(user).stream().anyMatch(row->!row.orderId().equals(o.text("id")))) throw BillingException.conflict("BILLING_IN_PROGRESS");
             if(account!=null && o.text("payment_method")!=null && !"가상계좌".equals(o.text("payment_method"))) throw BillingException.invalid();

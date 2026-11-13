@@ -115,7 +115,7 @@ class BillingIntegrationTests extends DatabaseIntegrationTest {
         } else { jdbc.update("update billing_subscriptions set default_method_id=null"); for(String table:tables) jdbc.update("delete from "+table); }
     }
     long newUser() {
-        jdbc.update("insert into users(email,password_hash,created_at) values (?,'fixture',?)",UUID.randomUUID()+"@example.test",java.sql.Timestamp.from(START.minusSeconds(3600)));
+        jdbc.update("insert into users(email,password_hash,created_at,plan_chosen_at) values (?,'fixture',?,?)",UUID.randomUUID()+"@example.test",java.sql.Timestamp.from(START.minusSeconds(3600)),java.sql.Timestamp.from(START.minusSeconds(3600)));
         return jdbc.queryForObject("select max(id) from users",Long.class);
     }
     BillingViews.Registration registration() { return service.register(user,UUID.randomUUID().toString(),new BillingRequests.Registration("START_SUBSCRIPTION","seller",BillingPolicy.VERSION,BillingPolicy.CONSENT)); }
@@ -129,6 +129,80 @@ class BillingIntegrationTests extends DatabaseIntegrationTest {
         now=a.trialEnd(); assertThat(service.subscription(user).entitlements().reason()).isEqualTo("TRIAL_ENDED");
         assertThatThrownBy(()->service.assertWriteAllowed(user)).isInstanceOf(BillingException.class);
         assertThat(service.subscription(user).trialEnd()).isEqualTo(a.trialEnd());
+    }
+    private void unselectedUser() {
+        jdbc.update("update users set plan_chosen_at=null,created_at=? where id=?",java.sql.Timestamp.from(START.minus(Duration.ofDays(30))),user);
+    }
+    @Test void trialStartsAtChoiceAndRepeatedRequestsNeverExtendIt() throws Exception {
+        unselectedUser(); String key=UUID.randomUUID().toString();
+        mvc.perform(get("/api/billing/subscription").with(jwt().jwt(j->j.subject(Long.toString(user)))))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.status").value("NOT_SELECTED"))
+                .andExpect(jsonPath("$.planChosenAt").isEmpty()).andExpect(jsonPath("$.trialEnd").isEmpty())
+                .andExpect(jsonPath("$.entitlements.canUpload").value(false));
+        assertThatThrownBy(()->service.assertWriteAllowed(user)).isInstanceOf(BillingException.class);
+        mvc.perform(post("/api/billing/trial/start").with(jwt().jwt(j->j.subject(Long.toString(user)))).header("Idempotency-Key",key))
+                .andExpect(status().isOk()).andExpect(header().string("Cache-Control","no-store"))
+                .andExpect(jsonPath("$.planChosenAt").value(START.toString()))
+                .andExpect(jsonPath("$.trialEnd").value(START.plus(Duration.ofDays(14)).toString()))
+                .andExpect(jsonPath("$.entitlements.canCalculate").value(true));
+        now=START.plus(Duration.ofDays(2));
+        assertThat(service.startTrial(user,key).trialEnd()).isEqualTo(START.plus(Duration.ofDays(14)));
+        assertThat(service.startTrial(user,UUID.randomUUID().toString()).planChosenAt()).isEqualTo(START);
+        now=START.plus(Duration.ofDays(14));
+        assertThat(service.startTrial(user,key).status()).isEqualTo("TRIAL_EXPIRED");
+        assertThat(service.subscription(other).planChosenAt()).isEqualTo(START.minusSeconds(3600));
+        assertThat(jdbc.queryForObject("select count(*) from billing_commands where user_id=? and operation='TRIAL_START'",Integer.class,user)).isEqualTo(2);
+        verifyNoInteractions(gateway);
+    }
+    @Test void legacyAccountCannotRestartItsExistingTrial() {
+        var before=service.subscription(user); now=START.plus(Duration.ofDays(40));
+        var after=service.startTrial(user,UUID.randomUUID().toString());
+        assertThat(after.planChosenAt()).isEqualTo(before.planChosenAt());
+        assertThat(after.trialEnd()).isEqualTo(before.trialEnd());
+        assertThat(after.status()).isEqualTo("TRIAL_EXPIRED");
+    }
+    @Test void trialStartRequiresAuthenticationValidKeyAndEligibleActiveAccount() throws Exception {
+        unselectedUser();
+        mvc.perform(post("/api/billing/trial/start").header("Idempotency-Key",UUID.randomUUID().toString())).andExpect(status().isUnauthorized());
+        mvc.perform(post("/api/billing/trial/start").with(jwt().jwt(j->j.subject(Long.toString(user))))).andExpect(status().isBadRequest());
+        assertThatThrownBy(()->service.startTrial(user,"bad")).isInstanceOf(BillingException.class);
+        jdbc.update("update users set trial_reused=true where id=?",user);
+        assertThatThrownBy(()->service.startTrial(user,UUID.randomUUID().toString()))
+                .satisfies(e->assertThat(((BillingException)e).code()).isEqualTo("TRIAL_ALREADY_USED"));
+        assertThat(service.subscription(user).planChosenAt()).isNull();
+        jdbc.update("update users set withdrawn_at=? where id=?",java.sql.Timestamp.from(START),user);
+        assertThatThrownBy(()->service.startTrial(user,UUID.randomUUID().toString()))
+                .satisfies(e->assertThat(((BillingException)e).code()).isEqualTo("ACCOUNT_WITHDRAWN"));
+        assertThat(jdbc.queryForObject("select count(*) from billing_commands where user_id=? and operation='TRIAL_START'",Integer.class,user)).isZero();
+        verifyNoInteractions(gateway);
+    }
+    @Test void concurrentTrialChoicesStartOneWindow() throws Exception {
+        unselectedUser(); var ready=new CountDownLatch(1);
+        try(var pool=Executors.newFixedThreadPool(2)) {
+            var a=pool.submit(()->{ready.await();return service.startTrial(user,UUID.randomUUID().toString());});
+            var b=pool.submit(()->{ready.await();return service.startTrial(user,UUID.randomUUID().toString());});
+            ready.countDown();
+            assertThat(a.get(20,java.util.concurrent.TimeUnit.SECONDS).trialEnd()).isEqualTo(b.get(20,java.util.concurrent.TimeUnit.SECONDS).trialEnd());
+        }
+        assertThat(service.subscription(user).planChosenAt()).isEqualTo(START);
+        assertThat(jdbc.queryForObject("select count(*) from billing_subscriptions where user_id=?",Integer.class,user)).isOne();
+    }
+    @Autowired org.springframework.transaction.PlatformTransactionManager trialTransactions;
+    @Test void rolledBackChoiceDoesNotLeaveAStartedTrialOrCommand() {
+        unselectedUser();String key=UUID.randomUUID().toString();
+        new org.springframework.transaction.support.TransactionTemplate(trialTransactions).execute(status->{
+            service.startTrial(user,key);status.setRollbackOnly();return null;
+        });
+        assertThat(jdbc.queryForObject("select plan_chosen_at from users where id=?",java.sql.Timestamp.class,user)).isNull();
+        assertThat(jdbc.queryForObject("select count(*) from billing_commands where user_id=? and operation='TRIAL_START'",Integer.class,user)).isZero();
+        assertThat(service.startTrial(user,key).planChosenAt()).isEqualTo(START);
+    }
+    @Test void firstApprovedSubscriptionPaymentRecordsChoiceWithoutGrantingANewTrial() {
+        unselectedUser();activate();
+        var paid=service.subscription(user);
+        assertThat(paid.planChosenAt()).isEqualTo(START);
+        assertThat(service.startTrial(user,UUID.randomUUID().toString()).status()).isEqualTo("ACTIVE");
+        assertThat(service.subscription(user).periodEnd()).isEqualTo(paid.periodEnd());
     }
     @Test void cancellationFeedbackIsIdempotentAndChangedBodyCannotOverwriteIt() throws Exception {
         activate(); Instant end=service.subscription(user).periodEnd(); String key=UUID.randomUUID().toString();

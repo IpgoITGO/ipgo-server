@@ -49,22 +49,45 @@ public class BillingService {
             if(!properties.merchantId().equals(existing.getFirst().text("merchant_id"))) throw BillingException.conflict("BILLING_MERCHANT_CHANGED");
             return;
         }
-        var account=ledger.one("select created_at,trial_reused from users where id=?",user);
+        var account=ledger.one("select created_at,trial_reused,plan_chosen_at from users where id=?",user);
         Instant created=account.time("created_at");
         // #206 탈퇴 후 1년 안에 같은 이메일로 다시 가입했으면 무료 체험 없이 시작한다(체험 끝나는 날 = 가입 시각).
         // 판정은 가입할 때 정해 둔 값을 쓴다. 첫 조회가 늦어져 확인값이 만료돼도 바뀌지 않는다.
         boolean reused=account.flag("trial_reused");
+        // #198 미선택 신규 계정의 가입 시각은 내부 placeholder다. view에서 권한/종료일을 부여하지 않는다.
         ledger.update("insert into billing_subscriptions(user_id,merchant_id,mode,status,plan_id,price_version,amount,trial_end,customer_key,trial_reused) values (?, ?,'TEST','TRIALING','trial',?,0,?,?,?)",
-                user,properties.merchantId(),BillingPolicy.VERSION,at(reused?created:created.plus(Duration.ofDays(14))),uuid(),reused);
+                user,properties.merchantId(),BillingPolicy.VERSION,
+                at(reused || account.time("plan_chosen_at")==null?created:created.plus(Duration.ofDays(14))),uuid(),reused);
     }
     private Row sub(long user) { return ledger.one("select * from billing_subscriptions where user_id=?",user); }
     public BillingViews.Subscription subscription(long user) { return locked(user,()->view(sub(user))); }
+    public BillingViews.Subscription startTrial(long user,String key) {
+        return locked(user,()->{
+            String previous=command(user,"TRIAL_START",key,"");
+            Row current=sub(user);
+            if(previous!=null) return view(current);
+            if(ledger.one("select plan_chosen_at from users where id=?",user).time("plan_chosen_at")==null) {
+                if(current.flag("trial_reused")) throw BillingException.conflict("TRIAL_ALREADY_USED");
+                if(!"TRIALING".equals(current.text("status")) || current.time("period_end")!=null)
+                    throw BillingException.conflict("TRIAL_NOT_AVAILABLE");
+                Instant chosen=clock.instant();
+                ledger.update("update users set plan_chosen_at=? where id=?",at(chosen),user);
+                ledger.update("update billing_subscriptions set trial_end=? where user_id=?",at(chosen.plus(Duration.ofDays(14))),user);
+            }
+            remember(user,"TRIAL_START",key,"",Long.toString(user));
+            return view(sub(user));
+        });
+    }
     private BillingViews.Subscription view(Row s) {
         Instant now=clock.instant(),end=s.time("period_end"),grace=null;
+        Instant chosen=ledger.one("select plan_chosen_at from users where id=?",s.number("user_id")).time("plan_chosen_at");
         String status=s.text("status"),reason=null;
         boolean paid=end!=null;
         if("CANCELED".equals(status)) { reason="SUBSCRIPTION_ENDED"; }
-        else if(!paid) { if(!now.isBefore(s.time("trial_end"))) { status="TRIAL_EXPIRED"; reason=s.flag("trial_reused")?"TRIAL_ALREADY_USED":"TRIAL_ENDED"; } }
+        else if(!paid) {
+            if(chosen==null && !s.flag("trial_reused")) { status="NOT_SELECTED"; reason="PLAN_NOT_SELECTED"; }
+            else if(!now.isBefore(s.time("trial_end"))) { status="TRIAL_EXPIRED"; reason=s.flag("trial_reused")?"TRIAL_ALREADY_USED":"TRIAL_ENDED"; }
+        }
         else if(!now.isBefore(end)) {
             if(normal.enabled() || s.flag("cancel_at_period_end")) { status="CANCELED"; reason="SUBSCRIPTION_ENDED"; }
             else {
@@ -77,9 +100,9 @@ public class BillingService {
         var plan=BillingPolicy.plan(s.text("plan_id"));
         boolean hasMethod=s.text("default_method_id")!=null && !ledger.list("select id from billing_methods where id=? and status='ACTIVE'",s.text("default_method_id")).isEmpty();
         Instant next=normal.enabled() || s.flag("cancel_at_period_end") || !hasMethod?null:s.time("next_charge_at");
-        return new BillingViews.Subscription(s.text("plan_id"),status,s.time("trial_end"),s.time("period_start"),end,next,
+        return new BillingViews.Subscription(s.text("plan_id"),status,"NOT_SELECTED".equals(status)?null:s.time("trial_end"),s.time("period_start"),end,next,
                 (normal.enabled() || s.flag("cancel_at_period_end")),grace,s.number("amount"),s.text("price_version"),
-                new BillingViews.Entitlements(allowed,allowed,allowed,plan.products(),plan.monthlyInsights(),reason));
+                new BillingViews.Entitlements(allowed,allowed,allowed,plan.products(),plan.monthlyInsights(),reason),chosen);
     }
     public void assertWriteAllowed(long user) {
         if(!properties.enabled()) return;
@@ -447,6 +470,7 @@ public class BillingService {
                 Row current=owned("billing_invoices",i.text("id"),user);
                 if("PAID".equals(current.text("status"))) return null;
                 ledger.update("update billing_attempts set status='SUCCEEDED',payment_key=?,error_code=null,lease_until=null where id=?",payment.paymentKey(),id);
+                ledger.update("update users set plan_chosen_at=coalesce(plan_chosen_at,?) where id=?",at(payment.approvedAt()),user);
                 boolean first=i.text("session_id")!=null;
                 Instant start=first?payment.approvedAt():i.time("period_start");
                 Instant end=first?BillingPolicy.boundary(start,1):i.time("period_end");

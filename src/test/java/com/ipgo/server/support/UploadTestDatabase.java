@@ -105,6 +105,11 @@ public final class UploadTestDatabase {
                 for (String statement : sql.split(";")) if (!statement.isBlank()) jdbc.execute(statement);
             } catch (java.io.IOException e) { throw new IllegalStateException(e); }
         }
+        if (jdbc.queryForObject("SELECT COUNT(*) FROM information_schema.columns WHERE LOWER(table_name)='users' AND LOWER(column_name)='plan_chosen_at'", Integer.class) == 0) {
+            new org.springframework.jdbc.datasource.init.ResourceDatabasePopulator(
+                    new org.springframework.core.io.ClassPathResource("db/migration/V34__record_initial_plan_choice.sql"))
+                    .execute(java.util.Objects.requireNonNull(jdbc.getDataSource()));
+        }
     }
 
     public static void pushSchema(JdbcTemplate jdbc) {

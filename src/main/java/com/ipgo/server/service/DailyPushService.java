@@ -23,12 +23,33 @@ public class DailyPushService {
     private final PushSender sender;
     private final Clock clock;
     private final PushDeliveryProperties properties;
+    private final ExpiryService expiry;
+    private final PlannedReceiptService receipts;
     private long userCursor;
 
     public DailyPushService(JdbcTemplate jdbc, TransactionTemplate transactions, DashboardService dashboard,
-            PushSender sender, Clock clock, PushDeliveryProperties properties) {
+            PushSender sender, Clock clock, PushDeliveryProperties properties, ExpiryService expiry,
+            PlannedReceiptService receipts) {
         this.jdbc = jdbc; this.transactions = transactions; this.dashboard = dashboard;
         this.sender = sender; this.clock = clock; this.properties = properties;
+        this.expiry = expiry; this.receipts = receipts;
+    }
+
+    // #207 하루 한 번 통합 요약. 화면 알림 종과 같은 기준이다.
+    // - needed: 대시보드 "지금 넣어야 해요" 상품 수(계산이 최신일 때만)
+    // - expired · imminent: 남은 재고가 있는 LOT 중 유통기한이 지났거나 셀러가 정한 임박 기준(기본 30일) 안인 건수
+    // - overdue: 도착 예정일이 지났는데 아직 안 들어온 발주(OVERDUE) 건수
+    // 알림 설정 · 발송 기록의 kind는 기존 'REPLENISHMENT_NEEDED'를 그대로 쓰고 "하루 요약" 하나를 뜻한다.
+    record Summary(int needed, int expired, int imminent, int overdue) {
+        int total() { return needed + expired + imminent + overdue; }
+        String body() {
+            List<String> parts = new java.util.ArrayList<>();
+            if (needed > 0) parts.add("입고 필요 " + needed + "개");
+            if (expired > 0) parts.add("유통기한 지남 " + expired + "건");
+            if (imminent > 0) parts.add("유통기한 임박 " + imminent + "건");
+            if (overdue > 0) parts.add("도착 지연 " + overdue + "건");
+            return String.join(" · ", parts);
+        }
     }
 
     public void tick() {
@@ -77,7 +98,7 @@ public class DailyPushService {
             if (!jdbc.queryForList("SELECT id FROM push_daily_summaries WHERE user_id=? AND kind='REPLENISHMENT_NEEDED' AND business_date=?",
                     Long.class, userId, date).isEmpty()) return;
             List<Subscription> subscriptions = subscriptions(userId);
-            if (subscriptions.isEmpty() || eligibleCount(userId) == 0) return;
+            if (subscriptions.isEmpty() || summary(userId).total() == 0) return;
             jdbc.update("""
                     INSERT INTO push_daily_summaries(user_id,business_date,time_zone,created_at,expires_at)
                     VALUES (?,?,?,?,?)
@@ -91,7 +112,14 @@ public class DailyPushService {
         });
     }
 
-    // 대시보드와 동일 판정. 새 발주/취소/설정이 아직 계산에 반영되기 전에는 보수적으로 발송을 보류한다.
+    Summary summary(long userId) {
+        var lots = expiry.list(userId, null, null).summary();
+        int overdue = (int) receipts.list(userId).items().stream().filter(r -> "OVERDUE".equals(r.status())).count();
+        return new Summary(eligibleCount(userId), (int) lots.expired(), (int) lots.imminent(), overdue);
+    }
+
+    // 대시보드와 동일 판정. 새 발주/취소/설정이 아직 계산에 반영되기 전에는 입고 필요 개수를 보수적으로 0으로 본다.
+    // (유통기한 · 도착 지연은 계산과 상관없이 센다.)
     int eligibleCount(long userId) {
         var needs = dashboard.needs(userId, "shortage");
         if (needs.runId() == null || !"UP_TO_DATE".equals(needs.resultStatus())
@@ -153,11 +181,12 @@ public class DailyPushService {
         // 다른 worker는 claim에서 제외한다. 오래된 claim 회수와의 경합도 확인한다.
         String state = jdbc.queryForObject("SELECT state FROM push_deliveries WHERE id=? FOR UPDATE", String.class,id);
         if (!"SENDING".equals(state)) return;
-        int count = eligibleCount(delivery.user());
-        if (count == 0) { finish(id,"CANCELED",null); return; }
+        Summary summary = summary(delivery.user());
+        if (summary.total() == 0) { finish(id,"CANCELED",null); return; }
         Subscription subscription = subscriptions.getFirst();
-        byte[] payload = ("{\"notificationId\":\"daily-" + id + "\",\"title\":\"입고가 필요한 상품이 있어요\","
-                + "\"body\":\"지금 넣어야 할 상품 " + count + "개\",\"url\":\"/dashboard\"}").getBytes(StandardCharsets.UTF_8);
+        // 개수와 이동 경로만 담는다(상품명 · 금액 없음).
+        byte[] payload = ("{\"notificationId\":\"daily-" + id + "\",\"title\":\"확인이 필요한 재고가 있어요\","
+                + "\"body\":\"" + summary.body() + "\",\"url\":\"/dashboard\"}").getBytes(StandardCharsets.UTF_8);
         PushSender.Result response = sender.send(subscription.endpoint(), subscription.p256dh(), subscription.auth(), payload);
         int code = response.status();
         if (code == 404 || code == 410) {

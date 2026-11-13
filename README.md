@@ -22,7 +22,7 @@ Ipgo 서비스의 API와 서버 동작을 관리하는 저장소입니다.
 
 LLM의 모델·토큰·비용·응답 시간과 호출별 보존/반영 순서는 [호출 이력 계약](docs/decisions/0013-insight-call-history.md)을 따릅니다.
 
-> 이메일 인증을 거친 회원가입·로그인·로그아웃·본인 정보 조회와 수불부 엑셀의 로컬 원본 보관을 제공합니다. 회원 인증에는 PostgreSQL과 JWT 서명 키, 인증 메일 발송에는 SMTP 설정이 필요합니다. 업로드 파일과 보관 정보는 로컬 디스크에 저장하며, 테스트는 H2 메모리 DB·로컬 테스트 SMTP·임시 폴더를 사용합니다.
+> 이메일 인증을 거친 회원가입·로그인·로그아웃·본인 정보 조회와 수불부 엑셀 원본 보관을 제공합니다. 기본 로컬 실행은 local 저장을 사용하고 현재 AWS dev의 신규 원본은 PostgreSQL에 저장합니다. 회원 인증에는 PostgreSQL과 JWT 서명 키, 인증 메일 발송에는 SMTP 설정이 필요합니다. 기본 local 모드에서는 업로드 파일과 보관 정보를 로컬 디스크에 저장하며, 테스트는 H2 메모리 DB·로컬 테스트 SMTP·임시 폴더를 사용합니다.
 
 ## 개발 환경
 
@@ -96,7 +96,11 @@ AWS dev 배포 workflow가 개발 컨테이너에서만 켭니다. 문서를 닫
 총량 기본/최대는 **256MiB**이며 더 큰 설정은 거부합니다. 원본은 **최소30일** 보존하고 자동 삭제하지 않습니다.
 AI 원본은 별도 `ipgo_ai_service_reader`만 조회하며 공유 reader/사람용 계정에는 권한을 추가하지 않습니다.
 `IPGO_UPLOAD_STORAGE`와 `IPGO_UPLOAD_DATABASE_MAX_BYTES`를 실제 환경에서 바꾸기 전에는 migration·보관 정책·
-서버/AI 버전·백업·영향을 확인해야 합니다. 이번 로컬 구현으로 실제 DB나 배포가 변경되지는 않습니다.
+서버/AI 버전·백업·영향을 확인해야 합니다. 개발 환경은 2026-11-07 승인 후 V15와 DB 저장 모드가 적용됐습니다.
+파일당 상한은 **10MiB**, 총량 초과는 HTTP507입니다. 기존 EXTERNAL 원본은 이전·삭제하지 않습니다.
+2026-11-13 [Infra #67](https://github.com/IpgoITGO/ipgo-infra/issues/67)의 격리 PITR에서 원본115건과 권한·앱 읽기를 검증하고 임시 자원을 정리했습니다.
+복원시점차9분53초·검증 RTO9분38초이며, 운영 endpoint 전환을 포함한 전체 서비스 복구 SLA 검증은 아닙니다.
+신규 저장 모드를 되돌려도 기존 DB 원본·schema·이력과 이를 읽는 호환 AI/reader는 보존합니다.
 
 AWS 단일 호스트 개발 환경에서는 `AWS_DEV_COMPUTE_MODE=onebox`가 ARM 이미지와
 `ipgo-dev-onebox-server` 서비스를 선택합니다. 기존 DB·JWT·S3 설정과 메모리 제한을 이어받습니다.
@@ -172,16 +176,17 @@ one-off task로 실행하며 상시 서비스에서는 이 이미지를 사용�
 ### AWS 데이터 접근과 계산 엔진 경계
 
 Spring이 업무 데이터와 상태 변경을 맡고, FastAPI는 정제·계산에 필요한 view와 원본 파일을 읽습니다.
-현재 구현은 V14 기반의 `CLEAN`·`CALCULATE` SQS 처리와 저장 결과 조회이며, 유료 LLM과 DB 원본
-저장 전환은 별도입니다. 역할별 권한·입력 선택·재시도·후속 범위는
+V14 기반의 `CLEAN`·`CALCULATE` SQS 처리와 V15의 DB 원본 조회를 연결하며 개발 환경의 DB 원본 전환은 적용됐습니다.
+유료 LLM의 활성화·예산은 원본 저장과 별도의 승인·설정 범위입니다. 역할별 권한·입력 선택·재시도·후속 범위는
 [AWS 데이터 접근과 계산 엔진 계약](docs/decisions/0001-aws-data-access-contract.md)을 따릅니다.
 
 ### AWS dev 실행
 
-AWS에서는 `IPGO_UPLOAD_STORAGE=s3`와 `IPGO_UPLOAD_BUCKET`을 설정해 원본을 private S3에
-저장합니다. ECS task role의 임시 자격 증명을 사용하므로 애플리케이션에 AWS Access Key를 넣지
-않습니다. DB 연결 값과 JWT 서명 키는 Secrets Manager에서 주입하고 runtime에서는 Flyway를
-실행하지 않습니다.
+현재 AWS dev는 `IPGO_UPLOAD_STORAGE=database`, `IPGO_UPLOAD_DATABASE_MAX_BYTES=268435456`으로
+신규 원본을 DB에 저장합니다. 기본 local 모드와 `IPGO_UPLOAD_STORAGE=s3`/`IPGO_UPLOAD_BUCKET`으로
+선택하는 private S3 지원은 유지하며 기존 EXTERNAL 원본도 보존합니다. S3 접근에는 ECS task role의
+임시 자격 증명을 사용하고 AWS Access Key를 앱에 넣지 않습니다. DB 연결 값과 JWT 서명 키는
+Secrets Manager에서 주입하고 runtime에서는 Flyway를 실행하지 않습니다.
 
 `dev` 브랜치의 `Deploy server to AWS dev` workflow는 수동 승인 후 GitHub OIDC로 image를 ECR에
 push하고 ECS task revision을 갱신합니다. GitHub `dev` Environment 승인과
@@ -532,7 +537,7 @@ preview는 `expectedVersion`, `action`, `receiptIds`를 받으며 확정에는 `
 
 V20은 기존 배정을 BASELINE 이력으로 보존한 뒤 감사 원장과 현재 배정을 같은 트랜잭션에서 관리합니다.
 과거 U2·원본·계산 결과를 수정하지 않으며 배정 변화가 있을 때 필요한 계산/outbox만 요청합니다.
-V20 적용 전 이 코드를 배포하지 않습니다. 실제 DB의 V15 보류와 후속 migration 승인 범위를 확인하고
+V20 적용 전 이 코드를 배포하지 않습니다. 개발 V15는 2026-11-07 적용됐으며, 대상 DB의 실제 이력과 후속 migration 승인 범위를 확인하고
 백업·선택 적용·복구를 별도 검토해야 합니다. UI 연결과 실제 개발 배포 검증은 후속 단계입니다.
 
 [정정 계약·오류·멱등성·검증·복구](docs/decisions/0012-receipt-corrections.md)를 따릅니다.
@@ -842,7 +847,7 @@ scripts/testing/verify-insight-contract.sh /path/to/ipgo-ai
 
 ## Database 변경과 복구
 
-이미 병합된 migration은 Flyway 이력을 보존하기 위해 수정하지 않습니다. 새 DB에서는 승인한 범위의 migration을 순서대로 적용합니다. #90 구현은 V16까지 필요하며 운영 적용은 별도 승인입니다. V4는 `warehouses`·`products`·`inventory_units`, V5는 `upload_files`, V6은 `replenishment_settings`, V7은 `planned_receipts`, V8은 `auth_sessions`·`refresh_tokens`, V9는 `calculation_runs`·`calculation_results`, V10은 일별 수불 2개 표, V11은 계산 출처·시나리오·백테스트·AI 인사이트 4개 표를 추가합니다. V12는 PostgreSQL tenant 무결성 trigger, V13은 FastAPI view와 역할별 권한을 적용하고, V14는 `engine_jobs`·입력 hash·정제 조회 view를 추가합니다. V15의 DB 원본 저장 전환(Server #77·AI #60)은 보류 상태입니다. V16은 입고 사건·배정·업로드 판정 기록을 추가하며 기존 원본 저장 모드를 바꾸지 않습니다. V16을 위해 전체 migration 경로를 실행하기 전 V15의 보류/실제 DB 이력을 함께 확인해야 합니다. V19는 창고 보관 요율 칸과 `product_boxes`를 추가합니다(#111). 기존 행은 바꾸지 않고, 되돌릴 때는 새 칸과 표만 지우면 됩니다. V21은 내 입고량 `product_planned_quantities`를 추가합니다(#119, V20은 #137 입고 정정). 되돌릴 때는 이 표만 지우면 됩니다. V23은 `inventory_units.expiry_date`와 `warehouses.expiry_imminent_days` 칸을 추가합니다(#168, V22는 인사이트 월 사용량). 기존 행은 NULL로 남고, 되돌릴 때는 두 칸만 지우면 됩니다. V24는 회원 탈퇴 시각 `users.withdrawn_at` 칸을 추가합니다(#172). 기존 행은 NULL로 남고, 되돌릴 때는 이 칸만 지우면 됩니다. V26은 Web Push 알림의 브라우저 구독 `push_subscriptions`와 알림 설정 `notification_settings`를 추가합니다(#190, V25는 결제 환불 원장). 새 표만 만들어 기존 행은 바뀌지 않고, 다른 표가 참조하지 않아 되돌릴 때는 두 표만 지우면 됩니다. AI 역할은 두 표를 볼 수 없습니다. V31은 가입 동의 기록 `users.agreement_version`·`agreed_at`, 무료 체험 재사용 확인값 표 `trial_reuse_fingerprints`, 가입 때 정한 체험 재사용 여부 `users.trial_reused`, 체험 없이 시작한 구독 표시 `billing_subscriptions.trial_reused`를 추가합니다(#206). 기존 행은 비어 있거나 `FALSE`로 남고, 되돌릴 때는 새 칸 4개와 표 1개만 지우면 됩니다. AI 역할은 확인값 표를 볼 수 없습니다. 실제 DB 적용은 V15~V18과 같은 순서 확인과 별도 승인을 따릅니다. 전체 관계와 변경 규칙은 [Database ERD v1](docs/database/erd-v1.md)에 있습니다. Hibernate는 스키마를 자동 수정하지 않고 검증만 수행합니다.
+이미 병합된 migration은 Flyway 이력을 보존하기 위해 수정하지 않습니다. 새 DB에서는 승인한 범위의 migration을 순서대로 적용합니다. #90 구현은 V16까지 필요하며 운영 적용은 별도 승인입니다. V4는 `warehouses`·`products`·`inventory_units`, V5는 `upload_files`, V6은 `replenishment_settings`, V7은 `planned_receipts`, V8은 `auth_sessions`·`refresh_tokens`, V9는 `calculation_runs`·`calculation_results`, V10은 일별 수불 2개 표, V11은 계산 출처·시나리오·백테스트·AI 인사이트 4개 표를 추가합니다. V12는 PostgreSQL tenant 무결성 trigger, V13은 FastAPI view와 역할별 권한을 적용하고, V14는 `engine_jobs`·입력 hash·정제 조회 view를 추가합니다. V15의 DB 원본 저장 전환(Server #77·AI #60)은 2026-11-07 개발 환경에 적용됐고, 2026-11-13 Infra #67에서 격리 복원을 검증했습니다. V16은 입고 사건·배정·업로드 판정 기록을 추가하며 기존 원본 저장 모드를 바꾸지 않습니다. 새 환경에서 전체 migration 경로를 실행하기 전 대상 DB의 실제 이력과 승인 범위를 확인해야 합니다. 기존 DB 원본·이력은 rollback 때도 보존하고 V15를 재적용하거나 down migration하지 않습니다. V19는 창고 보관 요율 칸과 `product_boxes`를 추가합니다(#111). 기존 행은 바꾸지 않고, 되돌릴 때는 새 칸과 표만 지우면 됩니다. V21은 내 입고량 `product_planned_quantities`를 추가합니다(#119, V20은 #137 입고 정정). 되돌릴 때는 이 표만 지우면 됩니다. V23은 `inventory_units.expiry_date`와 `warehouses.expiry_imminent_days` 칸을 추가합니다(#168, V22는 인사이트 월 사용량). 기존 행은 NULL로 남고, 되돌릴 때는 두 칸만 지우면 됩니다. V24는 회원 탈퇴 시각 `users.withdrawn_at` 칸을 추가합니다(#172). 기존 행은 NULL로 남고, 되돌릴 때는 이 칸만 지우면 됩니다. V26은 Web Push 알림의 브라우저 구독 `push_subscriptions`와 알림 설정 `notification_settings`를 추가합니다(#190, V25는 결제 환불 원장). 새 표만 만들어 기존 행은 바뀌지 않고, 다른 표가 참조하지 않아 되돌릴 때는 두 표만 지우면 됩니다. AI 역할은 두 표를 볼 수 없습니다. V31은 가입 동의 기록 `users.agreement_version`·`agreed_at`, 무료 체험 재사용 확인값 표 `trial_reuse_fingerprints`, 가입 때 정한 체험 재사용 여부 `users.trial_reused`, 체험 없이 시작한 구독 표시 `billing_subscriptions.trial_reused`를 추가합니다(#206). 기존 행은 비어 있거나 `FALSE`로 남고, 되돌릴 때는 새 칸 4개와 표 1개만 지우면 됩니다. AI 역할은 확인값 표를 볼 수 없습니다. 실제 DB 적용은 V15~V18과 같은 순서 확인과 별도 승인을 따릅니다. 전체 관계와 변경 규칙은 [Database ERD v1](docs/database/erd-v1.md)에 있습니다. Hibernate는 스키마를 자동 수정하지 않고 검증만 수행합니다.
 
 초기 PostgreSQL은 administrator가 `database/bootstrap/create_roles.sql`을 먼저 실행한 뒤 `ipgo_migrator`로 Flyway를 적용합니다. 새 DB의 bootstrap SQL은 `ipgo_migrator`·`ipgo_server`·`ipgo_ai_reader`·`ipgo_ai_service_reader` 역할을 만들고 비밀번호는 설정하지 않습니다. 비밀번호는 repository·shell history·Terraform state에 남기지 않고 승인된 Secrets Manager 절차로 설정합니다. Spring runtime은 `ipgo_server`, FastAPI는 `ipgo_ai_reader`를 사용하며 runtime에서는 `SPRING_FLYWAY_ENABLED=false`로 migration 자격 증명을 분리합니다.
 

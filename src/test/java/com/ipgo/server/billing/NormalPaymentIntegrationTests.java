@@ -482,13 +482,17 @@ class NormalPaymentIntegrationTests extends DatabaseIntegrationTest {
         normal.checkPaidOne();
         clearInvocations(gateway);
         // 가짜 웹훅이 CANCELED라고 해도 토스 조회가 DONE이면 아무것도 바뀌지 않아요.
+        // 방금 조회한 주문은 신호가 와도 10분이 지나야 다시 조회해요.
         webhook("{\"eventType\":\"PAYMENT_STATUS_CHANGED\",\"data\":{\"orderId\":\""+o.orderId()+"\",\"status\":\"CANCELED\"}}",200);
         normal.checkPaidOne();
+        verify(gateway,never()).lookup("key");
+        now=now.plus(Duration.ofMinutes(10));
+        normal.checkPaidOne(); normal.checkPaidOne();
         verify(gateway,times(1)).lookup("key");
         assertThat(billing.subscription(user).status()).isEqualTo("ACTIVE");
 
-        // 실제로 관리자 환불된 뒤 온 웹훅(가상계좌 입금 알림 모양)은 하루를 기다리지 않고 바로 반영해요.
-        now=now.plus(Duration.ofMinutes(5));
+        // 실제로 관리자 환불된 뒤 온 웹훅(가상계좌 입금 알림 모양)은 하루를 기다리지 않고 반영해요.
+        now=now.plus(Duration.ofMinutes(10));
         when(gateway.lookup("key")).thenReturn(new BillingGateway.Payment("key",o.orderId(),500,"KRW","CANCELED","new-mid",START,0,now));
         webhook("{\"secret\":\"fixture\",\"status\":\"CANCELED\",\"orderId\":\""+o.orderId()+"\"}",200);
         normal.checkPaidOne();
@@ -497,6 +501,30 @@ class NormalPaymentIntegrationTests extends DatabaseIntegrationTest {
         // 서명 없는 다른 이벤트(카드 키 삭제 등)는 거절하고, 모르는 주문은 아무것도 바꾸지 않아요.
         webhook("{\"eventType\":\"BILLING_DELETED\",\"data\":{\"billingKey\":\"x\"}}",403);
         webhook("{\"eventType\":\"PAYMENT_STATUS_CHANGED\",\"data\":{\"orderId\":\"unknown\"}}",200);
+    }
+
+    // #208 재리뷰 P2: 한 주문(A)에 서명 없는 신호를 매분 보내도, 오래 기다린 다른 주문(B)의 관리자 환불 반영을 밀어내지 못해요.
+    // A는 반복 신호로도 10분에 한 번보다 자주 조회되지 않아요.
+    @Test void repeatedSignalsForOneOrderCannotStarveAnotherOrdersRecheck() throws Exception {
+        var a=order(); normal.confirm(user,a.orderId(),"key",500);
+        var b=normal.create(other,UUID.randomUUID().toString(),"seller",BillingPolicy.VERSION,NormalPaymentService.CONSENT);
+        normal.confirm(other,b.orderId(),"other-key",500);
+        // 둘 다 마지막 조회가 이틀 전(A가 1분 더 오래됨)
+        jdbc.update("update billing_normal_orders set provider_checked_at=? where id=?",java.sql.Timestamp.from(now.minus(Duration.ofDays(2)).minusSeconds(60)),a.orderId());
+        jdbc.update("update billing_normal_orders set provider_checked_at=? where id=?",java.sql.Timestamp.from(now.minus(Duration.ofDays(2))),b.orderId());
+        when(gateway.lookup("key")).thenReturn(new BillingGateway.Payment("key",a.orderId(),500,"KRW","DONE","new-mid",START));
+        when(gateway.lookup("other-key")).thenReturn(new BillingGateway.Payment("other-key",b.orderId(),500,"KRW","CANCELED","new-mid",START,0,now));
+        clearInvocations(gateway);
+        for(int tick=0;tick<3;tick++) {
+            webhook("{\"eventType\":\"PAYMENT_STATUS_CHANGED\",\"data\":{\"orderId\":\""+a.orderId()+"\"}}",200);
+            normal.checkPaidOne();
+            now=now.plusSeconds(60);
+        }
+        assertThat(normal.get(other,b.orderId()).status()).isEqualTo("CANCELED");
+        assertThat(billing.subscription(other).status()).isEqualTo("CANCELED");
+        assertThat(billing.subscription(user).status()).isEqualTo("ACTIVE");
+        verify(gateway,times(1)).lookup("key");
+        verify(gateway,never()).cancel(anyString(),anyString(),anyString());
     }
 
     // #208 리뷰 P2: 부분 환불은 이용권 처리 규칙이 없어 운영자 확인으로 넘기고 이용 권한은 그대로 둬요.

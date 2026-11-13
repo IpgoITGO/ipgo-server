@@ -306,7 +306,10 @@ public class NormalPaymentService {
     }
 
     // #208 토스 관리자 화면에서 한 환불을 서버에 반영한다. 회원 환불을 막아 두면 예외 환불은 관리자 화면에서만 하기 때문이다.
-    // 이용 기간이 남은 결제 완료 주문을 하루에 한 번(결제 상태 웹훅 신호가 오면 바로) 토스에 다시 조회한다. worker가 1분에 1건씩 부른다.
+    // 이용 기간이 남은 결제 완료 주문을 하루에 한 번 토스에 다시 조회한다. worker가 1분에 1건씩 부른다.
+    // 결제 상태 웹훅 신호가 온 주문은 하루를 기다리지 않지만, 마지막 조회 뒤 10분은 지나야 다시 조회한다.
+    // 순서는 언제나 가장 오래 전에 조회한 주문부터다. 신호를 받은 주문이 오래 기다린 주문을 앞지르지 않는다.
+    static final Duration PAID_RECHECK=Duration.ofDays(1),SIGNAL_RECHECK=Duration.ofMinutes(10);
     public void checkPaidOne() {
         if(!properties.enabled()) return;
         Instant now=clock.instant();
@@ -315,8 +318,10 @@ public class NormalPaymentService {
                 join billing_invoices i on i.id=o.invoice_id
                 join users u on u.id=o.user_id
                 where o.status='PAID' and o.refund_status is null and u.withdrawn_at is null and i.period_end>?
-                  and (o.provider_checked_at is null or o.provider_checked_at<=?)
-                order by o.provider_checked_at nulls first,o.created_at,o.id limit 1""",at(now),at(now.minus(Duration.ofDays(1))));
+                  and (o.provider_checked_at is null or o.provider_checked_at<=?
+                       or (o.provider_signal_at>=o.provider_checked_at and o.provider_checked_at<=?))
+                order by o.provider_checked_at nulls first,o.created_at,o.id limit 1""",
+                at(now),at(now.minus(PAID_RECHECK)),at(now.minus(SIGNAL_RECHECK)));
         if(work.isEmpty()) return;
         Row o=work.getFirst(); long user=o.number("user_id"); String id=o.text("id");
         // 조회가 실패해도 같은 주문만 계속 붙잡지 않도록 먼저 시각을 남긴다. 실패한 주문은 다음 날(또는 웹훅 신호 때) 다시 본다.
@@ -342,9 +347,11 @@ public class NormalPaymentService {
     }
 
     // #208 토스 결제 상태 웹훅(PAYMENT_STATUS_CHANGED · DEPOSIT_CALLBACK)은 서명이 없어 내용을 믿지 않는다.
-    // 결제 완료 주문을 다음 확인 때 바로 다시 조회하라는 신호로만 쓴다. 실제 상태는 checkPaidOne이 토스에 조회해 정한다.
+    // 결제 완료 주문을 하루보다 일찍 다시 조회해도 된다는 신호로만 쓴다. 실제 상태는 checkPaidOne이 토스에 조회해 정한다.
+    // 마지막 조회 시각과 처리 순서는 건드리지 않고 신호 시각만 남긴다. 같은 주문에 여러 번 와도 하나로 합쳐진다.
     public void nudge(String orderId) {
         if(!properties.enabled() || orderId==null || orderId.isBlank() || orderId.length()>100) return;
-        ledger.update("update billing_normal_orders set provider_checked_at=null where id=? and status='PAID' and refund_status is null",orderId);
+        ledger.update("update billing_normal_orders set provider_signal_at=? where id=? and status='PAID' and refund_status is null",
+                at(clock.instant()),orderId);
     }
 }

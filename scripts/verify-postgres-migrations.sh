@@ -401,7 +401,7 @@ expect_denied ipgo_ai_reader "SELECT * FROM trial_reuse_fingerprints"
 expect_denied ipgo_ai_service_reader "SELECT * FROM trial_reuse_fingerprints"
 
 # V32: 서버 역할은 이용권 주문의 결제 동의 버전 · 시각을 쓴다(#208). AI 역할은 결제 주문을 볼 수 없다.
-docker exec "${database_container}" psql -v ON_ERROR_STOP=1 -U ipgo_server -d ipgo -c "BEGIN; UPDATE billing_normal_orders SET consent_version='one-time-month-2026-11-v2', consented_at=NOW(), refund_unpaid_only=TRUE, provider_checked_at=NOW() WHERE false; SELECT refund_unpaid_only, provider_checked_at FROM billing_normal_orders LIMIT 0; ROLLBACK;" >/dev/null
+docker exec "${database_container}" psql -v ON_ERROR_STOP=1 -U ipgo_server -d ipgo -c "BEGIN; UPDATE billing_normal_orders SET consent_version='one-time-month-2026-11-v2', consented_at=NOW(), refund_unpaid_only=TRUE, provider_checked_at=NOW(), provider_signal_at=NOW() WHERE false; SELECT refund_unpaid_only, provider_checked_at, provider_signal_at FROM billing_normal_orders LIMIT 0; ROLLBACK;" >/dev/null
 expect_denied ipgo_ai_reader "SELECT consent_version FROM billing_normal_orders"
 
 echo "PostgreSQL migrations, tenant integrity, and database roles verified."

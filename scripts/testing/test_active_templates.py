@@ -75,6 +75,14 @@ class ActiveTemplateTests(unittest.TestCase):
             self.services[name] = {
                 "status": "ACTIVE",
                 "serviceName": name,
+                "launchType": "EC2",
+                "schedulingStrategy": "REPLICA",
+                "deploymentController": {"type": "ECS"},
+                "deploymentConfiguration": {
+                    "strategy": "ROLLING", "minimumHealthyPercent": 0, "maximumPercent": 100,
+                    "deploymentCircuitBreaker": {"enable": True, "rollback": True},
+                },
+                "availabilityZoneRebalancing": "DISABLED",
                 "taskDefinition": arn,
                 "deployments": [{"status": "PRIMARY", "taskDefinition": arn, "rolloutState": "COMPLETED"}],
             }

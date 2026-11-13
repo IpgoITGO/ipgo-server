@@ -22,7 +22,7 @@ Ipgo 서비스의 API와 서버 동작을 관리하는 저장소입니다.
 
 LLM의 모델·토큰·비용·응답 시간과 호출별 보존/반영 순서는 [호출 이력 계약](docs/decisions/0013-insight-call-history.md)을 따릅니다.
 
-> 이메일 인증을 거친 회원가입·로그인·로그아웃·본인 정보 조회와 수불부 엑셀의 로컬 원본 보관을 제공합니다. 회원 인증에는 PostgreSQL과 JWT 서명 키, 인증 메일 발송에는 SMTP 설정이 필요합니다. 업로드 파일과 보관 정보는 로컬 디스크에 저장하며, 테스트는 H2 메모리 DB·로컬 테스트 SMTP·임시 폴더를 사용합니다.
+> 이메일 인증을 거친 회원가입·로그인·로그아웃·본인 정보 조회와 수불부 엑셀 원본 보관을 제공합니다. 기본 로컬 실행은 local 저장을 사용하고 현재 AWS dev의 신규 원본은 PostgreSQL에 저장합니다. 회원 인증에는 PostgreSQL과 JWT 서명 키, 인증 메일 발송에는 SMTP 설정이 필요합니다. 기본 local 모드에서는 업로드 파일과 보관 정보를 로컬 디스크에 저장하며, 테스트는 H2 메모리 DB·로컬 테스트 SMTP·임시 폴더를 사용합니다.
 
 ## 개발 환경
 
@@ -96,7 +96,11 @@ AWS dev 배포 workflow가 개발 컨테이너에서만 켭니다. 문서를 닫
 총량 기본/최대는 **256MiB**이며 더 큰 설정은 거부합니다. 원본은 **최소30일** 보존하고 자동 삭제하지 않습니다.
 AI 원본은 별도 `ipgo_ai_service_reader`만 조회하며 공유 reader/사람용 계정에는 권한을 추가하지 않습니다.
 `IPGO_UPLOAD_STORAGE`와 `IPGO_UPLOAD_DATABASE_MAX_BYTES`를 실제 환경에서 바꾸기 전에는 migration·보관 정책·
-서버/AI 버전·백업·영향을 확인해야 합니다. 이번 로컬 구현으로 실제 DB나 배포가 변경되지는 않습니다.
+서버/AI 버전·백업·영향을 확인해야 합니다. 개발 환경은 2026-11-07 승인 후 V15와 DB 저장 모드가 적용됐습니다.
+파일당 상한은 **10MiB**, 총량 초과는 HTTP507입니다. 기존 EXTERNAL 원본은 이전·삭제하지 않습니다.
+2026-11-13 [Infra #67](https://github.com/IpgoITGO/ipgo-infra/issues/67)의 격리 PITR에서 원본115건과 권한·앱 읽기를 검증하고 임시 자원을 정리했습니다.
+복원시점차9분53초·검증 RTO9분38초이며, 운영 endpoint 전환을 포함한 전체 서비스 복구 SLA 검증은 아닙니다.
+신규 저장 모드를 되돌려도 기존 DB 원본·schema·이력과 이를 읽는 호환 AI/reader는 보존합니다.
 
 AWS 단일 호스트 개발 환경에서는 `AWS_DEV_COMPUTE_MODE=onebox`가 ARM 이미지와
 `ipgo-dev-onebox-server` 서비스를 선택합니다. 기존 DB·JWT·S3 설정과 메모리 제한을 이어받습니다.
@@ -104,6 +108,13 @@ AWS 단일 호스트 개발 환경에서는 `AWS_DEV_COMPUTE_MODE=onebox`가 ARM
 해당 SHA의 메모리·부하와 배포 영향을 확인한 뒤 workflow의 `maintenance_approved`를 선택해야 합니다.
 이번 서버 이전에서는 기존 서버를 병행해 연결을 넘기며, 최신 dev 기능을 자동으로 배포하지 않습니다.
 자세한 비용·장애 알림·복구 순서는 [인프라 운영 문서](https://github.com/IpgoITGO/ipgo-infra/blob/dev/docs/onebox.md)를 참고합니다.
+
+onebox Server의 공통 ECS 배포 정책은 [Infra #63](https://github.com/IpgoITGO/ipgo-infra/issues/63)이 관리합니다.
+배포 사전 검사·최초 ECS 쓰기 직전 active template 검사·배포 후 검사에서 EC2/REPLICA/ECS/ROLLING,
+`0/100`, circuit breaker·rollback 활성, AZ 재균형 비활성을 확인합니다. 필수 값 누락·조회 실패·불일치 시
+중단하며 workflow가 정책을 자동 보정하지 않습니다. legacy Fargate 경로는 이 onebox 검사의 대상이 아닙니다.
+이미지·승인된 수량·rollout·앱 검증과 기존 `maintenance_approved`는 유지합니다. 정책 복구는 Infra,
+정상 이미지 복구는 Server가 맡으며 코드 revert가 정책 설정 명령을 되살리는지 확인합니다.
 
 JDK 21을 설치하고 `JAVA_HOME`을 해당 JDK 경로로 설정합니다. Windows에서는 `./gradlew` 대신 `gradlew.bat`을 사용합니다.
 
@@ -166,16 +177,17 @@ one-off task로 실행하며 상시 서비스에서는 이 이미지를 사용�
 ### AWS 데이터 접근과 계산 엔진 경계
 
 Spring이 업무 데이터와 상태 변경을 맡고, FastAPI는 정제·계산에 필요한 view와 원본 파일을 읽습니다.
-현재 구현은 V14 기반의 `CLEAN`·`CALCULATE` SQS 처리와 저장 결과 조회이며, 유료 LLM과 DB 원본
-저장 전환은 별도입니다. 역할별 권한·입력 선택·재시도·후속 범위는
+V14 기반의 `CLEAN`·`CALCULATE` SQS 처리와 V15의 DB 원본 조회를 연결하며 개발 환경의 DB 원본 전환은 적용됐습니다.
+유료 LLM의 활성화·예산은 원본 저장과 별도의 승인·설정 범위입니다. 역할별 권한·입력 선택·재시도·후속 범위는
 [AWS 데이터 접근과 계산 엔진 계약](docs/decisions/0001-aws-data-access-contract.md)을 따릅니다.
 
 ### AWS dev 실행
 
-AWS에서는 `IPGO_UPLOAD_STORAGE=s3`와 `IPGO_UPLOAD_BUCKET`을 설정해 원본을 private S3에
-저장합니다. ECS task role의 임시 자격 증명을 사용하므로 애플리케이션에 AWS Access Key를 넣지
-않습니다. DB 연결 값과 JWT 서명 키는 Secrets Manager에서 주입하고 runtime에서는 Flyway를
-실행하지 않습니다.
+현재 AWS dev는 `IPGO_UPLOAD_STORAGE=database`, `IPGO_UPLOAD_DATABASE_MAX_BYTES=268435456`으로
+신규 원본을 DB에 저장합니다. 기본 local 모드와 `IPGO_UPLOAD_STORAGE=s3`/`IPGO_UPLOAD_BUCKET`으로
+선택하는 private S3 지원은 유지하며 기존 EXTERNAL 원본도 보존합니다. S3 접근에는 ECS task role의
+임시 자격 증명을 사용하고 AWS Access Key를 앱에 넣지 않습니다. DB 연결 값과 JWT 서명 키는
+Secrets Manager에서 주입하고 runtime에서는 Flyway를 실행하지 않습니다.
 
 `dev` 브랜치의 `Deploy server to AWS dev` workflow는 수동 승인 후 GitHub OIDC로 image를 ECR에
 push하고 ECS task revision을 갱신합니다. GitHub `dev` Environment 승인과
@@ -319,7 +331,11 @@ IPGO_TEST_DB_USERNAME=ipgo IPGO_TEST_DB_PASSWORD=<임시 비밀번호> ./gradlew
 
 - `IPGO_PUSH_DELIVERY_ENABLED=false`가 기본입니다. 활성화하려면 V28 적용 뒤 공개키와 짝인 `IPGO_PUSH_PRIVATE_KEY`(base64url PKCS8 DER), `IPGO_PUSH_SUBJECT`(https 또는 mailto)를 secret으로 주입합니다. 활성 상태에서 잘못된 키는 시작을 중단합니다. `IPGO_PUSH_POLL_DELAY_MS`는 기본 60000ms(최소1000ms)입니다. 개인키·endpoint·암호화 키와 HTTP wire/debug 로그를 출력하지 않습니다.
 - 발송 시간은 저장된 IANA 시간대/정시이며, 정시부터 **1시간 미만**의 지연만 허용합니다. 이전 날·지난 시간의 알림을 몰아서 보내지 않습니다. DST에 없는 시각은 다음 유효 시각, 반복 시각은 첫 시각을 택합니다. 발주 판정 날짜는 기존 대시보드와 동일한 서울 업무일입니다.
-- `DashboardService.needs`의 최신 대상만 사용합니다. 0개, 계산 없음/실패/재계산 중, 수불부 기준일 7일 초과 또는 미래 기준일은 보내지 않습니다. 새 업로드·발주 등록·취소·상품별 조건 변경이 최신 계산에 반영되지 않았다면 보류합니다. 발주 물량은 재계산 결과에 반영된 뒤 판정하며, 대상 상품명·매출·원가·금액은 payload에 넣지 않습니다. `{ notificationId: "daily-기기발송ID", title, body: "지금 넣어야 할 상품 N개", url: "/dashboard" }` 계약입니다.
+- **하루 한 번 통합 요약(#207)**: 화면 알림 종과 같은 기준으로 네 가지를 세어 한 알림에 묶습니다. 넷 다 0이면 보내지 않고, 해결되지 않은 항목은 다음 날에도 다시 요약합니다.
+  - **입고 필요**: `DashboardService.needs`의 "지금 넣어야 해요" 상품 수. 계산 없음/실패/재계산 중, 수불부 기준일 7일 초과 또는 미래 기준일, 새 업로드·발주 등록·취소·상품별 조건 변경이 최신 계산에 반영되지 않았으면 **이 항목만** 0으로 봅니다.
+  - **유통기한 지남·임박**: `ExpiryService`의 남은 재고가 있는 LOT 수(건). 임박은 셀러가 정한 기준(기본 30일)입니다. 계산과 상관없이 셉니다.
+  - **도착 지연**: 기존 발주 중 도착 예정일이 지난 `OVERDUE` 건수.
+- payload는 `{ notificationId: "daily-기기발송ID", title: "확인이 필요한 재고가 있어요", body: "입고 필요 4개 · 유통기한 지남 3건 · 유통기한 임박 2건 · 도착 지연 1건", url: "/dashboard" }`이며 0건 항목은 문장에서 뺍니다. 상품명·매출·원가·금액은 넣지 않습니다. 설정은 켜기·끄기와 시각 하나이고, 설정·발송 기록의 kind는 기존 `REPLENISHMENT_NEEDED`를 그대로 써서 "하루 요약" 하나를 뜻합니다(데이터 이전 없이 바로 적용).
 - V28의 `push_daily_summaries`는 회원/종류/사용자 업무 날짜 unique, `push_deliveries`는 요약/구독 unique입니다. 같은 날 시각 변경·복수 worker·재시작에도 성공한 기기에 재전송하지 않습니다. 새 구독은 다음 업무일 요약부터 포함됩니다. 같은 endpoint·키·소유자로 재등록한 경우 구독 버전을 바꾸지 않습니다.
 - `SENDING`을 별도 commit한 뒤 회원→구독 잠금 안에서 동의·탈퇴·구독 버전·최신 대상을 다시 확인합니다. 따라서 동의 해제/탈퇴/계정 전환과 HTTP가 직렬화됩니다. 네트워크 connect/read timeout은 각각4/8초, redirect와 HTTP 자동 retry는 끕니다. 잠금은 전송 중 유지되므로 해당 사용자의 설정/탈퇴가 잠시 대기할 수 있습니다.
 - 2xx는 공급자 수락(`SENT`)이며 기기 표시 증명이 아닙니다. 404/410은 구독 비활성화, 429/503 명시 거절은 5/15분 및 `Retry-After` 중 긴 대기 후 총3회 이내로 재시도합니다. 1시간 창을 넘으면 종료합니다. 나머지 거절은 실패, timeout/불확실한 응답은 `UNKNOWN`으로 자동 재전송하지 않습니다. 중단된 `SENDING`도10분 후 `UNKNOWN`으로 회수합니다. **중복 방지를 위해 일부 전송이 누락될 수 있으며 UNKNOWN은 자동 재큐잉하지 않습니다.**
@@ -522,7 +538,7 @@ preview는 `expectedVersion`, `action`, `receiptIds`를 받으며 확정에는 `
 
 V20은 기존 배정을 BASELINE 이력으로 보존한 뒤 감사 원장과 현재 배정을 같은 트랜잭션에서 관리합니다.
 과거 U2·원본·계산 결과를 수정하지 않으며 배정 변화가 있을 때 필요한 계산/outbox만 요청합니다.
-V20 적용 전 이 코드를 배포하지 않습니다. 실제 DB의 V15 보류와 후속 migration 승인 범위를 확인하고
+V20 적용 전 이 코드를 배포하지 않습니다. 개발 V15는 2026-11-07 적용됐으며, 대상 DB의 실제 이력과 후속 migration 승인 범위를 확인하고
 백업·선택 적용·복구를 별도 검토해야 합니다. UI 연결과 실제 개발 배포 검증은 후속 단계입니다.
 
 [정정 계약·오류·멱등성·검증·복구](docs/decisions/0012-receipt-corrections.md)를 따릅니다.
@@ -832,7 +848,7 @@ scripts/testing/verify-insight-contract.sh /path/to/ipgo-ai
 
 ## Database 변경과 복구
 
-이미 병합된 migration은 Flyway 이력을 보존하기 위해 수정하지 않습니다. 새 DB에서는 승인한 범위의 migration을 순서대로 적용합니다. #90 구현은 V16까지 필요하며 운영 적용은 별도 승인입니다. V4는 `warehouses`·`products`·`inventory_units`, V5는 `upload_files`, V6은 `replenishment_settings`, V7은 `planned_receipts`, V8은 `auth_sessions`·`refresh_tokens`, V9는 `calculation_runs`·`calculation_results`, V10은 일별 수불 2개 표, V11은 계산 출처·시나리오·백테스트·AI 인사이트 4개 표를 추가합니다. V12는 PostgreSQL tenant 무결성 trigger, V13은 FastAPI view와 역할별 권한을 적용하고, V14는 `engine_jobs`·입력 hash·정제 조회 view를 추가합니다. V15의 DB 원본 저장 전환(Server #77·AI #60)은 보류 상태입니다. V16은 입고 사건·배정·업로드 판정 기록을 추가하며 기존 원본 저장 모드를 바꾸지 않습니다. V16을 위해 전체 migration 경로를 실행하기 전 V15의 보류/실제 DB 이력을 함께 확인해야 합니다. V19는 창고 보관 요율 칸과 `product_boxes`를 추가합니다(#111). 기존 행은 바꾸지 않고, 되돌릴 때는 새 칸과 표만 지우면 됩니다. V21은 내 입고량 `product_planned_quantities`를 추가합니다(#119, V20은 #137 입고 정정). 되돌릴 때는 이 표만 지우면 됩니다. V23은 `inventory_units.expiry_date`와 `warehouses.expiry_imminent_days` 칸을 추가합니다(#168, V22는 인사이트 월 사용량). 기존 행은 NULL로 남고, 되돌릴 때는 두 칸만 지우면 됩니다. V24는 회원 탈퇴 시각 `users.withdrawn_at` 칸을 추가합니다(#172). 기존 행은 NULL로 남고, 되돌릴 때는 이 칸만 지우면 됩니다. V26은 Web Push 알림의 브라우저 구독 `push_subscriptions`와 알림 설정 `notification_settings`를 추가합니다(#190, V25는 결제 환불 원장). 새 표만 만들어 기존 행은 바뀌지 않고, 다른 표가 참조하지 않아 되돌릴 때는 두 표만 지우면 됩니다. AI 역할은 두 표를 볼 수 없습니다. V31은 가입 동의 기록 `users.agreement_version`·`agreed_at`, 무료 체험 재사용 확인값 표 `trial_reuse_fingerprints`, 가입 때 정한 체험 재사용 여부 `users.trial_reused`, 체험 없이 시작한 구독 표시 `billing_subscriptions.trial_reused`를 추가합니다(#206). 기존 행은 비어 있거나 `FALSE`로 남고, 되돌릴 때는 새 칸 4개와 표 1개만 지우면 됩니다. AI 역할은 확인값 표를 볼 수 없습니다. V32는 이용권 주문의 결제 동의 버전·시각 `billing_normal_orders.consent_version`·`consented_at`, 환불 제한 뒤 받은 요청 표시 `refund_unpaid_only`, 토스 재조회 시각 `provider_checked_at`, 결제 상태 웹훅 신호 시각 `provider_signal_at`을 추가합니다(#208). 기존 주문은 NULL이나 `FALSE`로 남고, 되돌릴 때는 새 칸 5개만 지우면 됩니다. **V31(#211) 뒤에 적용**해야 합니다. 실제 DB 적용은 V15~V18과 같은 순서 확인과 별도 승인을 따릅니다. 전체 관계와 변경 규칙은 [Database ERD v1](docs/database/erd-v1.md)에 있습니다. Hibernate는 스키마를 자동 수정하지 않고 검증만 수행합니다.
+이미 병합된 migration은 Flyway 이력을 보존하기 위해 수정하지 않습니다. 새 DB에서는 승인한 범위의 migration을 순서대로 적용합니다. #90 구현은 V16까지 필요하며 운영 적용은 별도 승인입니다. V4는 `warehouses`·`products`·`inventory_units`, V5는 `upload_files`, V6은 `replenishment_settings`, V7은 `planned_receipts`, V8은 `auth_sessions`·`refresh_tokens`, V9는 `calculation_runs`·`calculation_results`, V10은 일별 수불 2개 표, V11은 계산 출처·시나리오·백테스트·AI 인사이트 4개 표를 추가합니다. V12는 PostgreSQL tenant 무결성 trigger, V13은 FastAPI view와 역할별 권한을 적용하고, V14는 `engine_jobs`·입력 hash·정제 조회 view를 추가합니다. V15의 DB 원본 저장 전환(Server #77·AI #60)은 2026-11-07 개발 환경에 적용됐고, 2026-11-13 Infra #67에서 격리 복원을 검증했습니다. V16은 입고 사건·배정·업로드 판정 기록을 추가하며 기존 원본 저장 모드를 바꾸지 않습니다. 새 환경에서 전체 migration 경로를 실행하기 전 대상 DB의 실제 이력과 승인 범위를 확인해야 합니다. 기존 DB 원본·이력은 rollback 때도 보존하고 V15를 재적용하거나 down migration하지 않습니다. V19는 창고 보관 요율 칸과 `product_boxes`를 추가합니다(#111). 기존 행은 바꾸지 않고, 되돌릴 때는 새 칸과 표만 지우면 됩니다. V21은 내 입고량 `product_planned_quantities`를 추가합니다(#119, V20은 #137 입고 정정). 되돌릴 때는 이 표만 지우면 됩니다. V23은 `inventory_units.expiry_date`와 `warehouses.expiry_imminent_days` 칸을 추가합니다(#168, V22는 인사이트 월 사용량). 기존 행은 NULL로 남고, 되돌릴 때는 두 칸만 지우면 됩니다. V24는 회원 탈퇴 시각 `users.withdrawn_at` 칸을 추가합니다(#172). 기존 행은 NULL로 남고, 되돌릴 때는 이 칸만 지우면 됩니다. V26은 Web Push 알림의 브라우저 구독 `push_subscriptions`와 알림 설정 `notification_settings`를 추가합니다(#190, V25는 결제 환불 원장). 새 표만 만들어 기존 행은 바뀌지 않고, 다른 표가 참조하지 않아 되돌릴 때는 두 표만 지우면 됩니다. AI 역할은 두 표를 볼 수 없습니다. V31은 가입 동의 기록 `users.agreement_version`·`agreed_at`, 무료 체험 재사용 확인값 표 `trial_reuse_fingerprints`, 가입 때 정한 체험 재사용 여부 `users.trial_reused`, 체험 없이 시작한 구독 표시 `billing_subscriptions.trial_reused`를 추가합니다(#206). 기존 행은 비어 있거나 `FALSE`로 남고, 되돌릴 때는 새 칸 4개와 표 1개만 지우면 됩니다. AI 역할은 확인값 표를 볼 수 없습니다. V32는 이용권 주문의 결제 동의 버전·시각 `billing_normal_orders.consent_version`·`consented_at`, 환불 제한 뒤 받은 요청 표시 `refund_unpaid_only`, 토스 재조회 시각 `provider_checked_at`, 결제 상태 웹훅 신호 시각 `provider_signal_at`을 추가합니다(#208). 기존 주문은 NULL이나 `FALSE`로 남고, 되돌릴 때는 새 칸 5개만 지우면 됩니다. **V31(#211) 뒤에 적용**해야 합니다. 실제 DB 적용은 V15~V18과 같은 순서 확인과 별도 승인을 따릅니다. 전체 관계와 변경 규칙은 [Database ERD v1](docs/database/erd-v1.md)에 있습니다. Hibernate는 스키마를 자동 수정하지 않고 검증만 수행합니다.
 
 초기 PostgreSQL은 administrator가 `database/bootstrap/create_roles.sql`을 먼저 실행한 뒤 `ipgo_migrator`로 Flyway를 적용합니다. 새 DB의 bootstrap SQL은 `ipgo_migrator`·`ipgo_server`·`ipgo_ai_reader`·`ipgo_ai_service_reader` 역할을 만들고 비밀번호는 설정하지 않습니다. 비밀번호는 repository·shell history·Terraform state에 남기지 않고 승인된 Secrets Manager 절차로 설정합니다. Spring runtime은 `ipgo_server`, FastAPI는 `ipgo_ai_reader`를 사용하며 runtime에서는 `SPRING_FLYWAY_ENABLED=false`로 migration 자격 증명을 분리합니다.
 

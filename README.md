@@ -105,6 +105,13 @@ AWS 단일 호스트 개발 환경에서는 `AWS_DEV_COMPUTE_MODE=onebox`가 ARM
 이번 서버 이전에서는 기존 서버를 병행해 연결을 넘기며, 최신 dev 기능을 자동으로 배포하지 않습니다.
 자세한 비용·장애 알림·복구 순서는 [인프라 운영 문서](https://github.com/IpgoITGO/ipgo-infra/blob/dev/docs/onebox.md)를 참고합니다.
 
+onebox Server의 공통 ECS 배포 정책은 [Infra #63](https://github.com/IpgoITGO/ipgo-infra/issues/63)이 관리합니다.
+배포 사전 검사·최초 ECS 쓰기 직전 active template 검사·배포 후 검사에서 EC2/REPLICA/ECS/ROLLING,
+`0/100`, circuit breaker·rollback 활성, AZ 재균형 비활성을 확인합니다. 필수 값 누락·조회 실패·불일치 시
+중단하며 workflow가 정책을 자동 보정하지 않습니다. legacy Fargate 경로는 이 onebox 검사의 대상이 아닙니다.
+이미지·승인된 수량·rollout·앱 검증과 기존 `maintenance_approved`는 유지합니다. 정책 복구는 Infra,
+정상 이미지 복구는 Server가 맡으며 코드 revert가 정책 설정 명령을 되살리는지 확인합니다.
+
 JDK 21을 설치하고 `JAVA_HOME`을 해당 JDK 경로로 설정합니다. Windows에서는 `./gradlew` 대신 `gradlew.bat`을 사용합니다.
 
 ```bash

@@ -67,7 +67,7 @@ run_migrate() {
   export FLYWAY_PASSWORD="${DB_PASSWORD}"
   flyway \
     -connectRetries=12 \
-    -target=34 \
+    -target=35 \
     -validateMigrationNaming=true \
     migrate
 
@@ -75,7 +75,7 @@ run_migrate() {
     --tuples-only --no-align \
     --command="
       SELECT CASE
-        WHEN COUNT(*) = 34 AND MAX(version::integer) = 34 THEN 'ok'
+        WHEN COUNT(*) = 35 AND MAX(version::integer) = 35 THEN 'ok'
         ELSE 'invalid'
       END
       FROM flyway_schema_history
@@ -85,7 +85,7 @@ run_migrate() {
     echo "unexpected Flyway state after migration" >&2
     exit 1
   fi
-  echo "Flyway V1-V34 migration verified."
+  echo "Flyway V1-V35 migration verified."
 }
 
 run_bootstrap_original_reader() {
@@ -107,6 +107,8 @@ run_verify() {
 BEGIN;
 SELECT plan_chosen_at FROM users LIMIT 0;
 SELECT cancellation_reason_codes,cancellation_note FROM billing_commands LIMIT 0;
+SELECT provider_checked_at,provider_signal_at FROM billing_invoices LIMIT 0;
+UPDATE billing_invoices SET provider_checked_at=provider_checked_at,provider_signal_at=provider_signal_at WHERE false;
 INSERT INTO users (id, email, password_hash)
 VALUES (-1, 'database-task-check@example.test', 'check-only-hash');
 UPDATE users SET password_hash = 'updated-check-only-hash', plan_chosen_at = CURRENT_TIMESTAMP WHERE id = -1;

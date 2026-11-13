@@ -119,3 +119,11 @@ V17은 미공유·미배포인 로컬 신규 migration이므로 이번 검토에
 - 청구 내역 응답에 refundStatus/canceledAt을 추가한다. 승인 성공과 취소 완료는 별도 상태다.
 - V24 회원 탈퇴를 보존하고 V25에 환불 원장을 추가했다. 서버 역할만 SELECT/INSERT/UPDATE 가능하고 DELETE 및 AI 조회는 허용하지 않는다. 기존 Flyway 원본은 수정하지 않는다.
 - 공식 취소 계약: https://docs.tosspayments.com/reference#결제-취소 . 토스 TEST 환경 준비·실제 카드 등록/PG 승인·취소 검증은 배포 후 별도로 확인한다.
+
+## 정기결제의 Toss 관리자 취소 확인 (#171, V35)
+
+관리자 화면에서 처리한 전액 취소는 현재 TEST 상점의 최신 유효 PAID 청구만 조회해 발견한다. 회원 환급 API의 신규 요청·권한은 변경하지 않는다. `billing_invoices`의 provider_checked_at/provider_signal_at로 하루 주기·신호 뒤 최소10분·오래 기다린 청구 우선 순서를 유지한다. 서명 없는 신호는 PG 상태·금액을 확정하지 않는다.
+
+정상 전액 취소는 refund CANCELED·invoice VOID·같은 주기 구독 CANCELED/next_charge_at null로 원자 반영한다. 승인 기록·기간·조회 도중 승인된 새 주기는 보존한다. 부분 취소는 REVIEW_REQUIRED이며 이용권과 청구 계획은 유지한다. 다른 상점·탈퇴·과거 주기·만료·기존 환급은 새 발견 대상에서 제외한다. 실제 PG 호출은 조회뿐이며 취소 API를 다시 보내지 않는다.
+
+일반결제 오류가 이 정기결제 확인을 막지 않도록 worker 단계의 오류를 분리한다. 모의 PG·격리DB 성공과 실제 배포/관리자 환급 실검증은 별도이며, V35 적용은 백업·기존 유지보수 gate·정확 SHA 승인 뒤 수행한다.

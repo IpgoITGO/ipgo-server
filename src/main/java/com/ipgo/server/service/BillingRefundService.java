@@ -9,6 +9,7 @@ import com.ipgo.server.repository.BillingLedger;
 import com.ipgo.server.repository.BillingLedger.Row;
 import java.time.Clock;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.UUID;
 import java.util.function.Supplier;
 import org.springframework.stereotype.Service;
@@ -17,6 +18,8 @@ import static com.ipgo.server.repository.BillingLedger.at;
 /** 본인 최신 결제의 전액 취소. 승인 원장은 보존하고 불확정 취소는 동일 주문/멱등키로 복구한다. */
 @Service
 public class BillingRefundService {
+    private static final Duration PAID_RECHECK=Duration.ofDays(1),SIGNAL_RECHECK=Duration.ofMinutes(10);
+    private record AdminCheck(Row invoice,Row attempt) { }
     private final BillingLedger ledger;
     private final BillingProperties properties;
     private final BillingGateway gateway;
@@ -97,7 +100,8 @@ public class BillingRefundService {
     private BillingViews.Refund view(Row row) { return new BillingViews.Refund(row.text("invoice_id"),row.text("status"),row.time("canceled_at")); }
     private void claim(String id) { ledger.update("update billing_refunds set status='PROCESSING',lease_until=? where id=?",at(clock.instant().plusSeconds(180)),id); }
     public void processOne() {
-        var rows=ledger.list("select * from billing_refunds where status in ('PROCESSING','UNKNOWN') and lease_until<=? order by created_at limit 1",at(clock.instant()));
+        var rows=ledger.list("select r.* from billing_refunds r join billing_subscriptions s on s.user_id=r.user_id where s.mode='TEST' and s.merchant_id=? and r.status in ('PROCESSING','UNKNOWN') and r.lease_until<=? order by r.created_at,r.id limit 1",
+                properties.merchantId(),at(clock.instant()));
         if(rows.isEmpty()) return;
         Row row=rows.getFirst(); long user=row.number("user_id"); String id=row.text("id");
         boolean claimed=locked(user,()->{
@@ -109,6 +113,85 @@ public class BillingRefundService {
             claim(id); return true;
         });
         if(claimed) perform(id,user);
+    }
+    /** 관리자 취소는 PG에 다시 보내지 않고 실제 조회 결과만 반영한다. */
+    public void checkPaidOne() {
+        if(!properties.enabled() || !"TEST".equals(properties.mode())) return;
+        Instant now=clock.instant();
+        var rows=ledger.list("""
+                select i.id,i.user_id from billing_invoices i
+                join billing_subscriptions s on s.user_id=i.user_id
+                join users u on u.id=i.user_id
+                where i.status='PAID' and s.mode='TEST' and s.merchant_id=?
+                  and i.cycle_no=s.cycle_no and i.period_end>? and u.withdrawn_at is null
+                  and exists(select 1 from billing_attempts a where a.invoice_id=i.id and a.user_id=i.user_id and a.status='SUCCEEDED')
+                  and not exists(select 1 from billing_refunds r where r.invoice_id=i.id)
+                  and (i.provider_checked_at is null or i.provider_checked_at<=?
+                       or (i.provider_signal_at>=i.provider_checked_at and i.provider_checked_at<=?))
+                order by i.provider_checked_at nulls first,i.paid_at,i.id limit 1
+                """,properties.merchantId(),at(now),at(now.minus(PAID_RECHECK)),at(now.minus(SIGNAL_RECHECK)));
+        if(rows.isEmpty()) return;
+        long user=rows.getFirst().number("user_id"); String invoiceId=rows.getFirst().text("id");
+        AdminCheck check=locked(user,()->{
+            Row invoice=ownedInvoice(user,invoiceId),sub=ledger.one("select * from billing_subscriptions where user_id=?",user);
+            if(!currentMerchant(sub) || !"PAID".equals(invoice.text("status"))
+                    || invoice.number("cycle_no")!=sub.number("cycle_no") || !now.isBefore(invoice.time("period_end"))
+                    || !ledger.list("select id from billing_refunds where invoice_id=?",invoiceId).isEmpty()
+                    || !due(invoice,now)) return null;
+            Row attempt=approved(invoiceId,user);
+            // 조회 실패도 매분 같은 청구만 붙잡지 않게 한다. 재시작/동시 poll도 이 시각으로 제한한다.
+            ledger.update("update billing_invoices set provider_checked_at=? where id=?",at(now),invoiceId);
+            return new AdminCheck(invoice,attempt);
+        });
+        if(check==null) return;
+        BillingGateway.Payment payment;
+        try { payment=gateway.lookup(check.attempt().text("order_id")); }
+        catch(BillingGateway.Failure e) { return; }
+        if(!matches(payment,check.invoice(),check.attempt())) return;
+        boolean full="CANCELED".equals(payment.status()) && payment.balanceAmount()==0
+                && payment.canceledAt()!=null && check.invoice().time("paid_at")!=null
+                && !payment.canceledAt().isBefore(check.invoice().time("paid_at"))
+                && !payment.canceledAt().isAfter(clock.instant().plusSeconds(60));
+        boolean partial="PARTIAL_CANCELED".equals(payment.status()) && payment.balanceAmount()>=0
+                && payment.balanceAmount()<check.invoice().number("amount");
+        if(!full && !partial) return;
+        locked(user,()->{
+            Row invoice=ownedInvoice(user,invoiceId),sub=ledger.one("select * from billing_subscriptions where user_id=?",user);
+            if(!currentMerchant(sub) || !"PAID".equals(invoice.text("status"))
+                    || !ledger.list("select id from billing_refunds where invoice_id=?",invoiceId).isEmpty()) return null;
+            ledger.update("insert into billing_refunds(id,invoice_id,user_id,reason,provider_key,status,created_at,canceled_at) values (?,?,?,?,?,?,?,?)",
+                    UUID.randomUUID().toString(),invoiceId,user,
+                    full?"토스 관리자 화면 정기결제 환급":"토스 관리자 화면 정기결제 부분 환급",
+                    UUID.randomUUID().toString(),full?"CANCELED":"REVIEW_REQUIRED",at(clock.instant()),full?at(payment.canceledAt()):null);
+            if(full) {
+                ledger.update("update billing_invoices set status='VOID' where id=? and user_id=?",invoiceId,user);
+                // 조회 중 다음 주기가 승인됐다면 그 새 구독의 이용권/청구 계획은 건드리지 않는다.
+                ledger.update("update billing_subscriptions set status='CANCELED',cancel_at_period_end=true,next_charge_at=null where user_id=? and cycle_no=? and merchant_id=? and mode='TEST'",
+                        user,invoice.number("cycle_no"),properties.merchantId());
+            }
+            return null;
+        });
+    }
+    private boolean currentMerchant(Row sub) {
+        return "TEST".equals(sub.text("mode")) && properties.merchantId().equals(sub.text("merchant_id"));
+    }
+    private boolean due(Row invoice,Instant now) {
+        Instant checked=invoice.time("provider_checked_at"),signal=invoice.time("provider_signal_at");
+        return checked==null || !checked.isAfter(now.minus(PAID_RECHECK))
+                || signal!=null && !signal.isBefore(checked) && !checked.isAfter(now.minus(SIGNAL_RECHECK));
+    }
+    public void nudge(String orderId) {
+        if(!properties.enabled() || !"TEST".equals(properties.mode())
+                || orderId==null || orderId.isBlank() || orderId.length()>100) return;
+        ledger.update("""
+                update billing_invoices set provider_signal_at=?
+                where status='PAID' and id in (
+                  select a.invoice_id from billing_attempts a
+                  join billing_subscriptions s on s.user_id=a.user_id
+                  join users u on u.id=a.user_id
+                  where a.order_id=? and a.status='SUCCEEDED' and s.mode='TEST' and s.merchant_id=?
+                    and u.withdrawn_at is null)
+                """,at(clock.instant()),orderId,properties.merchantId());
     }
     private void perform(String id,long user) {
         Row refund=ledger.one("select * from billing_refunds where id=? and user_id=?",id,user);

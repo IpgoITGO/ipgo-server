@@ -92,6 +92,11 @@ public final class UploadTestDatabase {
             } catch (java.io.IOException e) { throw new IllegalStateException(e); }
         }
         // #190 탈퇴하면 알림 구독 · 설정(V26)도 지운다.
+        if (jdbc.queryForObject("SELECT COUNT(*) FROM information_schema.columns WHERE LOWER(table_name)='billing_invoices' AND LOWER(column_name)='provider_checked_at'", Integer.class) == 0) {
+            new org.springframework.jdbc.datasource.init.ResourceDatabasePopulator(
+                    new org.springframework.core.io.ClassPathResource("db/migration/V35__recheck_monthly_admin_cancellations.sql"))
+                    .execute(java.util.Objects.requireNonNull(jdbc.getDataSource()));
+        }
         if (jdbc.queryForObject("SELECT COUNT(*) FROM information_schema.columns WHERE LOWER(table_name)='billing_commands' AND LOWER(column_name)='cancellation_reason_codes'", Integer.class) == 0) {
             new org.springframework.jdbc.datasource.init.ResourceDatabasePopulator(
                     new org.springframework.core.io.ClassPathResource("db/migration/V33__store_subscription_cancellation_feedback.sql"))

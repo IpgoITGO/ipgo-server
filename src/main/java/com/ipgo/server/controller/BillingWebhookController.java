@@ -19,8 +19,10 @@ public class BillingWebhookController {
     private final BillingService billing;
     private final JsonMapper mapper;
     private final com.ipgo.server.service.NormalPaymentService normal;
-    public BillingWebhookController(BillingProperties p,BillingService b,JsonMapper m,com.ipgo.server.service.NormalPaymentService n) {
-        properties=p; billing=b; mapper=m; normal=n;
+    private final com.ipgo.server.service.BillingRefundService refunds;
+    public BillingWebhookController(BillingProperties p,BillingService b,JsonMapper m,com.ipgo.server.service.NormalPaymentService n,
+            com.ipgo.server.service.BillingRefundService refunds) {
+        properties=p; billing=b; mapper=m; normal=n; this.refunds=refunds;
     }
     @PostMapping("/api/billing/webhooks/toss")
     public ResponseEntity<Void> webhook(@RequestHeader(value="tosspayments-webhook-transmission-time",required=false) String time,
@@ -75,6 +77,7 @@ public class BillingWebhookController {
         else if(event.path("eventType").isMissingNode() && event.has("secret") && event.has("orderId")) orderId=event.path("orderId").asText("");
         else throw BillingException.forbidden();
         normal.nudge(orderId);
+        refunds.nudge(orderId);
         return ResponseEntity.ok().cacheControl(CacheControl.noStore()).build();
     }
 }

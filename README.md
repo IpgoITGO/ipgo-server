@@ -476,7 +476,7 @@ if (!response.ok) throw new Error(result.message ?? '업로드에 실패했습�
 | 파일 칸 누락 | `400 INVALID_INPUT` |
 | 저장 실패 | `500 UPLOAD_STORAGE_ERROR`. 내부 경로와 파일 내용은 응답하지 않음 |
 | 인증 | 유효한 Bearer JWT 필요. 미인증·만료·폐기된 로그인은 401. CSRF 불필요 |
-| 자료 기간 | 파일명의 연·월로 정함 (`2026-09.xlsx`, `수불부_202609.xlsx`, `2026년 9월.xlsx` → 9/1~9/30). 못 읽거나 연·월이 여러 개면 `400 UPLOAD_INVALID_FORMAT`, `details`에 `fileName`·`reason` |
+| 자료 기간 | 파일명의 연·월 우선. 없으면 첫 워크시트 F열 `입고일자`의 가장 늦은 유효 날짜가 속한 달(#217). 날짜가 없거나 파일명에 연·월이 여러 개면 `400 UPLOAD_INVALID_FORMAT` (`fileName`·`reason` 포함). 같은 기간의 `409` 확인과 `overwrite=true` 유지 |
 | 같은 기간 | 이미 올린 기간이면 `409 UPLOAD_DUPLICATE`, `details.reason`은 `SAME_PERIOD`, `details.existing`에 기존 업로드(ID·이름·기간·업로드 일시). `overwrite=true`로 다시 보내면 새 revision으로 저장 |
 | 같은 파일 | 내용(SHA-256)이 완전히 같은 파일을 **다른 기간** 이름으로 올리면 `overwrite`와 상관없이 `409 UPLOAD_DUPLICATE`, `details.reason`은 `SAME_FILE`. 화면은 덮어쓰기 대신 "이미 올린 파일"로 안내합니다. 같은 기간이면 `SAME_PERIOD`로 처리하므로 같은 파일을 덮어써 다시 정제할 수 있습니다. 다른 회원의 파일과 `FAILED` 업로드는 비교하지 않습니다 |
 
@@ -494,6 +494,10 @@ if (!response.ok) throw new Error(result.message ?? '업로드에 실패했습�
 업로드 일시(`uploadedAt`)는 한국 시간(+09:00)으로 돌려줍니다. DB에는 시간대 포함 시각으로 저장합니다.
 
 ### 업로드 결과 조회 (U2 · #26)
+
+입고일자는 Excel 날짜 숫자(1900/1904), ISO 날짜 셀, `2026-11-20`·`2026/11/20`·`2026.11.20` 문자열을 지원합니다.
+셀 주소가 생략되면 행마다 셀 순서로 F열을 찾고, 다른 열과 발음 안내(`rPh`)는 제외합니다.
+날짜는 1~9999년 범위이며, 시각·시간대 범위도 확인합니다. 마지막 유효일의 시간 소수는 같은 날짜로 처리합니다.
 
 `GET /api/uploads/{uploadId}`는 본인의 처리 상태·자료 기간·검증 보고서를 반환합니다.
 Bearer 인증이 없으면 401, 다른 회원 자료면 403, 없는 업로드면 404입니다.

@@ -178,6 +178,116 @@ class UploadRecordIntegrationTests extends DatabaseIntegrationTest {
         mvc.perform(get("/api/uploads/periods")).andExpect(status().isUnauthorized());
     }
 
+    @Test
+    void arbitraryFileNameUsesLatestReceiptDateFromColumnF() throws Exception {
+        long userId = newUser();
+        upload(userId, "11월 재고.xlsx", datedWorkbook(), false)
+                .andExpect(status().isAccepted())
+                .andExpect(jsonPath("originalName").value("11월 재고.xlsx"))
+                .andExpect(jsonPath("periodStart").value("2026-11-01"))
+                .andExpect(jsonPath("periodEnd").value("2026-11-30"));
+        assertThat(uploadCount(userId)).isEqualTo(1);
+    }
+
+    @Test
+    void acceptsWorkbookWhoseCellsUseImplicitColumnPositions() throws Exception {
+        var parts = UploadTestFiles.parts();
+        parts.put("xl/worksheets/sheet1.xml", """
+                <worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>
+                  <row r="2"><c/><c/><c/><c/><c/><c t="inlineStr"><is><t>2026-11-20</t></is></c>
+                    <c t="inlineStr"><is><t>2099-12-31</t></is></c></row>
+                </sheetData></worksheet>
+                """);
+        upload(newUser(), "재고.xlsx", UploadTestFiles.zip(parts, 0), false)
+                .andExpect(status().isAccepted())
+                .andExpect(jsonPath("periodStart").value("2026-11-01"));
+    }
+
+    @Test
+    void invalidYearDoesNotCreateAnUploadOrStoreAnOriginal() throws Exception {
+        long userId = newUser();
+        var parts = UploadTestFiles.parts();
+        parts.put("xl/worksheets/sheet1.xml", """
+                <worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>
+                  <row r="2"><c r="F2" t="d"><v>0000-11-20</v></c></row>
+                </sheetData></worksheet>
+                """);
+        upload(userId, "재고.xlsx", UploadTestFiles.zip(parts, 0), false)
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("code").value("UPLOAD_INVALID_FORMAT"));
+        assertThat(uploadCount(userId)).isZero();
+        assertThat(root.resolve(Long.toString(userId))).doesNotExist();
+    }
+
+    @Test
+    void invalidClockTimeIsRejectedBeforeStoringAnUpload() throws Exception {
+        long userId = newUser();
+        var parts = UploadTestFiles.parts();
+        parts.put("xl/worksheets/sheet1.xml", """
+                <worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>
+                  <row r="2"><c r="F2" t="d"><v>2026-11-20T25:00:00</v></c></row>
+                </sheetData></worksheet>
+                """);
+        upload(userId, "재고.xlsx", UploadTestFiles.zip(parts, 0), false)
+                .andExpect(status().isBadRequest()).andExpect(jsonPath("code").value("UPLOAD_INVALID_FORMAT"));
+        assertThat(uploadCount(userId)).isZero();
+        assertThat(root.resolve(Long.toString(userId))).doesNotExist();
+    }
+
+    @Test
+    void phoneticHintIsNotPartOfTheReceiptDateValue() throws Exception {
+        var parts = UploadTestFiles.parts();
+        parts.put("[Content_Types].xml", parts.get("[Content_Types].xml").replace("</Types>",
+                "<Override PartName=\"/xl/sharedStrings.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.sharedStrings+xml\"/></Types>"));
+        parts.put("xl/_rels/workbook.xml.rels", parts.get("xl/_rels/workbook.xml.rels").replace("</Relationships>",
+                "<Relationship Id=\"rId2\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/sharedStrings\" Target=\"sharedStrings.xml\"/></Relationships>"));
+        parts.put("xl/sharedStrings.xml", """
+                <sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><si>
+                  <t>2026-11-20</t><rPh sb="0" eb="10"><t>phonetic hint</t></rPh>
+                </si></sst>
+                """);
+        parts.put("xl/worksheets/sheet1.xml", """
+                <worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>
+                  <row r="2"><c r="F2" t="s"><v>0</v></c></row>
+                </sheetData></worksheet>
+                """);
+        upload(newUser(), "재고.xlsx", UploadTestFiles.zip(parts, 0), false)
+                .andExpect(status().isAccepted()).andExpect(jsonPath("periodStart").value("2026-11-01"));
+    }
+
+    @Test
+    void explicitFileNamePeriodStillWinsOverReceiptDates() throws Exception {
+        upload(newUser(), "2026-09.xlsx", datedWorkbook(), false)
+                .andExpect(status().isAccepted())
+                .andExpect(jsonPath("periodStart").value("2026-09-01"));
+    }
+
+    @Test
+    void inferredPeriodStillRequiresOverwriteConfirmation() throws Exception {
+        long userId = newUser();
+        byte[] file = datedWorkbook();
+        upload(userId, "재고.xlsx", file, false).andExpect(status().isAccepted());
+        upload(userId, "새 이름.xlsx", file, false)
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("details.reason").value("SAME_PERIOD"));
+        upload(userId, "새 이름.xlsx", file, true).andExpect(status().isAccepted());
+        assertThat(uploadCount(userId)).isEqualTo(2);
+    }
+
+    private byte[] datedWorkbook() throws Exception {
+        var parts = UploadTestFiles.parts();
+        parts.put("xl/worksheets/sheet1.xml", """
+                <worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>
+                  <row r="1"><c r="F1" t="inlineStr"><is><t>입고일자</t></is></c></row>
+                  <row r="2"><c r="F2" t="inlineStr"><is><t>2026-09-30</t></is></c>
+                    <c r="G2" t="inlineStr"><is><t>2099-12-31</t></is></c></row>
+                  <row r="3"><c r="F3" t="inlineStr"><is><t>2026-11-20</t></is></c></row>
+                  <row r="4"><c r="F4" t="inlineStr"><is><t>2026-10-31</t></is></c></row>
+                </sheetData></worksheet>
+                """);
+        return UploadTestFiles.zip(parts, 0);
+    }
+
     private ResultActions upload(long userId, String fileName, boolean overwrite) throws Exception {
         return upload(userId, fileName, UploadTestFiles.workbook(), overwrite);
     }

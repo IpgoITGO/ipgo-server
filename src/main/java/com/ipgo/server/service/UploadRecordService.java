@@ -10,6 +10,7 @@ import com.ipgo.server.entity.UploadPeriod;
 import com.ipgo.server.entity.Warehouse;
 import com.ipgo.server.exception.UploadException;
 import com.ipgo.server.infrastructure.storage.UploadStorage;
+import com.ipgo.server.infrastructure.storage.UploadPeriodReader;
 import com.ipgo.server.repository.UploadFileRepository;
 
 import java.util.List;
@@ -20,7 +21,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.multipart.MultipartFile;
 
-// 업로드 순서: 파일 검사 → 파일명 기간 읽기 → 같은 기간 확인 → 원본 저장 → 업로드 기록 저장 (BE-03 · BE-04)
+// 업로드 순서: 파일 검사 → 파일명/입고일자 기간 읽기 → 같은 기간 확인 → 원본 저장 → 업로드 기록 저장
 @Service
 public class UploadRecordService {
     static final String SAME_PERIOD = "SAME_PERIOD";
@@ -48,7 +49,7 @@ public class UploadRecordService {
     @Transactional
     public UploadAccepted upload(long userId, MultipartFile file, boolean overwrite) {
         storage.precheck(file);
-        UploadPeriod period = UploadPeriod.fromFileName(file.getOriginalFilename());
+        UploadPeriod period = UploadPeriodReader.resolve(file);
 
         // 창고를 잠가서 같은 기간을 동시에 두 번 올려도 하나씩 확인한다.
         Warehouse warehouse = warehouses.lockDefault(userId);

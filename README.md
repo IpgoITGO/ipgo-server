@@ -99,6 +99,18 @@ AWS dev 배포 workflow가 개발 컨테이너에서만 켭니다. 문서를 닫
 
 ## 빌드와 실행
 
+로컬 검사 전에는 [준비 확인과 재검사 기준](docs/rules/workflow.md#준비-확인과-재검사-기준)에서
+JDK·Gradle 캐시·임시 DB·시험자료를 확인합니다. 환경 오류가 나면 원인을 고친 뒤 재검사하며,
+아래 검사 명령과 필수 CI·배포 전후 검증은 유지합니다.
+
+Linux에서 준비된 Docker JDK 21로 검사할 때는 서버 worktree 최상위에서
+`bash scripts/testing/local-gradle.sh test bootJar`를
+사용합니다. 처음에만 `~/.gradle`의 해당 wrapper·의존성을 사용자 전용
+`${XDG_CACHE_HOME:-$HOME/.cache}/ipgo-server/gradle`에 복사하고 이후 그대로 재사용합니다.
+공유 원본의 권한을 바꾸지 않으며 컨테이너는 현재 사용자로 실행합니다. 이미지·의존성이 없으면
+중단하고 자동 다운로드·온라인 재시도하지 않습니다. 캐시 준비만 확인하려면 `--prepare-only`를
+사용합니다. 필요하면 `IPGO_SERVER_GRADLE_HOME`으로 전용 캐시 경로를 지정합니다.
+
 수불부 원본의 opt-in PostgreSQL 저장과 AI 조회 계약은 [BE-03 DB 원본 저장](docs/decisions/0003-database-original.md)을
 따릅니다. 신규 업로드에만 DB 저장을 선택하며 기존 local/S3 원본과 기본 동작은 유지합니다.
 총량 기본/최대는 **256MiB**이며 더 큰 설정은 거부합니다. 원본은 **최소30일** 보존하고 자동 삭제하지 않습니다.

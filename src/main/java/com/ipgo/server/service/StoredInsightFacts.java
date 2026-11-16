@@ -48,7 +48,7 @@ public class StoredInsightFacts {
             require(h.origin().equals(h.asOf()) && h.origin().equals(LocalDate.parse(input.path("asOfDate").asText()))
                     && h.start().equals(LocalDate.parse(input.path("today").asText())) && !h.start().isBefore(h.origin()));
             String preferred = input.path("policy").path("defaultMethod").asText();
-            require(Set.of("A", "B").contains(preferred));
+            require(Set.of("A", "B", "LGBM19").contains(preferred));
             JsonNode multiplier = input.path("policy").path("multiplier");
             require(multiplier.isNumber() && f.path("multiplier").isNumber()
                     && multiplier.decimalValue().compareTo(f.path("multiplier").decimalValue()) == 0);

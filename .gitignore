@@ -29,3 +29,5 @@ HELP.md
 # D0 Python helper bytecode
 __pycache__/
 .prepared-runtime/
+# 비공개 모델의 격리 연동 검사 자료
+.model19-validation/

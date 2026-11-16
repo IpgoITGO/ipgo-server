@@ -30,6 +30,10 @@ import tools.jackson.databind.json.JsonMapper;
 /** Creates immutable, owner-scoped inputs; all domain triggers serialize on the warehouse lock. */
 @Service
 public class EngineCalculationService {
+    @org.springframework.beans.factory.annotation.Value("${ipgo.engine.default-method:B}")
+    private String defaultMethod = "B";
+    @org.springframework.beans.factory.annotation.Value("${ipgo.engine.model-version:}")
+    private String modelVersion = "";
     private final BillingService billing;
     private final EngineJobs jobs;
     private final WarehouseRepository warehouses;
@@ -125,7 +129,17 @@ public class EngineCalculationService {
         request.put("uploadFileIds", sources.stream().map(UploadFile::getId).toList());
         request.put("asOfDate", asOf); request.put("today", today);
         request.put("productIds", ids.stream().filter(id -> !excluded.containsKey(""+id)).toList());
-        request.put("policy", Map.of("defaultMethod", "B", "multiplier", 1.0));
+        if (!Set.of("A", "B", "LGBM19").contains(defaultMethod))
+            throw new IllegalStateException("Invalid engine method configuration");
+        if ("LGBM19".equals(defaultMethod)) {
+            if (modelVersion.isBlank() || modelVersion.length() > 100)
+                throw new IllegalStateException("A fixed model version is required");
+            request.put("policy", Map.of("defaultMethod", defaultMethod, "multiplier", 1.0, "modelVersion", modelVersion));
+            Map<String,String> codes = new LinkedHashMap<>();
+            active.stream().filter(p -> !excluded.containsKey(""+p.getId()))
+                    .forEach(p -> codes.put(""+p.getId(), p.getSkuBarcode()));
+            request.put("productCodes", codes);
+        } else request.put("policy", Map.of("defaultMethod", defaultMethod, "multiplier", 1.0));
         request.put("settings", inputSettings.stream().filter(s -> !excluded.containsKey(""+s.get("productId"))).toList());
         request.put("plannedReceipts", planned);
         request.put("noDateReceipts", noDate);
@@ -143,8 +157,8 @@ public class EngineCalculationService {
         jdbc.update("""
                 INSERT INTO calculation_runs(warehouse_id,run_type,as_of_date,status,job_id,engine_version,
                     policy_version,selection_snapshot,created_at,input_hash)
-                VALUES (?, ?, ?, 'QUEUED', ?, 'pending', 'B-1.00', CAST('{}' AS JSONB), CURRENT_TIMESTAMP, ?)
-                """, warehouseId, trigger, asOf, jobId, hash);
+                VALUES (?, ?, ?, 'QUEUED', ?, 'pending', ?, CAST('{}' AS JSONB), CURRENT_TIMESTAMP, ?)
+                """, warehouseId, trigger, asOf, jobId, "LGBM19".equals(defaultMethod) ? "BUFFER100_FLOOR0" : defaultMethod+"-1.00", hash);
         long runId = jdbc.queryForObject("SELECT id FROM calculation_runs WHERE job_id = ?", Long.class, jobId);
         request.put("runId", runId);
         Map<String, Object> snapshot = Map.of("request", request, "excluded", excluded, "productIds", ids);

@@ -59,6 +59,8 @@ ipgo:
     timeout: ${IPGO_INSIGHT_TIMEOUT:15s}
     poll-delay-ms: ${IPGO_INSIGHT_POLL_DELAY_MS:1000}
   engine:
+    default-method: ${IPGO_ENGINE_DEFAULT_METHOD:B}
+    model-version: ${IPGO_ENGINE_MODEL_VERSION:}
     enabled: ${IPGO_ENGINE_ENABLED:false}
     base-url: ${IPGO_ENGINE_BASE_URL:}
     scenario-timeout: ${IPGO_SCENARIO_TIMEOUT:10s}

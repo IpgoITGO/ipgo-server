@@ -40,9 +40,26 @@ public class EngineResultWriter {
         for (JsonNode result : results) {
             long productId = positiveId(result.get("productId"));
             require(expected.contains(productId) && seen.add(productId));
+            boolean model19 = "LGBM19".equals(input.path("policy").path("defaultMethod").asText());
+            if ("LGBM19".equals(result.path("method").asText())) require(model19);
+            if (model19 && Set.of("OK", "NOT_NEEDED").contains(result.path("status").asText())) {
+                require("LGBM19".equals(result.path("method").asText()));
+                String requested = input.path("policy").path("modelVersion").asText();
+                require(!requested.isBlank() && requested.equals(text(result, "modelVersion", 100, true)));
+                require(result.path("horizonDays").asInt() == 19);
+                require(result.path("preArrivalRisk").isNull() && result.path("riskStatus").isNull());
+                require(number(result, "targetStockQty", false) != null);
+                require("UNAVAILABLE".equals(result.path("accuracyEvaluation").path("status").asText()));
+                require(result.path("accuracyEvaluation").path("history").isEmpty());
+            }
             save(job, productId, input, result);
             var evaluation = AccuracyEvaluationFacts.validate(result, input);
             var fact = facts.putObject("" + productId);
+            if (model19 && result.hasNonNull("modelVersion")) {
+                fact.set("modelVersion", result.get("modelVersion"));
+                fact.set("targetStockQty", result.get("targetStockQty"));
+                fact.put("modelFallback", result.path("modelFallback").asBoolean());
+            }
             if (evaluation != null) fact.set("accuracyEvaluation", evaluation);
             var beforeRounding = number(result, "requiredQtyBeforeRounding", false);
             if (beforeRounding != null) fact.put("requiredQtyBeforeRounding", beforeRounding);
@@ -89,7 +106,7 @@ public class EngineResultWriter {
         if ("OK".equals(status)) require(recommended.signum() > 0);
         if (!Set.of("OK", "NOT_NEEDED").contains(status)) require(recommended == null);
         String method = text(r, "method", 10, false);
-        require(method == null || Set.of("A","B").contains(method));
+        require(method == null || Set.of("A","B","LGBM19").contains(method));
         LocalDate asOf = LocalDate.parse(input.get("asOfDate").asText()), today = LocalDate.parse(input.get("today").asText());
         Map<String,Object> values = new LinkedHashMap<>();
         values.put("run_id", job.targetId()); values.put("product_id", productId);

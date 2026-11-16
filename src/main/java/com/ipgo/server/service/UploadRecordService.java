@@ -55,9 +55,13 @@ public class UploadRecordService {
         Warehouse warehouse = warehouses.lockDefault(userId);
         // 내용이 완전히 같은 파일을 다른 기간 이름으로 올리면 덮어쓰기와 상관없이 막는다(BE-04).
         // 같은 기간이면 아래 기간 확인에서 처리하므로, 같은 파일을 덮어써서 다시 정제할 수 있다.
+        // 각 기간의 최신 revision하고만 비교한다. 덮어써서 지금 쓰지 않는 옛 revision은 막는 이유가 아니다(#235).
         String hash = storage.contentHash(file);
-        uploads.findFirstByWarehouseIdAndFileHashAndStatusNotOrderByIdDesc(warehouse.getId(), hash, UploadFile.FAILED)
+        uploads.findLatestPerPeriod(warehouse.getId()).stream()
+                .filter(existing -> !UploadFile.FAILED.equals(existing.getStatus()))
+                .filter(existing -> hash.equals(existing.getFileHash()))
                 .filter(existing -> !existing.getPeriodStart().equals(period.start()))
+                .max(java.util.Comparator.comparing(UploadFile::getId))
                 .ifPresent(existing -> { throw duplicate(existing, SAME_FILE, "이미 올린 파일입니다."); });
         if (!overwrite) {
             uploads.findFirstByWarehouseIdAndPeriodStartAndStatusNotOrderByRevisionNoDesc(

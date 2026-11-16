@@ -8,4 +8,6 @@
 
 Model19FlowIntegrationTests는 opt-in이다. 격리 PostgreSQL, 로컬127.0.0.1 FastAPI, Git에 없는 .model19-validation/identity.json이 있어야 한다. 합성 이력으로 실제 모델 API를 호출하고 Spring 결과 소비·DB저장·조회·중복과 CUSTOM을 확인한다. 운영 데이터·AWS·LLM을 사용하지 않는다.
 
+빈 테스트 PostgreSQL에는 먼저 이 저장소의 database/bootstrap/create_roles.sql을 적용한다. 운영 DB에서 이 테스트/fixture를 실행하지 않는다. 검증에서는 AI service reader의 view SELECT 허용과 업무 테이블 INSERT/UPDATE 거부를 확인했고, 버전이 다른 결과는 저장 전에 거부했다.
+
 배포 준비 순서는 서버의 새 방식 수용과 Client391 표시 호환 확인 → 비공개 모델 AI 이미지 → 승인 후 서버 모델 설정이다. 이번 작업에서 환경 설정은 바꾸지 않는다. 되돌릴 때 기본 방식을 B로 복구하고 이전 이미지/모델을 유지하며 이미 저장된 결과는 삭제/위장하지 않는다.

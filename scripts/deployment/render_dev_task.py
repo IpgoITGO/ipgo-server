@@ -43,6 +43,12 @@ def settings(env):
     batch_approved = flag({"BATCH_INSIGHT_APPROVED": "false", **env}, "BATCH_INSIGHT_APPROVED")
     require(mode != "onebox" or maintenance, "One-box restart requires maintenance approval")
     require(not engine or connected, "Engine connection approval is required")
+    method = env.get("ENGINE_DEFAULT_METHOD", "preserve")
+    version = env.get("ENGINE_MODEL_VERSION", "")
+    require(method in ("preserve", "B", "LGBM19"), "Unsupported engine default method")
+    require(method == "LGBM19" or not version, "Model version requires explicit LGBM19 activation")
+    require(method != "LGBM19" or (engine and re.fullmatch(r"lgbm19-[0-9a-f]{16}", version) is not None),
+            "LGBM19 requires the engine and an exact model version")
     require(not insight or (engine and approved), "Insight activation requires engine and cost approval")
     continuous = flag({"CONTINUOUS_INSIGHT_APPROVED": "false", **env}, "CONTINUOUS_INSIGHT_APPROVED")
     require(not continuous or (insight and worker and approved), "Continuous insight requires explicit activation, worker and cost approval")
@@ -115,6 +121,9 @@ def render(task, image, env):
     managed["IPGO_INSIGHT_DEMO_EXPIRES_AT"] = config["expires"] if config["insight"] else ""
     if config["base"]:
         managed["IPGO_ENGINE_BASE_URL"] = config["base"]
+    if env.get("ENGINE_DEFAULT_METHOD", "preserve") != "preserve":
+        managed["IPGO_ENGINE_DEFAULT_METHOD"] = env["ENGINE_DEFAULT_METHOD"]
+        managed["IPGO_ENGINE_MODEL_VERSION"] = env.get("ENGINE_MODEL_VERSION", "")
     server["environment"] = [e for e in previous if e["name"] not in managed]
     server["environment"].extend({"name": k, "value": v} for k, v in managed.items())
     normal = flag({"NORMAL_PAYMENT_ENABLED": "false", **env}, "NORMAL_PAYMENT_ENABLED")

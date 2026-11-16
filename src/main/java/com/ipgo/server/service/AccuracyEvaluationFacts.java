@@ -31,7 +31,7 @@ final class AccuracyEvaluationFacts {
         require(e.path("periodStart").isString() == e.path("periodEnd").isString());
         if (e.path("horizonDays").isIntegralNumber()) require(e.path("horizonDays").asInt() > 0
                 && e.path("horizonDays").equals(result.path("horizonDays")));
-        if (e.path("method").isString()) require(Set.of("A","B").contains(e.path("method").asText())
+        if (e.path("method").isString()) require(Set.of("A","B","LGBM19").contains(e.path("method").asText())
                 && e.path("method").equals(result.path("method")));
         require(e.path("dataHash").asText().matches("[a-f0-9]{64}"));
         LocalDate cutoff = date(e, "observedThrough");
@@ -60,7 +60,7 @@ final class AccuracyEvaluationFacts {
         JsonNode setting = null;
         for (var candidate : input.path("settings")) if (candidate.path("productId").asLong() == result.path("productId").asLong()) setting = candidate;
         require(setting != null && horizon == setting.path("leadTimeDays").asInt() + setting.path("reviewCycleDays").asInt());
-        require(Set.of("A","B").contains(e.path("method").asText()) && e.path("method").equals(result.path("method")));
+        require(Set.of("A","B","LGBM19").contains(e.path("method").asText()) && e.path("method").equals(result.path("method")));
         LocalDate previous = null;
         int covered = 0;
         BigDecimal actual = BigDecimal.ZERO, error = BigDecimal.ZERO;

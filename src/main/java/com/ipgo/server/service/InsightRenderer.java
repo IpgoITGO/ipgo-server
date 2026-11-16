@@ -63,9 +63,9 @@ public class InsightRenderer {
                 && source.path("hasNoDateReceipts").asBoolean() == (number(r, "noDateReceiptQty").signum() > 0));
         Map<String, String> v = new LinkedHashMap<>();
         String method = r.path("method").asText();
-        require(Set.of("A", "B").contains(method));
+        require(Set.of("A", "B", "LGBM19").contains(method));
         v.put("method", "계산식 " + method);
-        v.put("formula_desc", "A".equals(method) ? "작년 같은 시기 판매량에 올해 최근 흐름을 반영하는 방식" : "최근 유효 관측일 평균 판매량을 쓰는 방식");
+        v.put("formula_desc", "LGBM19".equals(method) ? "고정 19일 분위수 예측에 과거 오차를 보정하는 방식" : "A".equals(method) ? "작년 같은 시기 판매량에 올해 최근 흐름을 반영하는 방식" : "최근 유효 관측일 평균 판매량을 쓰는 방식");
         put(v, "horizon_days", integer(number(r, "horizonDays")));
         put(v, "start_stock", stock(number(r, "startStockQty")));
         put(v, "planned_receipts", integer(number(r, "plannedReceiptsInHorizon")));

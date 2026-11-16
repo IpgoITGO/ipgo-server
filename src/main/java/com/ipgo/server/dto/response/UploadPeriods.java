@@ -1,5 +1,6 @@
 package com.ipgo.server.dto.response;
 
+import com.ipgo.server.dto.UploadProcessingReport;
 import com.ipgo.server.entity.UploadFile;
 import com.ipgo.server.entity.UploadPeriod;
 
@@ -16,12 +17,14 @@ public record UploadPeriods(List<Item> items, Long latestUploadId) {
     private static final ZoneId SEOUL = ZoneId.of("Asia/Seoul");
 
     public record Item(String period, Long uploadId, String fileName, LocalDate periodStart, LocalDate periodEnd,
-            OffsetDateTime uploadedAt, String status) {
+            OffsetDateTime uploadedAt, String status, UploadProcessingReport.Failure error) {
 
+        // error는 FAILED일 때만 U2와 같은 값을 넣는다. 성공·처리 중이면 null이다(#231).
         public static Item from(UploadFile upload) {
             return new Item(new UploadPeriod(YearMonth.from(upload.getPeriodStart())).label(),
                     upload.getId(), upload.getOriginalName(), upload.getPeriodStart(), upload.getPeriodEnd(),
-                    seoul(upload.getCreatedAt()), upload.getStatus());
+                    seoul(upload.getCreatedAt()), upload.getStatus(),
+                    UploadFile.FAILED.equals(upload.getStatus()) ? UploadResult.error(upload) : null);
         }
     }
 

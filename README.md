@@ -509,10 +509,17 @@ if (!response.ok) throw new Error(result.message ?? '업로드에 실패했습�
 
 ```json
 {"items": [{"period": "2026-09", "uploadId": 12, "fileName": "2026-09.xlsx", "periodStart": "2026-09-01",
-  "periodEnd": "2026-09-30", "uploadedAt": "2026-10-28T10:00:00+09:00", "status": "PROCESSING"}], "latestUploadId": 12}
+  "periodEnd": "2026-09-30", "uploadedAt": "2026-10-28T10:00:00+09:00", "status": "FAILED",
+  "error": {"code": "INVALID_SOURCE", "message": "수불부 형식을 확인하고 다시 올려 주세요.",
+    "reason": "전월 재고가 이번 자료에 없어요.", "details": {"reason": "PREVIOUS_MONTH_MISMATCH"}}}], "latestUploadId": 12}
 ```
 
 업로드 일시(`uploadedAt`)는 한국 시간(+09:00)으로 돌려줍니다. DB에는 시간대 포함 시각으로 저장합니다.
+
+각 항목의 `error`는 상태가 `FAILED`일 때만 채우고, `DONE`·`PROCESSING`이면 `null`입니다(#231).
+값은 U2(`GET /api/uploads/{uploadId}`)의 `error`와 같은 코드로 만들어서 `code`·`message`·`reason`·`details.reason`이 똑같습니다.
+그래서 화면은 실패한 달마다 U2를 따로 부르지 않아도 됩니다. 엔진 장애(`ENGINE_UNAVAILABLE`)는 U2처럼 셀러용 안내만 주고 `reason`·`details`는 `null`입니다.
+별도 승인된 데이터 작업으로 마감한 과거 기록(`LEGACY_UPLOAD_CLOSED`)도 저장된 코드와 문장을 그대로 줍니다.
 
 ### 업로드 결과 조회 (U2 · #26)
 

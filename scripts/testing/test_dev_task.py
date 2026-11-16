@@ -20,6 +20,39 @@ IMAGE = f'{ACCOUNT}.dkr.ecr.ap-northeast-2.amazonaws.com/ipgo-dev/server:{SHA}-a
 
 
 class DevDeploymentTests(unittest.TestCase):
+    def test_model_method_is_preserved_unless_explicitly_selected(self):
+        self.task['containerDefinitions'][0]['environment'].extend([
+            {'name':'IPGO_ENGINE_DEFAULT_METHOD','value':'LGBM19'},
+            {'name':'IPGO_ENGINE_MODEL_VERSION','value':'lgbm19-0123456789abcdef'}])
+        for change in ({}, {'ENGINE_DEFAULT_METHOD':'preserve'}):
+            values={e['name']:e['value'] for e in module.render(self.task,IMAGE,dict(self.env,**change))['containerDefinitions'][0]['environment']}
+            self.assertEqual(values['IPGO_ENGINE_DEFAULT_METHOD'],'LGBM19')
+            self.assertEqual(values['IPGO_ENGINE_MODEL_VERSION'],'lgbm19-0123456789abcdef')
+
+    def test_model_activation_and_b_rollback_update_both_settings(self):
+        for method,version in [('LGBM19','lgbm19-0123456789abcdef'),('B','')]:
+            values={e['name']:e['value'] for e in module.render(self.task,IMAGE,dict(self.env,ENGINE_DEFAULT_METHOD=method,ENGINE_MODEL_VERSION=version))['containerDefinitions'][0]['environment']}
+            self.assertEqual(values['IPGO_ENGINE_DEFAULT_METHOD'],method)
+            self.assertEqual(values['IPGO_ENGINE_MODEL_VERSION'],version)
+
+    def test_model_activation_rejects_incomplete_or_ambiguous_settings(self):
+        for change in [dict(ENGINE_DEFAULT_METHOD='A'),dict(ENGINE_DEFAULT_METHOD='LGBM19'),
+                       dict(ENGINE_DEFAULT_METHOD='LGBM19',ENGINE_MODEL_VERSION='latest'),
+                       dict(ENGINE_DEFAULT_METHOD='LGBM19',ENGINE_MODEL_VERSION='lgbm19-0123456789abcdef',ENGINE_ENABLED='false'),
+                       dict(ENGINE_DEFAULT_METHOD='B',ENGINE_MODEL_VERSION='lgbm19-0123456789abcdef'),
+                       dict(ENGINE_MODEL_VERSION='lgbm19-0123456789abcdef')]:
+            with self.subTest(change=change),self.assertRaises(module.InvalidDeployment):
+                module.settings(dict(self.env,**change))
+
+    def test_workflow_passes_model_controls_to_renderer(self):
+        workflow=(ROOT/'.github/workflows/deploy-dev.yml').read_text()
+        for name in ['ENGINE_DEFAULT_METHOD: ${{ inputs.engine_default_method }}',
+                     'ENGINE_MODEL_VERSION: ${{ inputs.engine_model_version }}']:
+            self.assertIn(name,workflow)
+        self.assertIn('test "$EXPECTED_SHA" = "$GITHUB_SHA"',workflow)
+        self.assertLess(workflow.index('Method changes require the current workflow source SHA'),
+                        workflow.index('Validate approved deployment before external writes'))
+
     def test_continuous_requires_explicit_approval_and_keeps_monthly_budget(self):
         env=dict(self.env,CONTINUOUS_INSIGHT_APPROVED='true',INSIGHT_EXPIRES_AT='')
         self.assertTrue(module.settings(env)['continuous'])

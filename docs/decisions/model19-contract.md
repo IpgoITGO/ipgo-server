@@ -11,3 +11,15 @@ Model19FlowIntegrationTests는 opt-in이다. 격리 PostgreSQL, 로컬127.0.0.1 
 빈 테스트 PostgreSQL에는 먼저 이 저장소의 database/bootstrap/create_roles.sql을 적용한다. 운영 DB에서 이 테스트/fixture를 실행하지 않는다. 검증에서는 AI service reader의 view SELECT 허용과 업무 테이블 INSERT/UPDATE 거부를 확인했고, 버전이 다른 결과는 저장 전에 거부했다.
 
 배포 준비 순서는 서버의 새 방식 수용과 Client391 표시 호환 확인 → 비공개 모델 AI 이미지 → 승인 후 서버 모델 설정이다. 이번 작업에서 환경 설정은 바꾸지 않는다. 되돌릴 때 기본 방식을 B로 복구하고 이전 이미지/모델을 유지하며 이미 저장된 결과는 삭제/위장하지 않는다.
+
+## 개발 환경 활성화와 복구
+
+`Deploy server to AWS dev`의 `engine_default_method`는 기본 `preserve`로 현재 설정을 유지한다.
+실제 모델을 포함한 AI 이미지가 먼저 배포·검증된 뒤 `LGBM19`와 그 이미지의 정확한
+`engine_model_version`(`lgbm19-` 뒤 16자리 소문자 hex)을 함께 입력한다. 엔진 연결 활성화도 필요하다.
+이 값은 신규 계산에 전역 적용되며 고객의 lead/review 설정과 과거 결과를 변경하지 않는다.
+고정 5+14일 조건이나 매핑·이력이 부족하면 계산 불가이며 B로 자동 대체하지 않는다.
+
+방식을 바꾸는 배포는 현재 workflow와 동일한 source SHA만 허용한다. 구버전 렌더러가 새 입력을 무시하는 일을 막는다.
+롤백은 Server를 `B`, 빈 버전으로 먼저 재배포하고 이전 AI 이미지로 복원한다.
+저장된 LGBM19 결과와 snapshot은 보존한다. 코드 병합·렌더 검사 성공과 실제 개발 배포·API 검증은 구분한다.

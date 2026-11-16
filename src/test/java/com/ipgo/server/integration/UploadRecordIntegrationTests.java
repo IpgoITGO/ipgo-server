@@ -109,6 +109,39 @@ class UploadRecordIntegrationTests extends DatabaseIntegrationTest {
     }
 
     @Test
+    void fileWrongfullyUploadedToAnotherPeriodCanMoveAfterThatPeriodIsOverwritten() throws Exception {
+        long userId = newUser();
+        byte[] april = UploadTestFiles.workbook();
+        upload(userId, "2025-01.xlsx", april, false).andExpect(status().isAccepted());
+        upload(userId, "2025-01 수정.xlsx", UploadTestFiles.workbook(), true).andExpect(status().isAccepted());
+
+        upload(userId, "2026-04.xlsx", april, false)
+                .andExpect(status().isAccepted())
+                .andExpect(jsonPath("periodStart").value("2026-04-01"));
+        assertThat(uploadCount(userId)).isEqualTo(3);
+    }
+
+    @Test
+    void sameFileAsLatestRevisionOfAnotherPeriodIsStillRejected() throws Exception {
+        long userId = newUser();
+        byte[] april = UploadTestFiles.workbook();
+        upload(userId, "2025-01.xlsx", UploadTestFiles.workbook(), false).andExpect(status().isAccepted());
+        upload(userId, "2025-01 수정.xlsx", april, true).andExpect(status().isAccepted());
+        long latest = jdbc.queryForObject("SELECT MAX(u.id) FROM upload_files u JOIN warehouses w "
+                + "ON w.id = u.warehouse_id WHERE w.user_id = ?", Long.class, userId);
+
+        for (boolean overwrite : new boolean[] {false, true}) {
+            upload(userId, "2026-04.xlsx", april, overwrite)
+                    .andExpect(status().isConflict())
+                    .andExpect(jsonPath("details.reason").value("SAME_FILE"))
+                    .andExpect(jsonPath("details.existing.uploadId").value(latest))
+                    .andExpect(jsonPath("details.existing.originalName").value("2025-01 수정.xlsx"))
+                    .andExpect(jsonPath("details.existing.periodStart").value("2025-01-01"));
+        }
+        assertThat(uploadCount(userId)).isEqualTo(2);
+    }
+
+    @Test
     void sameFileCanBeUploadedAgainForSamePeriodWithOverwrite() throws Exception {
         long userId = newUser();
         byte[] september = UploadTestFiles.workbook();

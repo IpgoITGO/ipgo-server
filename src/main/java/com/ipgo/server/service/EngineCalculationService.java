@@ -75,8 +75,11 @@ public class EngineCalculationService {
         // S1 is a suggestion. Do not invent a review cycle before the seller confirms settings.
         if (!warehouse.hasConfirmedDefaults()) return null;
         entities.flush();
-        List<UploadFile> sources = uploads.findLatestPerPeriod(warehouseId).stream()
+        List<UploadFile> latestSources = uploads.findLatestPerPeriod(warehouseId);
+        List<UploadFile> sources = latestSources.stream()
                 .filter(u -> "DONE".equals(u.getStatus())).sorted(Comparator.comparing(UploadFile::getPeriodStart)).toList();
+        Map<String, String> sourceRevisions = new LinkedHashMap<>();
+        for (UploadFile source : latestSources) sourceRevisions.put(source.getId().toString(), source.getStatus());
         if (sources.isEmpty()) return null;
         LocalDate asOf = sources.stream().map(UploadFile::getPeriodEnd).max(LocalDate::compareTo).orElseThrow();
         if (today.isBefore(asOf)) return null;
@@ -143,7 +146,8 @@ public class EngineCalculationService {
         request.put("settings", inputSettings.stream().filter(s -> !excluded.containsKey(""+s.get("productId"))).toList());
         request.put("plannedReceipts", planned);
         request.put("noDateReceipts", noDate);
-        String hash = hash(canonical(mapper.valueToTree(Map.of("request", request, "excluded", excluded))));
+        String hash = hash(canonical(mapper.valueToTree(Map.of("request", request, "excluded", excluded,
+                "sourceRevisions", sourceRevisions))));
         // Only the current run can be reused: historical IDs must not hide a later state change.
         if (!force) {
             List<Long> same = jdbc.queryForList("""
@@ -161,7 +165,8 @@ public class EngineCalculationService {
                 """, warehouseId, trigger, asOf, jobId, "LGBM19".equals(defaultMethod) ? "BUFFER100_FLOOR0" : defaultMethod+"-1.00", hash);
         long runId = jdbc.queryForObject("SELECT id FROM calculation_runs WHERE job_id = ?", Long.class, jobId);
         request.put("runId", runId);
-        Map<String, Object> snapshot = Map.of("request", request, "excluded", excluded, "productIds", ids);
+        Map<String, Object> snapshot = Map.of("request", request, "excluded", excluded, "productIds", ids,
+                "sourceRevisions", sourceRevisions);
         jdbc.update("UPDATE calculation_runs SET selection_snapshot = CAST(? AS JSONB) WHERE id = ?",
                 mapper.writeValueAsString(snapshot), runId);
         for (UploadFile source : sources) jdbc.update("INSERT INTO run_source_files(run_id,upload_file_id) VALUES (?,?)", runId, source.getId());

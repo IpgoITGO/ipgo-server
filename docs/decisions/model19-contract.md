@@ -14,6 +14,17 @@ Model19FlowIntegrationTests는 opt-in이다. 격리 PostgreSQL, 로컬127.0.0.1 
 
 ## 개발 환경 활성화와 복구
 
+K1 재고·출고 추이는 계산 입력과 같은 월별 최신 revision 중 DONE 파일만 조회한다.
+최신 revision이 FAILED/PROCESSING이면 이전 DONE으로 되돌아가지 않는다. 기본 조회 종료일과
+현재·전년 추이에 같은 파일 집합을 적용한다. 덮어쓴 원본과 과거 계산은 삭제하지 않는다.
+
+새 계산은 전체 월별 최신 파일의 ID·상태를 `selection_snapshot.sourceRevisions`와 입력 hash에 보존한다.
+실제 엔진 요청과 `run_source_files`에는 DONE 파일만 넣는다. CUSTOM은 보존한 전체 ID·상태와
+현재 자료가 같고, DONE 소스가 원래 요청/관계 테이블과 일치할 때만 실행한다. 계산 전부터 존재해
+제외했던 과거 실패는 허용하며 이후 새 revision·상태 변경은 저장 직전에도 재검사한다.
+이 메타데이터가 없는 과거 snapshot은 기존 보수적인 검사로 처리한다. 원본/과거 결과를 고치지 않고
+새 계산부터 적용하며 DB migration이나 공개 API 필드 추가는 없다.
+
 `Deploy server to AWS dev`의 `engine_default_method`는 기본 `preserve`로 현재 설정을 유지한다.
 실제 모델을 포함한 AI 이미지가 먼저 배포·검증된 뒤 `LGBM19`와 그 이미지의 정확한
 `engine_model_version`(`lgbm19-` 뒤 16자리 소문자 hex)을 함께 입력한다. 엔진 연결 활성화도 필요하다.

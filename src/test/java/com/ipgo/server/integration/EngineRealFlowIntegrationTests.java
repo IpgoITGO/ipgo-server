@@ -163,6 +163,27 @@ class EngineRealFlowIntegrationTests {
                 "result", Map.of("engineVersion", "test", "results", calculated)));
     }
 
+    @Test void snapshotTracksIncompleteRevisionsWithoutSendingThemToTheEngine() throws Exception {
+        var f = exclusionRun();
+        long warehouse = f.upload().getWarehouseId();
+        LocalDate period = f.upload().getPeriodStart().minusMonths(1);
+        jdbc.update("""
+                INSERT INTO upload_files(warehouse_id,original_name,storage_key,file_hash,revision_no,period_start,period_end,status)
+                VALUES (?,'failed.xlsx','failed-history',?,1,?,?,'FAILED')
+                """, warehouse, "9".repeat(64), period, period.withDayOfMonth(period.lengthOfMonth()));
+        long failed = jdbc.queryForObject("SELECT MAX(id) FROM upload_files WHERE warehouse_id=?", Long.class, warehouse);
+        long next = calculations.request(f.owner(), warehouse, "SETTINGS", false);
+        assertThat(next).isNotEqualTo(f.runId());
+        var snapshot = mapper.readTree(jdbc.queryForObject(
+                "SELECT selection_snapshot FROM calculation_runs WHERE id=?", String.class, next));
+        if (snapshot.isString()) snapshot = mapper.readTree(snapshot.asText());
+        assertThat(snapshot.path("sourceRevisions").path(""+failed).asText()).isEqualTo("FAILED");
+        assertThat(snapshot.path("sourceRevisions").path(""+f.upload().getId()).asText()).isEqualTo("DONE");
+        assertThat(snapshot.path("request").path("uploadFileIds").size()).isEqualTo(1);
+        assertThat(jdbc.queryForList("SELECT upload_file_id FROM run_source_files WHERE run_id=?", Long.class, next))
+                .containsExactly(f.upload().getId());
+    }
+
     @Test void inactiveValidationExclusionDoesNotBlockActiveResults() throws Exception {
         var f = exclusionRun();
         assertThat(jobs.find(f.jobId()).payload().path("productIds").toString()).isEqualTo("["+f.normal()+"]");
@@ -185,6 +206,7 @@ class EngineRealFlowIntegrationTests {
                 "SELECT selection_snapshot FROM calculation_runs WHERE id=?", String.class, f.runId()));
         if (snapshot.isString()) snapshot = mapper.readTree(snapshot.asText());
         assertThat(snapshot.path("excluded").size()).isEqualTo(1);
+        assertThat(snapshot.path("sourceRevisions").path(""+f.upload().getId()).asText()).isEqualTo("DONE");
         assertThat(snapshot.path("excluded").path(""+f.excluded()).asText()).isEqualTo("활성 상품 검산 불일치");
         assertThat(snapshot.path("productIds").toString()).doesNotContain(""+f.inactive());
         assertThat(uploads.findById(f.upload().getId()).orElseThrow().getValidationReport().validation().excludedSkus()).hasSize(2);

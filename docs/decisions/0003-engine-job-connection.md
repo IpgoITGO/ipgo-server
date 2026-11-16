@@ -18,6 +18,9 @@ DB 실패 또는 잘못된 결과는 ACK하지 않아 재시도/DLQ로 가며, �
 
 CLEAN은 파일 하나이며 uploadId=uploadFileId, jobId는 별도 UUID다. Spring이 지정한
 previousUploadFileId는 같은 창고 직전 달의 최신 revision이 DONE일 때만 존재한다.
+#230부터 직전 달 최신 revision이 PROCESSING이면 CLEAN을 outbox에 넣지 않고 기다렸다가, 직전 달이
+DONE·FAILED·시간 초과로 끝날 때 그 순간의 값으로 previousUploadFileId를 정해 넣는다. AI가 직전 달 불일치로
+실패시키면 새 jobId로 한 번만 다시 요청한다. 기다림은 별도 칸 없이 "PROCESSING인데 그 jobId의 engine_jobs 행이 없음"으로 판단한다.
 AI는 V14의 세 조회 전용 view에서 회원·창고·원본과 최신 revision을 검증하고 월말 재고를 읽는다.
 월말 기록이 없는 전월 자료는 빈 재고로 대체하지 않는다. source·상품 기본 표에 AI 권한을 주지 않는다.
 

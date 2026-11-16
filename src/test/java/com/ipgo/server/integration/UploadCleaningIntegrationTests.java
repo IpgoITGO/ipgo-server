@@ -2,6 +2,7 @@ package com.ipgo.server.integration;
 
 import com.ipgo.server.DatabaseIntegrationTest;
 import com.ipgo.server.dto.CleaningResult;
+import com.ipgo.server.dto.UploadProcessingReport;
 import com.ipgo.server.entity.UploadFile;
 import com.ipgo.server.repository.UploadFileRepository;
 import com.ipgo.server.service.UploadCleaningService;
@@ -26,9 +27,13 @@ import org.springframework.mock.web.MockMultipartFile;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.ResultActions;
+import org.springframework.transaction.support.TransactionTemplate;
+import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
 
 import static org.assertj.core.api.Assertions.*;
+import static org.hamcrest.Matchers.nullValue;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.jwt;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.*;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
@@ -42,6 +47,7 @@ class UploadCleaningIntegrationTests extends DatabaseIntegrationTest {
     @Autowired JsonMapper mapper;
     @Autowired UploadFileRepository uploads;
     @Autowired UploadCleaningService cleaning;
+    @Autowired TransactionTemplate tx;
 
     @DynamicPropertySource
     static void properties(DynamicPropertyRegistry registry) {
@@ -164,6 +170,47 @@ class UploadCleaningIntegrationTests extends DatabaseIntegrationTest {
         assertThat(upload(owner).getRevisionNo()).isEqualTo(2);
     }
 
+    // U3 기간 목록의 error는 FAILED일 때만 넣고, 모양과 문장은 U2 error와 같다(#231).
+    @Test void periodsShowSameFailureAsResultOnlyWhenFailed() throws Exception {
+        long invalid = user(), engine = user(), legacy = user(), done = user(), processing = user();
+        var invalidUpload = upload(invalid);
+        cleaning.fail(invalidUpload.getId(), invalidUpload.getJobId(), UploadCleaningService.Failure.INVALID_SOURCE,
+                "전월 재고가 이번 자료에 없어요.", "PREVIOUS_MONTH_MISMATCH");
+        var engineUpload = upload(engine);
+        cleaning.fail(engineUpload.getId(), engineUpload.getJobId(), UploadCleaningService.Failure.ENGINE_UNAVAILABLE);
+        var legacyUpload = upload(legacy);
+        // 과거 기록 마감은 별도 승인된 데이터 작업이 FAILED와 사유 코드를 저장한다.
+        tx.executeWithoutResult(status -> uploads.findById(legacyUpload.getId()).orElseThrow()
+                .fail(new UploadProcessingReport.Failure("LEGACY_UPLOAD_CLOSED", "과거 기록을 보존하고 마감했어요.")));
+        var doneUpload = upload(done);
+        cleaning.complete(doneUpload.getId(), doneUpload.getJobId(), result(doneUpload.getId(), "TEST-A", false));
+        upload(processing);
+
+        periods(invalid).andExpect(jsonPath("items[0].status").value("FAILED"))
+                .andExpect(jsonPath("items[0].error.code").value("INVALID_SOURCE"))
+                .andExpect(jsonPath("items[0].error.message").value("수불부 형식을 확인하고 다시 올려 주세요."))
+                .andExpect(jsonPath("items[0].error.reason").value("전월 재고가 이번 자료에 없어요."))
+                .andExpect(jsonPath("items[0].error.details.reason").value("PREVIOUS_MONTH_MISMATCH"));
+        // 엔진 장애는 지금처럼 셀러용 안내만 주고 장애 문구·구분 코드는 내보내지 않는다.
+        periods(engine).andExpect(jsonPath("items[0].error.code").value("ENGINE_UNAVAILABLE"))
+                .andExpect(jsonPath("items[0].error.message").value("정제 서비스를 사용할 수 없습니다. 잠시 후 다시 시도해 주세요."))
+                .andExpect(jsonPath("items[0].error.reason").value(nullValue()))
+                .andExpect(jsonPath("items[0].error.details").value(nullValue()));
+        periods(legacy).andExpect(jsonPath("items[0].error.code").value("LEGACY_UPLOAD_CLOSED"))
+                .andExpect(jsonPath("items[0].error.message").value("과거 기록을 보존하고 마감했어요."));
+        for (var failed : List.of(List.of(invalid, invalidUpload.getId()), List.of(engine, engineUpload.getId()),
+                List.of(legacy, legacyUpload.getId()))) {
+            assertThat(periodError(failed.get(0))).isEqualTo(resultError(failed.get(0), failed.get(1)));
+        }
+        // 성공·처리 중이면 error 칸은 있고 값은 null이다. 기존 칸은 그대로다.
+        periods(done).andExpect(jsonPath("items[0].status").value("DONE"))
+                .andExpect(jsonPath("items[0].error").value(nullValue()))
+                .andExpect(jsonPath("items[0].fileName").value("2026-09.xlsx"));
+        periods(processing).andExpect(jsonPath("items[0].status").value("PROCESSING"))
+                .andExpect(jsonPath("items[0].error").value(nullValue()))
+                .andExpect(jsonPath("items[0].period").value("2026-09"));
+    }
+
     @Test void rejectsLotReassignmentAndRollsBackNewProducts() throws Exception {
         long owner = user(); var first = upload(owner);
         cleaning.complete(first.getId(), first.getJobId(), result(first.getId(), "TEST-A", false));
@@ -233,6 +280,18 @@ class UploadCleaningIntegrationTests extends DatabaseIntegrationTest {
         assertThat(count("products")).isZero();
         assertThat(count("daily_stock_records")).isZero();
         assertThat(uploads.findById(upload.getId()).orElseThrow().getStatus()).isEqualTo("PROCESSING");
+    }
+    private ResultActions periods(long owner) throws Exception {
+        return mvc.perform(get("/api/uploads/periods").with(jwt().jwt(j -> j.subject(""+owner))))
+                .andExpect(status().isOk());
+    }
+    private JsonNode periodError(long owner) throws Exception {
+        return mapper.readTree(periods(owner).andReturn().getResponse().getContentAsString())
+                .get("items").get(0).get("error");
+    }
+    private JsonNode resultError(long owner, long uploadId) throws Exception {
+        return mapper.readTree(mvc.perform(get("/api/uploads/{id}", uploadId).with(jwt().jwt(j -> j.subject(""+owner))))
+                .andExpect(status().isOk()).andReturn().getResponse().getContentAsString()).get("error");
     }
     private int count(String table) { return jdbc.queryForObject("SELECT COUNT(*) FROM "+table, Integer.class); }
     private long user() { return UploadTestDatabase.newUser(jdbc, "clean-"+UUID.randomUUID()+"@example.test"); }

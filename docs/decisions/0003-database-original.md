@@ -10,7 +10,7 @@
 - 신규 업로드만 명시적으로 선택한 `database` 모드에서 DB에 저장한다. 기본 `local`과 기존 `s3`는 유지한다.
 - 전체 회원·창고·성공/실패·모든 revision의 DB 원본 합계 상한은 **256MiB (268435456 bytes)**다.
   `IPGO_UPLOAD_DATABASE_MAX_BYTES` 기본값은 이 값이며 더 작은 검증 한도는 허용하고, 0 이하·256MiB 초과 설정은 기동을 거부한다.
-- 파일별 기존 XLSX·10MiB 상한을 유지한다. 총 보관량 초과는 HTTP507이며 자동 삭제로 공간을 만들지 않는다.
+- 수불부 원본은 **XLSX(.xlsx)만 수신**하며 파일별 10MiB 상한을 유지한다. 총 보관량 초과는 HTTP507이며 자동 삭제로 공간을 만들지 않는다.
 - 원본마다 `created_at`, `retain_until`을 기록해 **최소 30일** 보존한다. CHECK와 UPDATE/DELETE/TRUNCATE trigger로
   보존 기간의 일반 변경·삭제를 차단한다. 앱에는 원본 UPDATE/DELETE/TRUNCATE 권한이 없다.
 - 30일 뒤에도 자동 삭제하지 않는다. 운영자의 별도 승인된 정리에서만 삭제할 수 있다. 미래 정리 도구·스케줄은 추가하지 않았다.
@@ -19,6 +19,14 @@
 V15는 `storage_kind`, 별도 `upload_originals(bytea)`와 `ai_upload_originals_v1`을 추가하며 개발 DB에 적용돼 있다.
 기존 V1~V14와 적용된 V15 SQL을 수정하거나 재적용하지 않는다. 새 환경의 적용은 별도 승인과 실제 이력 확인이 필요하다.
 raw bytes 합계는 실제 DB/TOAST/WAL/백업 소비량과 다르므로 256MiB를 운영 자원 수용 성능으로 해석하지 않는다.
+
+## 지원 형식 결정 — 2026-11-16
+
+수불부 업로드는 **XLSX(.xlsx)만 받습니다**. PDF·이미지·HWP 추가 지원은 진행하지 않습니다.
+2026-11-16 팀 합의로 [서버 #229 / IPGO-100](https://github.com/IpgoITGO/ipgo-server/issues/229)과
+[화면 #89 / IPGO-38](https://github.com/IpgoITGO/ipgo-client/issues/89)은 범위 제외로 종료했습니다.
+과거 PDF 우선 검토·비XLSX 보류 계획은 남은 작업에 포함하지 않습니다.
+원본 저장 방식이나 보관 기간의 변경을 포함하는 결정은 아닙니다.
 
 ## 무결성·동시성
 

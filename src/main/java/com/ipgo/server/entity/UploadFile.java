@@ -90,6 +90,12 @@ public class UploadFile {
         this.status = "DONE";
     }
 
+    // 직전 달 불일치로 정제를 다시 요청할 때 새 jobId를 쓴다. 이전 요청의 늦은 결과는 jobId가 달라 저장되지 않는다(#230).
+    public void restartCleaning() {
+        if (!isProcessing()) throw new IllegalStateException("Upload already finished");
+        this.jobId = UUID.randomUUID().toString();
+    }
+
     public void fail(UploadProcessingReport.Failure failure) {
         if (!isProcessing()) throw new IllegalStateException("Upload already finished");
         this.validationReport = new UploadProcessingReport(null, null, null, failure);

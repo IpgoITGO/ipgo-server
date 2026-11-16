@@ -31,17 +31,17 @@ public class UploadRecordService {
     private final WarehouseService warehouses;
     private final UploadFileRepository uploads;
     private final WarehouseRepository warehouseRepository;
-    private final EngineJobs engineJobs;
+    private final UploadCleaningRequests cleaningRequests;
     private final ReceiptMatchingService matching;
     private final org.springframework.jdbc.core.JdbcTemplate jdbc;
 
     public UploadRecordService(UploadStorage storage, WarehouseService warehouses, UploadFileRepository uploads,
-            WarehouseRepository warehouseRepository, EngineJobs engineJobs, org.springframework.jdbc.core.JdbcTemplate jdbc, ReceiptMatchingService matching) {
+            WarehouseRepository warehouseRepository, UploadCleaningRequests cleaningRequests, org.springframework.jdbc.core.JdbcTemplate jdbc, ReceiptMatchingService matching) {
         this.storage = storage;
         this.warehouses = warehouses;
         this.uploads = uploads;
         this.warehouseRepository = warehouseRepository;
-        this.engineJobs = engineJobs;
+        this.cleaningRequests = cleaningRequests;
         this.jdbc = jdbc;
         this.matching = matching;
     }
@@ -72,18 +72,8 @@ public class UploadRecordService {
         UploadFile saved = uploads.save(new UploadFile(warehouse.getId(), stored.originalName(),
                 key, stored.sha256(), revision, period));
         storage.persistOriginal(saved, file);
-        if (engineJobs.enabled()) {
-            var previous = uploads.findLatestPerPeriod(warehouse.getId()).stream()
-                    .filter(u -> u.getPeriodStart().equals(period.start().minusMonths(1)))
-                    .filter(u -> "DONE".equals(u.getStatus())).findFirst();
-            Map<String,Object> payload = new java.util.LinkedHashMap<>();
-            payload.put("uploadId", saved.getId()); payload.put("userId", userId);
-            payload.put("warehouseId", warehouse.getId());
-            payload.put("previousUploadFileId", previous.map(UploadFile::getId).orElse(null));
-            payload.put("files", List.of(Map.of("uploadFileId", saved.getId(), "storageKey", saved.getStorageKey(),
-                    "originalName", saved.getOriginalName())));
-            engineJobs.enqueue(saved.getJobId(), "CLEAN", saved.getId(), warehouse.getId(), payload);
-        }
+        // 직전 달이 아직 처리 중이면 지금 보내지 않고, 직전 달이 끝날 때 그 순간의 직전 달 값으로 보낸다(#230).
+        cleaningRequests.dispatchReady(warehouse.getId(), period.start());
         return UploadAccepted.from(saved);
     }
 

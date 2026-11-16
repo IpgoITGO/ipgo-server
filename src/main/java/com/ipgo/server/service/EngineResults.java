@@ -20,12 +20,15 @@ public class EngineResults {
     private final UploadCleaningService cleaning;
     private final EngineCalculationService calculations;
     private final EngineResultWriter writer;
+    private final UploadCleaningRequests cleaningRequests;
     private final JsonMapper mapper;
 
     public EngineResults(EngineJobs jobs, JdbcTemplate jdbc, WarehouseRepository warehouses, UploadFileRepository uploads,
-            UploadCleaningService cleaning, EngineCalculationService calculations, EngineResultWriter writer, JsonMapper mapper) {
+            UploadCleaningService cleaning, EngineCalculationService calculations, EngineResultWriter writer,
+            UploadCleaningRequests cleaningRequests, JsonMapper mapper) {
         this.jobs = jobs; this.jdbc = jdbc; this.warehouses = warehouses; this.uploads = uploads;
-        this.cleaning = cleaning; this.calculations = calculations; this.writer = writer; this.mapper = mapper;
+        this.cleaning = cleaning; this.calculations = calculations; this.writer = writer;
+        this.cleaningRequests = cleaningRequests; this.mapper = mapper;
     }
 
     @Transactional
@@ -49,15 +52,21 @@ public class EngineResults {
                 boolean current = uploads.findLatestPerPeriod(job.warehouseId()).stream().anyMatch(u -> u.getId().equals(upload.getId()));
                 if (current) calculations.request(warehouses.findById(job.warehouseId()).orElseThrow().getUserId(),
                         job.warehouseId(), "UPLOAD", false);
+                cleaningRequests.previousFinished(job.targetId());
             } else {
                 JsonNode error = message.path("error");
                 String code = error.path("code").asText();
-                if (Set.of("INVALID_SOURCE","INVALID_INPUT","RESULT_TOO_LARGE").contains(code)) {
-                    // 셀러가 고칠 수 있는 입력 문제만 엔진 문장을 남긴다. 엔진 장애 문구는 저장하지 않는다(#164).
-                    cleaning.fail(job.targetId(), job.id(), UploadCleaningService.Failure.INVALID_SOURCE,
-                            sellerReason(error.path("message")), detailReason(error.path("details").path("reason")));
-                } else {
-                    cleaning.fail(job.targetId(), job.id(), UploadCleaningService.Failure.ENGINE_UNAVAILABLE);
+                // 직전 달 값이 달라 실패한 첫 요청은 실패로 끝내지 않고 새 jobId로 다시 요청한다(#230).
+                if (!cleaningRequests.retryPreviousMismatch(job, error)) {
+                    if (Set.of("INVALID_SOURCE","INVALID_INPUT","RESULT_TOO_LARGE").contains(code)) {
+                        // 셀러가 고칠 수 있는 입력 문제만 엔진 문장을 남긴다. 엔진 장애 문구는 저장하지 않는다(#164).
+                        cleaning.fail(job.targetId(), job.id(), UploadCleaningService.Failure.INVALID_SOURCE,
+                                sellerReason(error.path("message")), detailReason(error.path("details").path("reason")));
+                    } else {
+                        cleaning.fail(job.targetId(), job.id(), UploadCleaningService.Failure.ENGINE_UNAVAILABLE);
+                    }
+                    // 직전 달이 실패로 끝나도 다음 달은 기다리지 않고 previousUploadFileId=null로 보낸다.
+                    cleaningRequests.previousFinished(job.targetId());
                 }
             }
         } else {
@@ -70,8 +79,10 @@ public class EngineResults {
     public void expire(String id) {
         EngineJobs.Job job = lock(id);
         if (Set.of("DONE","FAILED").contains(job.status())) return;
-        if ("CLEAN".equals(job.type())) cleaning.fail(job.targetId(), job.id(), UploadCleaningService.Failure.ENGINE_UNAVAILABLE);
-        else writer.fail(job, EngineResultWriter.TIMEOUT_MESSAGE);
+        if ("CLEAN".equals(job.type())) {
+            cleaning.fail(job.targetId(), job.id(), UploadCleaningService.Failure.ENGINE_UNAVAILABLE);
+            cleaningRequests.previousFinished(job.targetId()); // 직전 달이 시간 초과로 끝나도 다음 달은 null로 보낸다.
+        } else writer.fail(job, EngineResultWriter.TIMEOUT_MESSAGE);
         jobs.finished(id, false);
     }
 

@@ -11,8 +11,13 @@ import com.ipgo.server.support.UploadTestDatabase;
 import com.ipgo.server.support.UploadTestFiles;
 import java.nio.file.Path;
 import java.time.LocalDate;
+import java.time.YearMonth;
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
+import java.util.Random;
 import java.util.UUID;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.AfterEach;
@@ -744,4 +749,206 @@ class EngineRealFlowIntegrationTests {
         }
     }
 
+    // ---- #230 여러 달을 한꺼번에 올릴 때 직전 달 순서 ----
+    static final String MISMATCH = "직전 월 최신 업로드가 요청과 일치하지 않아요";
+
+    private UploadFile uploadMonth(long owner, YearMonth month) throws Exception {
+        var multipart = new MockMultipartFile("file", month + ".xlsx", "application/octet-stream", UploadTestFiles.workbook());
+        return uploads.findById(records.upload(owner, multipart, true).uploadId()).orElseThrow();
+    }
+    private UploadFile reload(UploadFile u) { return uploads.findById(u.getId()).orElseThrow(); }
+    private CleaningResult cleanMonth(UploadFile u) {
+        LocalDate day = u.getPeriodStart();
+        return new CleaningResult(day, day, day,
+            List.of(new CleaningResult.CleanProduct("SKU-A", "Test", 100L, true)),
+            List.of(new CleaningResult.Unit("LOT-1", "SKU-A", day)),
+            List.of(new CleaningResult.UnitDay(u.getId(), "LOT-1", day, day, 10L, 0L, 2L, 0L, 8L, "재고변동", 5)),
+            List.of(new CleaningResult.ProductDay(u.getId(), "SKU-A", day, 10L, 0L, 2L, 0L, 8L, true, null)),
+            new CleaningResult.Validation(1, 1, List.of()), 7);
+    }
+    private String done(String jobId, UploadFile u) {
+        return mapper.writeValueAsString(Map.of("contractVersion", "1", "jobId", jobId,
+                "jobType", "CLEAN", "status", "SUCCEEDED", "result", cleanMonth(u)));
+    }
+    private String failed(String jobId, String message) {
+        return mapper.writeValueAsString(Map.of("contractVersion", "1", "jobId", jobId,
+                "jobType", "CLEAN", "status", "FAILED", "error", Map.of("code", "INVALID_SOURCE", "message", message)));
+    }
+    private int cleanRequests(UploadFile u) {
+        return jdbc.queryForObject("SELECT COUNT(*) FROM engine_jobs WHERE job_type = 'CLEAN' AND target_id = ?", Integer.class, u.getId());
+    }
+    private boolean requested(String jobId) {
+        return jdbc.queryForObject("SELECT COUNT(*) FROM engine_jobs WHERE job_id = ?", Integer.class, jobId) == 1;
+    }
+    private static Long sentPrevious(EngineJobs.Job job) {
+        var value = job.payload().path("previousUploadFileId");
+        return value.isIntegralNumber() ? value.asLong() : null;
+    }
+    private List<String> openCleanJobs() {
+        return jdbc.queryForList("SELECT job_id FROM engine_jobs WHERE job_type = 'CLEAN' AND status IN ('PENDING','SENT') ORDER BY created_at", String.class);
+    }
+    // AI(ipgo-ai app/repository.py)처럼 처리하는 순간 직전 달 최신 revision을 다시 보고, 요청 값과 다르면 실패시킨다.
+    private void aiHandles(String jobId) {
+        var job = jobs.find(jobId);
+        var upload = uploads.findById(job.targetId()).orElseThrow();
+        Long expected = uploads.findLatestPerPeriod(upload.getWarehouseId()).stream()
+                .filter(u -> u.getPeriodStart().equals(upload.getPeriodStart().minusMonths(1)))
+                .filter(u -> "DONE".equals(u.getStatus())).map(UploadFile::getId).findFirst().orElse(null);
+        results.accept(Objects.equals(expected, sentPrevious(job)) ? done(jobId, upload) : failed(jobId, MISMATCH));
+    }
+    private void aiDrains(boolean newestFirst) {
+        for (int guard = 0; guard < 200; guard++) {
+            var open = openCleanJobs();
+            if (open.isEmpty()) return;
+            aiHandles(newestFirst ? open.getLast() : open.getFirst());
+        }
+        fail("정제 요청이 끝나지 않았어요");
+    }
+    private static List<YearMonth> months(int count) {
+        var months = new ArrayList<YearMonth>();
+        for (int i = 0; i < count; i++) months.add(YearMonth.of(2024, 12).plusMonths(i));
+        return months;
+    }
+
+    @Test void monthsUploadedTogetherInOrderAllFinishDoneWithPreviousMonthLinked() throws Exception {
+        // 11/16 QA: 23개월을 한꺼번에 올리고 AI가 그 뒤에 차례로 처리했다. 예전에는 3월이 처리 중일 때 4월을 null로 보내 실패했다.
+        long owner = user();
+        var uploaded = new ArrayList<UploadFile>();
+        for (var month : months(23)) uploaded.add(uploadMonth(owner, month));
+        assertThat(openCleanJobs()).hasSize(1); // 첫 달만 바로 보내고 나머지는 직전 달을 기다린다.
+        aiDrains(false);
+        for (int i = 0; i < uploaded.size(); i++) {
+            var u = reload(uploaded.get(i));
+            assertThat(u.getStatus()).as(u.getOriginalName()).isEqualTo("DONE");
+            assertThat(cleanRequests(u)).as(u.getOriginalName()).isEqualTo(1);
+            assertThat(sentPrevious(jobs.find(u.getJobId()))).as(u.getOriginalName())
+                    .isEqualTo(i == 0 ? null : uploaded.get(i - 1).getId());
+        }
+    }
+
+    @Test void monthsUploadedTogetherInMixedOrderAllFinishDone() throws Exception {
+        for (boolean newestFirst : new boolean[] {false, true}) for (boolean aiWhileUploading : new boolean[] {false, true}) {
+            long owner = user();
+            var months = months(12);
+            Collections.shuffle(months, new Random(230));
+            var uploaded = new ArrayList<UploadFile>();
+            for (var month : months) {
+                uploaded.add(uploadMonth(owner, month));
+                // AI가 업로드 도중에도 하나씩 처리하는 경우를 함께 본다.
+                var open = openCleanJobs();
+                if (aiWhileUploading && !open.isEmpty()) aiHandles(newestFirst ? open.getLast() : open.getFirst());
+            }
+            aiDrains(newestFirst);
+            for (var u : uploaded) {
+                var current = reload(u);
+                assertThat(current.getStatus()).as(current.getOriginalName()).isEqualTo("DONE");
+                assertThat(cleanRequests(current)).as(current.getOriginalName()).isBetween(1, 2);
+            }
+        }
+    }
+
+    @Test void nextMonthWaitsUntilPreviousMonthEndsAndThenUsesItsFinalState() throws Exception {
+        long owner = user();
+        var march = uploadMonth(owner, YearMonth.of(2026, 3));
+        var april = uploadMonth(owner, YearMonth.of(2026, 4));
+        assertThat(requested(march.getJobId())).isTrue();
+        assertThat(requested(april.getJobId())).isFalse();
+        assertThat(records.result(owner, april.getId()).status()).isEqualTo("PROCESSING");
+        results.accept(done(march.getJobId(), march));
+        assertThat(sentPrevious(jobs.find(april.getJobId()))).isEqualTo(march.getId());
+
+        // 직전 달이 실패로 끝나면 직전 달이 없을 때처럼 null로 보낸다. AI도 이때 null을 기대한다.
+        var june = uploadMonth(owner, YearMonth.of(2026, 6));
+        var july = uploadMonth(owner, YearMonth.of(2026, 7));
+        assertThat(requested(july.getJobId())).isFalse();
+        results.accept(failed(june.getJobId(), "수불부 형식이 올바르지 않아요"));
+        assertThat(reload(june).getStatus()).isEqualTo("FAILED");
+        assertThat(sentPrevious(jobs.find(july.getJobId()))).isNull();
+
+        // 직전 달 요청이 시간 초과로 끝나도 다음 달을 계속 기다리지 않는다.
+        var september = uploadMonth(owner, YearMonth.of(2026, 9));
+        var october = uploadMonth(owner, YearMonth.of(2026, 10));
+        results.expire(september.getJobId());
+        assertThat(sentPrevious(jobs.find(october.getJobId()))).isNull();
+
+        // 기다리는 중에 직전 달을 덮어쓰면 새 revision이 끝날 때까지 기다린다. 이전 revision의 늦은 결과로는 보내지 않는다.
+        var december = uploadMonth(owner, YearMonth.of(2026, 12));
+        var january = uploadMonth(owner, YearMonth.of(2027, 1));
+        var decemberAgain = uploadMonth(owner, YearMonth.of(2026, 12));
+        results.accept(done(december.getJobId(), december));
+        assertThat(requested(january.getJobId())).isFalse();
+        results.accept(done(decemberAgain.getJobId(), decemberAgain));
+        assertThat(sentPrevious(jobs.find(january.getJobId()))).isEqualTo(decemberAgain.getId());
+    }
+
+    @Test void previousMonthMismatchRetriesOnceWithLatestPreviousMonth() throws Exception {
+        long owner = user();
+        var may = uploadMonth(owner, YearMonth.of(2026, 5));   // 4월이 없어 null로 바로 보낸다.
+        var april = uploadMonth(owner, YearMonth.of(2026, 4)); // 3월이 없어 바로 보낸다.
+        String firstJob = may.getJobId();
+        assertThat(sentPrevious(jobs.find(firstJob))).isNull();
+        results.accept(done(april.getJobId(), april));
+        results.accept(failed(firstJob, MISMATCH)); // AI가 5월을 처리할 때는 4월이 이미 DONE이었다.
+
+        var retried = reload(may);
+        assertThat(retried.getStatus()).isEqualTo("PROCESSING");
+        assertThat(retried.getJobId()).isNotEqualTo(firstJob);
+        assertThat(jobs.find(firstJob).status()).isEqualTo("FAILED");
+        assertThat(sentPrevious(jobs.find(retried.getJobId()))).isEqualTo(april.getId());
+        assertThat(cleanRequests(may)).isEqualTo(2);
+        // 첫 요청의 늦은 결과는 이미 끝난 요청이라 저장하지 않는다.
+        results.accept(done(firstJob, may));
+        assertThat(reload(may).getStatus()).isEqualTo("PROCESSING");
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM daily_stock_records WHERE upload_file_id = ?", Integer.class, may.getId())).isZero();
+
+        // 다시 보낸 요청도 같은 이유로 실패하면 더 보내지 않고 AI 문장과 함께 실패로 남긴다.
+        results.accept(failed(retried.getJobId(), MISMATCH));
+        assertThat(reload(may).getStatus()).isEqualTo("FAILED");
+        assertThat(cleanRequests(may)).isEqualTo(2);
+        assertThat(records.result(owner, may.getId()).error().reason()).isEqualTo(MISMATCH);
+    }
+
+    @Test void mismatchRetryWaitsWhenPreviousMonthIsStillProcessing() throws Exception {
+        long owner = user();
+        var may = uploadMonth(owner, YearMonth.of(2026, 5));
+        var april = uploadMonth(owner, YearMonth.of(2026, 4));
+        String firstJob = may.getJobId();
+        results.accept(done(april.getJobId(), april));
+        var overwrite = uploadMonth(owner, YearMonth.of(2026, 4)); // 4월을 다시 올려 새 revision이 처리 중이다.
+        // 보낸 값(null)과 지금 기준 값(새 4월이 처리 중이라 null)이 같아서 AI 문장으로 같은 이유인지 알아본다.
+        results.accept(failed(firstJob, MISMATCH));
+        var waiting = reload(may);
+        assertThat(waiting.getStatus()).isEqualTo("PROCESSING");
+        assertThat(requested(waiting.getJobId())).isFalse(); // 새 4월이 끝날 때까지 기다린다.
+        results.accept(done(overwrite.getJobId(), overwrite));
+        assertThat(sentPrevious(jobs.find(waiting.getJobId()))).isEqualTo(overwrite.getId());
+        aiHandles(waiting.getJobId());
+        assertThat(reload(may).getStatus()).isEqualTo("DONE");
+    }
+
+    @Test void changedAiWordingStillRetriesWhenSentPreviousMonthIsStale() throws Exception {
+        long owner = user();
+        var may = uploadMonth(owner, YearMonth.of(2026, 5));
+        var april = uploadMonth(owner, YearMonth.of(2026, 4));
+        results.accept(done(april.getJobId(), april));
+        // 보낸 값(null)과 지금 기준 값(4월)이 다르면 AI 문장이 달라도 같은 이유로 보고 한 번 다시 요청한다.
+        results.accept(failed(may.getJobId(), "전월 기준이 달라요"));
+        var retried = reload(may);
+        assertThat(retried.getStatus()).isEqualTo("PROCESSING");
+        assertThat(sentPrevious(jobs.find(retried.getJobId()))).isEqualTo(april.getId());
+    }
+
+    @Test void stalePreviousMonthWithoutRequestIsSentFirstSoNextMonthDoesNotWaitForever() throws Exception {
+        long owner = user();
+        var march = uploadMonth(owner, YearMonth.of(2026, 3));
+        // 엔진이 꺼져 있던 때 올라와 요청 없이 PROCESSING으로 남은 행을 흉내 낸다.
+        jdbc.update("DELETE FROM engine_jobs WHERE job_id = ?", march.getJobId());
+        var april = uploadMonth(owner, YearMonth.of(2026, 4));
+        assertThat(requested(march.getJobId())).isTrue();
+        assertThat(requested(april.getJobId())).isFalse();
+        aiDrains(false);
+        assertThat(reload(march).getStatus()).isEqualTo("DONE");
+        assertThat(reload(april).getStatus()).isEqualTo("DONE");
+        assertThat(sentPrevious(jobs.find(april.getJobId()))).isEqualTo(march.getId());
+    }
 }

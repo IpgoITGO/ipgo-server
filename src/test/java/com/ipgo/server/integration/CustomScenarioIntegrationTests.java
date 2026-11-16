@@ -221,6 +221,45 @@ class CustomScenarioIntegrationTests extends DatabaseIntegrationTest {
                 """,warehouse,"1".repeat(64),asOf.withDayOfMonth(1),asOf);
         create(owner,13).andExpect(status().isConflict());assertThat(CALLS.get()).isZero();
     }
+
+    @ParameterizedTest @ValueSource(strings={"FAILED","PROCESSING"})
+    void snapshotAllowsKnownIncompleteHistoryWithoutSendingItToAi(String state) throws Exception {
+        long incomplete = incompleteHistory(state);
+        sourceContext(Map.of(""+upload,"DONE",""+incomplete,state));
+        createdId(13);
+        assertThat(SEEN.get().path("calculationInput").path("uploadFileIds").size()).isEqualTo(1);
+        assertThat(SEEN.get().path("calculationInput").path("uploadFileIds").get(0).asLong()).isEqualTo(upload);
+        assertBasePreserved();
+    }
+
+    @ParameterizedTest @ValueSource(strings={"FAILED","PROCESSING"})
+    void snapshotRejectsNewIncompleteHistoryBeforeHttp(String state) throws Exception {
+        sourceContext(Map.of(""+upload,"DONE"));
+        incompleteHistory(state);
+        create(owner,13).andExpect(status().isConflict());
+        assertThat(CALLS.get()).isZero();
+        assertThat(customCount()).isZero();
+    }
+
+    @Test void sourceStateChangingDuringHttpPreservesPreviousCustom() throws Exception {
+        long incomplete = incompleteHistory("FAILED");
+        sourceContext(Map.of(""+upload,"DONE",""+incomplete,"FAILED"));
+        createdId(13);
+        blockedQty=84;
+        var pending=asyncCreate(80);
+        assertThat(entered.await(2,TimeUnit.SECONDS)).isTrue();
+        jdbc.update("UPDATE upload_files SET status='DONE' WHERE id=?",incomplete);
+        release.countDown();
+        assertThat(pending.get(3,TimeUnit.SECONDS)).isEqualTo(409);
+        assertThat(customQty()).isEqualTo(24);
+        assertBasePreserved();
+    }
+
+    @Test void legacySnapshotKeepsConservativeSourceValidation() throws Exception {
+        incompleteHistory("FAILED");
+        create(owner,13).andExpect(status().isConflict());
+        assertThat(CALLS.get()).isZero();
+    }
     @ParameterizedTest @ValueSource(strings={"wrong-qty","wrong-type","bad-number","bad-risk","bad-projection","bad-json","too-large"})
     void badAiResponsePreservesPreviousCustomAndBase(String kind) throws Exception {
         createdId(13);long previous=customQty();
@@ -300,6 +339,21 @@ class CustomScenarioIntegrationTests extends DatabaseIntegrationTest {
     private String path(){return "/api/results/"+result+"/scenarios";}
     private long customQty(){return jdbc.queryForObject("SELECT scenario_qty FROM scenario_results WHERE result_id=? AND scenario_type='CUSTOM'",Long.class,result);}
     private int customCount(){return jdbc.queryForObject("SELECT COUNT(*) FROM scenario_results WHERE result_id=? AND scenario_type='CUSTOM'",Integer.class,result);}
+    private long incompleteHistory(String state) {
+        LocalDate period=asOf.minusMonths(2).withDayOfMonth(1);
+        jdbc.update("""
+                INSERT INTO upload_files(warehouse_id,original_name,storage_key,file_hash,revision_no,period_start,period_end,status)
+                VALUES (?,'history.xlsx','history',?,1,?,?,?)
+                """,warehouse,"9".repeat(64),period,period.withDayOfMonth(period.lengthOfMonth()),state);
+        return jdbc.queryForObject("SELECT MAX(id) FROM upload_files WHERE warehouse_id=?",Long.class,warehouse);
+    }
+
+    private void sourceContext(Map<String,String> states) {
+        ((ObjectNode)snapshot).set("sourceRevisions",JSON.valueToTree(states));
+        jdbc.update("UPDATE calculation_runs SET selection_snapshot=CAST(? AS JSONB) WHERE id=?",
+                JSON.writeValueAsString(snapshot),run);
+    }
+
     private long newRun(String status){jdbc.update("""
             INSERT INTO calculation_runs(warehouse_id,run_type,as_of_date,status,engine_version,selection_snapshot,created_at)
             VALUES (?,'CALCULATE',?,?,'test',JSON '{}',CURRENT_TIMESTAMP)

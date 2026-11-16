@@ -76,7 +76,8 @@ public class CustomScenarioStore {
         ObjectNode request;
         long unit;
         try {
-            JsonNode original = decode(r.snapshot).get("request");
+            JsonNode snapshot = decode(r.snapshot);
+            JsonNode original = snapshot.get("request");
             require(original != null && original.isObject());
             require(integer(original.get("userId")) == userId && integer(original.get("warehouseId")) == r.warehouseId
                     && integer(original.get("runId")) == r.runId);
@@ -105,8 +106,19 @@ public class CustomScenarioStore {
             require(ids.equals(new HashSet<>(jdbc.queryForList("SELECT upload_file_id FROM run_source_files WHERE run_id=?",
                     Long.class,r.runId))));
             var latest = uploads.findLatestPerPeriod(r.warehouseId);
-            require(latest.stream().allMatch(f -> "DONE".equals(f.getStatus())));
-            require(ids.equals(new HashSet<>(latest.stream().map(f -> f.getId()).toList())));
+            JsonNode sourceRevisions = snapshot.get("sourceRevisions");
+            if (sourceRevisions == null) {
+                // 과거 snapshot은 기존의 보수적인 검증을 유지한다. 새 계산부터 전체 revision 상태를 보존한다.
+                require(latest.stream().allMatch(f -> "DONE".equals(f.getStatus())));
+            } else {
+                require(sourceRevisions.isObject() && sourceRevisions.size() == latest.size());
+                for (var source : latest) {
+                    JsonNode state = sourceRevisions.get(source.getId().toString());
+                    require(state != null && state.isTextual() && state.asText().equals(source.getStatus()));
+                }
+            }
+            require(ids.equals(new HashSet<>(latest.stream().filter(f -> "DONE".equals(f.getStatus()))
+                    .map(f -> f.getId()).toList())));
             request = (ObjectNode) original.deepCopy();
             // Preserve the full settings/source set for the same pooled risk sample; select one output SKU.
             request.set("productIds", mapper.valueToTree(List.of(r.productId)));

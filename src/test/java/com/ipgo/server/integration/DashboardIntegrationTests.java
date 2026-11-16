@@ -213,29 +213,84 @@ class DashboardIntegrationTests extends DatabaseIntegrationTest {
     }
 
     @Test
-    void detailTrendUsesLatestDoneUploadPerDate() throws Exception {
+    void detailTrendUsesLatestRevisionPerPeriod() throws Exception {
         long userId = newUser();
         long warehouse = warehouseOf(userId);
         long product = product(userId, "8800000000001", "케어트릿 120g");
         long first = upload(warehouse, LocalDate.of(2026, 10, 1), "DONE");
         long overwritten = upload(warehouse, LocalDate.of(2026, 10, 1), "DONE");
-        long failed = upload(warehouse, LocalDate.of(2026, 10, 1), "FAILED");
         daily(product, first, LocalDate.of(2026, 10, 1), "10.000", "2.000", true);
         daily(product, first, LocalDate.of(2026, 10, 2), "0.000", "0.000", false);
         daily(product, overwritten, LocalDate.of(2026, 10, 2), "7.600", "1.200", true);
-        daily(product, failed, LocalDate.of(2026, 10, 3), "99.000", "9.000", true);
 
         get(userId, detail(product))
-                .andExpect(jsonPath("trend.length()").value(2))
-                .andExpect(jsonPath("trend[0].date").value("2026-10-01"))
-                .andExpect(jsonPath("trend[0].closingQty").value(10))
+                .andExpect(jsonPath("trend.length()").value(1))
+                .andExpect(jsonPath("trend[0].date").value("2026-10-02"))
                 // 덮어쓴 업로드 값을 쓰고, 재고는 내림 · 출고는 올림으로 보여준다.
-                .andExpect(jsonPath("trend[1].closingQty").value(7))
-                .andExpect(jsonPath("trend[1].outboundQty").value(2))
-                .andExpect(jsonPath("trend[1].isValidObservation").value(true));
+                .andExpect(jsonPath("trend[0].closingQty").value(7))
+                .andExpect(jsonPath("trend[0].outboundQty").value(2))
+                .andExpect(jsonPath("trend[0].isValidObservation").value(true));
         get(userId, detail(product) + "?from=2026-10-02&to=2026-10-02")
                 .andExpect(jsonPath("trend.length()").value(1))
                 .andExpect(jsonPath("trend[0].date").value("2026-10-02"));
+    }
+
+    @Test
+    void detailTrendShortenedMonthDropsOldTailAndPreservesOtherMonths() throws Exception {
+        long userId = newUser();
+        long warehouse = warehouseOf(userId);
+        long product = product(userId, "8800000000001", "부분 월 검증");
+        long september = upload(warehouse, LocalDate.of(2026, 9, 1), "DONE");
+        long old = upload(warehouse, LocalDate.of(2026, 10, 1), "DONE");
+        long current = upload(warehouse, LocalDate.of(2026, 10, 1), "DONE");
+        daily(product, september, LocalDate.of(2026, 9, 30), "7", "2", true);
+        daily(product, old, LocalDate.of(2026, 10, 30), "99", "9", true);
+        daily(product, current, LocalDate.of(2026, 10, 16), "1", "2", true);
+        get(userId, detail(product))
+                .andExpect(jsonPath("trend.length()").value(2))
+                .andExpect(jsonPath("trend[0].date").value("2026-09-30"))
+                .andExpect(jsonPath("trend[1].date").value("2026-10-16"));
+        get(userId, detail(product) + "?from=2026-10-17&to=2026-10-31")
+                .andExpect(jsonPath("trend.length()").value(0));
+    }
+
+    @Test
+    void detailTrendDoesNotReviveOlderDoneRevisionWhenLatestIsNotDone() throws Exception {
+        for (String state : List.of("FAILED", "PROCESSING")) {
+            long userId = newUser();
+            long warehouse = warehouseOf(userId);
+            long product = product(userId, "8800000000001", "최신 상태 검증");
+            long september = upload(warehouse, LocalDate.of(2026, 9, 1), "DONE");
+            long old = upload(warehouse, LocalDate.of(2026, 10, 1), "DONE");
+            long current = upload(warehouse, LocalDate.of(2026, 10, 1), state);
+            daily(product, september, LocalDate.of(2026, 9, 30), "7", "2", true);
+            daily(product, old, LocalDate.of(2026, 10, 30), "99", "9", true);
+            daily(product, current, LocalDate.of(2026, 10, 31), "88", "8", true);
+            get(userId, detail(product))
+                    .andExpect(jsonPath("trend.length()").value(1))
+                    .andExpect(jsonPath("trend[0].date").value("2026-09-30"));
+            get(userId, detail(product) + "?from=2026-10-01&to=2026-10-31")
+                    .andExpect(jsonPath("trend.length()").value(0));
+        }
+    }
+
+    @Test
+    void detailTrendUsesRevisionNumberInsteadOfUploadIdAndDoesNotReviveRemovedSku() throws Exception {
+        long userId = newUser();
+        long warehouse = warehouseOf(userId);
+        long product = product(userId, "8800000000001", "revision 검증");
+        long first = upload(warehouse, LocalDate.of(2026, 10, 1), "DONE");
+        long laterId = upload(warehouse, LocalDate.of(2026, 10, 1), "DONE");
+        daily(product, first, LocalDate.of(2026, 10, 1), "10", "2", true);
+        daily(product, laterId, LocalDate.of(2026, 10, 30), "99", "9", true);
+        jdbc.update("UPDATE upload_files SET revision_no = 3 WHERE id = ?", first);
+        get(userId, detail(product))
+                .andExpect(jsonPath("trend.length()").value(1))
+                .andExpect(jsonPath("trend[0].date").value("2026-10-01"));
+        // 최신 파일에 이 상품의 행이 없으면 이전 파일에서 되살리지 않는다.
+        jdbc.update("UPDATE upload_files SET revision_no = 4 WHERE id = ?", laterId);
+        jdbc.update("DELETE FROM product_daily_stocks WHERE upload_file_id = ?", laterId);
+        get(userId, detail(product)).andExpect(jsonPath("trend.length()").value(0));
     }
 
     @Test
@@ -245,26 +300,26 @@ class DashboardIntegrationTests extends DatabaseIntegrationTest {
         long product = product(userId, "8800000000001", "케어트릿 120g");
         long lastYear = upload(warehouse, LocalDate.of(2025, 10, 1), "DONE");
         long lastYearFixed = upload(warehouse, LocalDate.of(2025, 10, 1), "DONE");
-        long failed = upload(warehouse, LocalDate.of(2025, 10, 1), "FAILED");
         long thisYear = upload(warehouse, LocalDate.of(2026, 10, 1), "DONE");
         daily(product, lastYear, LocalDate.of(2025, 10, 1), "20.000", "3.000", true);
         daily(product, lastYear, LocalDate.of(2025, 10, 2), "17.000", "9.000", true);
-        // 같은 날짜를 다시 올린 작년 값을 쓰고, 실패한 업로드는 보지 않는다. 출고는 올림이다.
+        // 작년도 월별 최신 revision만 쓴다. 출고는 올림이다.
         daily(product, lastYearFixed, LocalDate.of(2025, 10, 2), "17.000", "4.200", true);
-        daily(product, failed, LocalDate.of(2025, 10, 3), "0.000", "99.000", true);
         daily(product, thisYear, LocalDate.of(2026, 10, 1), "10.000", "2.000", true);
         daily(product, thisYear, LocalDate.of(2026, 10, 2), "8.000", "2.000", true);
         daily(product, thisYear, LocalDate.of(2026, 10, 3), "6.000", "2.000", true);
 
         get(userId, detail(product) + "?from=2026-10-01&to=2026-10-03")
                 .andExpect(jsonPath("trend.length()").value(3))
-                .andExpect(jsonPath("trend[0].lastYearOutboundQty").value(3))
+                .andExpect(jsonPath("trend[0].lastYearOutboundQty").value(org.hamcrest.Matchers.nullValue()))
                 .andExpect(jsonPath("trend[1].lastYearOutboundQty").value(5))
                 // 작년 기록이 없으면 null이다.
                 .andExpect(jsonPath("trend[2].lastYearOutboundQty").value(org.hamcrest.Matchers.nullValue()));
         // 작년 기간만 조회하면 그 전 해 기록이 없으니 모두 null이다.
         get(userId, detail(product) + "?from=2025-10-01&to=2025-10-02")
-                .andExpect(jsonPath("trend[0].outboundQty").value(3))
+                .andExpect(jsonPath("trend.length()").value(1))
+                .andExpect(jsonPath("trend[0].date").value("2025-10-02"))
+                .andExpect(jsonPath("trend[0].outboundQty").value(5))
                 .andExpect(jsonPath("trend[0].lastYearOutboundQty").value(org.hamcrest.Matchers.nullValue()));
     }
 

@@ -2,6 +2,9 @@
 
 고정19일 모델의 요청·저장·버전/멱등 계약과 로컬 통합 검사는 [LGBM19 연결 계약](docs/decisions/model19-contract.md)을 따릅니다. 기본 계산은 B이며, 승인된 개발 배포에서 계산 방식과 정확한 모델 버전을 명시해 전환할 수 있습니다.
 
+SKU 재고·출고 추이와 전년 비교는 계산과 동일하게 월별 최신 업로드 revision의 완료 자료를 사용합니다. 같은 달을 짧은 기간으로 덮어쓰면 이전 파일의 나머지 날짜를 추이에 합치지 않습니다.
+CUSTOM은 새 계산이 보존한 전체 revision·상태를 검증하므로, 계산 전부터 제외된 과거 실패와 계산 이후의 자료 변경을 구분합니다. 과거 snapshot은 기존 검사를 유지합니다.
+
 배포용 DB task는 V35까지 적용하고 migration 이력35개와 Server 역할의 V33/V34/V35 컬럼 접근을 검증합니다. 실제 실행은 백업과 유지보수 승인 뒤 수행하며 기존 Server·AI 완전 중지 gate를 유지합니다.
 
 신규 계정의 체험은 가입·조회 때가 아니라 명시적으로 선택한 순간 시작합니다. `planChosenAt`·`POST /api/billing/trial/start`·V34 기존 계정 호환 및 Client 연동/적용 조건은 [체험 선택 계약](docs/decisions/0021-explicit-trial-choice.md)을 따릅니다. 해당 Client 연결 전 Server 단독 배포는 하지 않습니다.

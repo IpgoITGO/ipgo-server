@@ -15,6 +15,7 @@ import com.ipgo.server.repository.CalculationRunRepository;
 import com.ipgo.server.repository.InventoryUnitRepository;
 import com.ipgo.server.repository.ProductRepository;
 import com.ipgo.server.repository.ReplenishmentSettingRepository;
+import com.ipgo.server.repository.UploadFileRepository;
 import com.ipgo.server.util.DisplayQuantities;
 
 import java.math.BigDecimal;
@@ -27,6 +28,8 @@ import java.util.Optional;
 import tools.jackson.databind.JsonNode;
 
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.core.namedparam.MapSqlParameterSource;
+import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -48,12 +51,14 @@ public class ProductDetailService {
     private final Clock clock;
     private final tools.jackson.databind.json.JsonMapper mapper;
     private final DemandShiftService demandShifts;
+    private final UploadFileRepository uploads;
+    private final NamedParameterJdbcTemplate trendJdbc;
 
     public ProductDetailService(ProductRepository products, WarehouseService warehouses,
             ReplenishmentSettingRepository settings, CalculationRunRepository runs,
             CalculationResultRepository results, InventoryUnitRepository inventoryUnits, JdbcTemplate jdbc,
             Clock clock, tools.jackson.databind.json.JsonMapper mapper, ReviewCycleSuggestionService suggestions,
-            DemandShiftService demandShifts) {
+            DemandShiftService demandShifts, UploadFileRepository uploads) {
         this.products = products;
         this.demandShifts = demandShifts;
         this.warehouses = warehouses;
@@ -65,6 +70,8 @@ public class ProductDetailService {
         this.jdbc = jdbc;
         this.clock = clock;
         this.mapper = mapper;
+        this.uploads = uploads;
+        this.trendJdbc = new NamedParameterJdbcTemplate(jdbc);
     }
 
     @Transactional(readOnly = true)
@@ -84,7 +91,7 @@ public class ProductDetailService {
                 .map(InventoryUnit::getReceivedOn).orElse(null);
         var summary = new ProductDetail.Product(product.getId(), product.getSkuBarcode(), product.getSkuName(),
                 warehouse.map(Warehouse::getName).orElse(null));
-        List<ProductDetail.Trend> trend = trend(productId, from, to);
+        List<ProductDetail.Trend> trend = trend(productId, warehouse, from, to);
         // #193 대시보드와 같은 계산 결과 기준의 판매 급변
         DemandShift demandShift = run.map(r -> demandShifts.forRun(r).get(productId)).orElse(null);
         if (result.isEmpty()) {
@@ -101,39 +108,43 @@ public class ProductDetailService {
                 result(calculated, needStatus, facts), accuracy(calculated, firstInboundOn, facts), trend, demandShift);
     }
 
-    // 정제가 끝난(DONE) 업로드의 상품 일별 수불. 같은 날짜가 덮어쓰기로 여러 번 올라왔으면 가장 최근 업로드를 쓴다.
+    // 월별 최신 revision 중 DONE 파일의 상품 일별 수불. 덮어쓴 파일의 날짜를 합치지 않는다.
     // 날짜마다 작년 같은 월·일의 출고를 같이 붙인다(#158). 작년 기록이 없으면 null이다.
-    private List<ProductDetail.Trend> trend(long productId, LocalDate from, LocalDate to) {
-        LocalDate end = to != null ? to : jdbc.queryForObject("""
-                SELECT MAX(s.stock_date) FROM product_daily_stocks s
-                JOIN upload_files u ON u.id = s.upload_file_id
-                WHERE s.product_id = ? AND u.status = 'DONE'
-                """, LocalDate.class, productId);
+    private List<ProductDetail.Trend> trend(long productId, Optional<Warehouse> warehouse, LocalDate from, LocalDate to) {
+        if (warehouse.isEmpty()) return List.of();
+        // 계산과 같이 월별 최신 revision을 먼저 고른 뒤 DONE 파일만 쓴다.
+        List<Long> sources = uploads.findLatestPerPeriod(warehouse.get().getId()).stream()
+                .filter(u -> "DONE".equals(u.getStatus())).map(u -> u.getId()).toList();
+        if (sources.isEmpty()) return List.of();
+        var params = new MapSqlParameterSource("product", productId).addValue("sources", sources);
+        LocalDate end = to != null ? to : trendJdbc.queryForObject("""
+                SELECT MAX(stock_date) FROM product_daily_stocks
+                WHERE product_id = :product AND upload_file_id IN (:sources)
+                """, params, LocalDate.class);
         if (end == null) return List.of();
         LocalDate start = from != null ? from : end.minusDays(DEFAULT_TREND_DAYS - 1);
         Map<LocalDate, Long> lastYearOutbound = new HashMap<>();
-        for (DailyStock day : dailyStocks(productId, lastYearOf(start), lastYearOf(end))) {
+        for (DailyStock day : dailyStocks(productId, sources, lastYearOf(start), lastYearOf(end))) {
             lastYearOutbound.put(day.date(), DisplayQuantities.demand(day.outbound()));
         }
-        return dailyStocks(productId, start, end).stream().map(day -> new ProductDetail.Trend(day.date(),
+        return dailyStocks(productId, sources, start, end).stream().map(day -> new ProductDetail.Trend(day.date(),
                 DisplayQuantities.stock(day.closing()), DisplayQuantities.demand(day.outbound()), day.valid(),
                 lastYearOutbound.get(lastYearOf(day.date())))).toList();
     }
 
     private record DailyStock(LocalDate date, BigDecimal closing, BigDecimal outbound, boolean valid) { }
 
-    private List<DailyStock> dailyStocks(long productId, LocalDate start, LocalDate end) {
-        return jdbc.query("""
+    private List<DailyStock> dailyStocks(long productId, List<Long> sources, LocalDate start, LocalDate end) {
+        var params = new MapSqlParameterSource("product", productId).addValue("sources", sources)
+                .addValue("start", start).addValue("end", end);
+        return trendJdbc.query("""
                 SELECT s.stock_date, s.closing_qty, s.outbound_qty, s.is_valid_observation
                 FROM product_daily_stocks s
-                WHERE s.product_id = ? AND s.stock_date BETWEEN ? AND ?
-                  AND s.upload_file_id = (
-                      SELECT MAX(l.upload_file_id) FROM product_daily_stocks l
-                      JOIN upload_files u ON u.id = l.upload_file_id
-                      WHERE l.product_id = s.product_id AND l.stock_date = s.stock_date AND u.status = 'DONE')
+                WHERE s.product_id = :product AND s.stock_date BETWEEN :start AND :end
+                  AND s.upload_file_id IN (:sources)
                 ORDER BY s.stock_date
-                """, (rs, i) -> new DailyStock(rs.getObject(1, LocalDate.class), rs.getBigDecimal(2),
-                        rs.getBigDecimal(3), rs.getBoolean(4)), productId, start, end);
+                """, params, (rs, i) -> new DailyStock(rs.getObject(1, LocalDate.class), rs.getBigDecimal(2),
+                        rs.getBigDecimal(3), rs.getBoolean(4)));
     }
 
     // 엔진 계산식 A와 같은 "작년 같은 날": 같은 월·일. minusYears는 2/29를 작년 2/28로 맞춘다.

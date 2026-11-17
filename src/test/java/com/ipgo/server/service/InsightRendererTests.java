@@ -15,6 +15,33 @@ class InsightRendererTests {
         r=(ObjectNode)mapper.readTree(getClass().getResourceAsStream("/insight/result.json"));
     }
     ObjectNode input() { return (ObjectNode)r.path("insightInput"); }
+    void model() {
+        risk("INSUFFICIENT_SAMPLE");
+        r.put("method", "LGBM19").putNull("riskStatus");
+        r.put("methodFallback", false).put("targetStockQty", 128.2);
+        input().put("method", "LGBM19").put("riskStatus", "NOT_COMPUTED");
+        input().withArray("placeholders").add("target_stock");
+    }
+    @Test void modelUsesTargetStockAndHonestRiskFallbackWithoutAbFacts() {
+        model();
+        var p = renderer.prepare(r, "2026-09-01");
+        assertThat(p.values()).containsEntry("method", "예측 모델").containsEntry("target_stock", "129");
+        assertThat(p.values()).doesNotContainKeys("multiplier", "formula_desc", "risk_pre", "risk_basis", "risk_sample_size");
+        assertThat(p.input().path("method").asText()).isEqualTo("LGBM19");
+        assertThat(p.fallback()).contains("목표 재고 129개", "이 예측 방식에서는 품절 위험을 산출하지 않았습니다.")
+                .doesNotContain("표본", "계산식", "여유 배수", "확률");
+        assertThat(renderer.render("{{method}}의 목표 재고는 {{target_stock}}개입니다.", p.values()))
+                .isEqualTo("예측 모델의 목표 재고는 129개입니다.");
+        assertThat(renderer.prepareHistorical(r, "2026-09-01").input().path("riskStatus").asText()).isEqualTo("NOT_COMPUTED");
+    }
+    @Test void modelCannotInventRiskOrUseAbPlaceholders() {
+        model(); input().withArray("placeholders").add("multiplier");
+        assertThatThrownBy(() -> renderer.prepare(r, "2026-09-01")).isInstanceOf(IllegalArgumentException.class);
+        model(); r.put("riskStatus", "INSUFFICIENT_SAMPLE");
+        assertThatThrownBy(() -> renderer.prepare(r, "2026-09-01")).isInstanceOf(IllegalArgumentException.class);
+        model(); r.putNull("targetStockQty");
+        assertThatThrownBy(() -> renderer.prepare(r, "2026-09-01")).isInstanceOf(IllegalArgumentException.class);
+    }
     void risk(String status) {
         r.put("riskStatus",status); input().put("riskStatus",status);
         var names=input().putArray("placeholders");

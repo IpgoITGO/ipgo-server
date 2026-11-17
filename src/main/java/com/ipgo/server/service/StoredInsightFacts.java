@@ -16,6 +16,8 @@ public class StoredInsightFacts {
     private final JdbcTemplate jdbc;
     private final JsonMapper mapper;
     private final InsightRenderer renderer;
+    @org.springframework.beans.factory.annotation.Value("${ipgo.insight.model-enabled:false}")
+    private boolean modelEnabled;
     public StoredInsightFacts(JdbcTemplate jdbc, JsonMapper mapper, InsightRenderer renderer) {
         this.jdbc = jdbc; this.mapper = mapper; this.renderer = renderer;
     }
@@ -23,7 +25,7 @@ public class StoredInsightFacts {
     InsightRenderer.Prepared restore(long resultId, long owner) {
         try {
             var rows = jdbc.query("""
-                    SELECT r.*, cr.as_of_date, cr.status AS run_status, cr.warehouse_id
+                    SELECT r.*, cr.as_of_date, cr.status AS run_status, cr.warehouse_id, cr.selection_snapshot
                     FROM calculation_results r JOIN calculation_runs cr ON cr.id=r.run_id WHERE r.id=?
                     """, (rs, n) -> {
                 var f = mapper.createObjectNode();
@@ -33,6 +35,15 @@ public class StoredInsightFacts {
                         {"pre_arrival_risk","preArrivalRisk"},{"risk_basis","riskBasis"},{"risk_sample_size","riskSampleSize"},
                         {"forecast_range_low","forecastRangeLow"},{"forecast_range_high","forecastRangeHigh"}};
                 for (var field : fields) f.set(field[1], mapper.valueToTree(rs.getObject(field[0])));
+                if ("LGBM19".equals(f.path("method").asText())) {
+                    require(modelEnabled);
+                    var snapshot = EngineJobs.readDatabaseJson(mapper, rs.getString("selection_snapshot"));
+                    var metadata = snapshot.path("resultFacts").path("" + rs.getLong("product_id"));
+                    require(metadata.hasNonNull("modelVersion") && metadata.hasNonNull("targetStockQty")
+                            && !metadata.path("modelFallback").asBoolean());
+                    f.set("targetStockQty", metadata.get("targetStockQty"));
+                    f.set("modelVersion", metadata.get("modelVersion"));
+                }
                 return new Historical(f, EngineJobs.readDatabaseJson(mapper, rs.getString("input_snapshot")),
                         rs.getLong("product_id"), rs.getLong("warehouse_id"), rs.getDate("origin_date").toLocalDate(),
                         rs.getDate("start_date").toLocalDate(), rs.getDate("as_of_date").toLocalDate(),
@@ -77,6 +88,13 @@ public class StoredInsightFacts {
                 s.set("unmetDemandQty", mapper.valueToTree(rs.getBigDecimal(6)));
                 s.set("postArrivalRisk", mapper.valueToTree(rs.getBigDecimal(7)));
             }, resultId);
+            if ("LGBM19".equals(f.path("method").asText())) {
+                require("LGBM19".equals(preferred) && f.path("modelVersion").equals(input.path("policy").path("modelVersion")));
+                require(!f.hasNonNull("preArrivalRisk") && !f.hasNonNull("riskBasis"));
+                for (var s : scenarios) require(!s.hasNonNull("postArrivalRisk"));
+                f.putNull("riskStatus");
+                return renderer.prepareHistorical(f, h.origin().toString());
+            }
             require(h.validDays() != null && h.validDays() >= 7 && f.path("riskSampleSize").isNumber()
                     && f.path("riskSampleSize").decimalValue().signum() >= 0);
             boolean anyRisk = f.hasNonNull("preArrivalRisk") || f.hasNonNull("riskBasis");

@@ -27,6 +27,8 @@ public class InsightGeneration {
     private final Duration timeout;
     private InsightCallWindow callWindow;
     private MonthlyInsightBudget monthlyBudget;
+    @org.springframework.beans.factory.annotation.Value("${ipgo.insight.model-enabled:false}")
+    private boolean modelEnabled;
     @org.springframework.beans.factory.annotation.Autowired
     void configureBudget(MonthlyInsightBudget budget) { this.monthlyBudget = budget; }
     @org.springframework.beans.factory.annotation.Autowired
@@ -44,7 +46,7 @@ public class InsightGeneration {
     public void prepare(long resultId, JsonNode result, String asOf) {
         String status = "DISABLED", reason = "LLM_DISABLED";
         JsonNode payload = mapper.createObjectNode();
-        if (enabled && windowOpen()) {
+        if (enabled && windowOpen() && (modelEnabled || !"LGBM19".equals(result.path("method").asText()))) {
             try {
                 renderer.prepare(result, asOf); // Validate engine facts before normalizing to stored precision.
                 var p = renderer.prepareStored(storedFacts(resultId, result), asOf);

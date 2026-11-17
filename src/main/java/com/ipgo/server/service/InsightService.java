@@ -96,7 +96,8 @@ public class InsightService {
         Long startStock = DisplayQuantities.stock(result.getStartStockQty());
         if (result.getMethod() == null || forecast == null || startStock == null) return null;
         long planned = result.getPlannedReceiptQty() == null ? 0 : result.getPlannedReceiptQty();
-        return ("계산식 %s로 예측한 커버 기간 %,d일의 예상 출고량은 %,d개이고, "
-                + "현재 재고 %,d개와 도착 예정 물량 %,d개로 충당되어 이번에는 입고가 필요하지 않습니다.").formatted(result.getMethod(), result.getHorizonDays(), forecast, startStock, planned);
+        String method = "LGBM19".equals(result.getMethod()) ? "예측 모델" : "계산식 " + result.getMethod();
+        return ("%s로 예측한 커버 기간 %,d일의 예상 출고량은 %,d개이고, "
+                + "현재 재고 %,d개와 도착 예정 물량 %,d개로 충당되어 이번에는 입고가 필요하지 않습니다.").formatted(method, result.getHorizonDays(), forecast, startStock, planned);
     }
 }

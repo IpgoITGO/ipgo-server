@@ -90,6 +90,15 @@ class InsightIntegrationTests extends DatabaseIntegrationTest {
     }
 
     @Test
+    void modelNotNeededUsesModelDisplayNameWithoutAnAbFormula() throws Exception {
+        long userId = newUser();
+        long id = result(userId, "NOT_NEEDED", null);
+        jdbc.update("UPDATE calculation_results SET method='LGBM19',horizon_days=19,forecast_outbound_qty=10,start_stock_qty=20,planned_receipt_qty=0 WHERE id=?", id);
+        insight(userId, id).andExpect(jsonPath("mode").value("FIXED"))
+                .andExpect(jsonPath("text").value("예측 모델로 예측한 커버 기간 19일의 예상 출고량은 10개이고, 현재 재고 20개와 도착 예정 물량 0개로 충당되어 이번에는 입고가 필요하지 않습니다."));
+    }
+
+    @Test
     void readsStoredInsightOrSaysGenerating() throws Exception {
         long userId = newUser();
         long ai = result(userId, "OK", null);

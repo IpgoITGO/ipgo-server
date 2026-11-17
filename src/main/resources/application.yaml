@@ -52,6 +52,7 @@ ipgo:
     merchant-id: ${IPGO_TOSS_MERCHANT_ID:}
     return-origin: ${IPGO_BILLING_RETURN_ORIGIN:http://localhost:5173}
   insight:
+    model-enabled: ${IPGO_INSIGHT_MODEL_ENABLED:false}
     batch-enabled: ${IPGO_INSIGHT_BATCH_ENABLED:false}
     single-result-enabled: ${IPGO_INSIGHT_SINGLE_RESULT_ENABLED:false}
     enabled: ${IPGO_INSIGHT_ENABLED:false}

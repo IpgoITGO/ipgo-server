@@ -77,6 +77,11 @@ on:
         required: false
         default: false
         type: boolean
+      acceptance_timing_enabled:
+        description: "Temporarily enable payload-free calculation acceptance timing"
+        required: false
+        default: false
+        type: boolean
       engine_connection_approved:
         description: "Approve this exact engine connection deployment after integration validation"
         required: false
@@ -149,6 +154,7 @@ jobs:
       AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
       MAINTENANCE_APPROVED: ${{ inputs.maintenance_approved }}
       ENGINE_ENABLED: ${{ inputs.engine_enabled }}
+      ACCEPTANCE_TIMING_ENABLED: ${{ inputs.acceptance_timing_enabled }}
       ENGINE_DEFAULT_METHOD: ${{ inputs.engine_default_method }}
       ENGINE_MODEL_VERSION: ${{ inputs.engine_model_version }}
       ENGINE_CONNECTION_APPROVED: ${{ inputs.engine_connection_approved }}

@@ -158,6 +158,35 @@ class DevDeploymentTests(unittest.TestCase):
     def rendered(self):
         return module.render(self.task, IMAGE, self.env)
 
+    def test_acceptance_timing_default_off_enable_and_disable_preserve_settings(self):
+        original=copy.deepcopy(self.task)
+        self.task['containerDefinitions'][0]['environment'].append(
+            {'name':'IPGO_ENGINE_ACCEPTANCE_TIMING_ENABLED','value':'true'})
+        for value in ('true','false'):
+            with self.subTest(value=value):
+                env=dict(self.env,ACCEPTANCE_TIMING_ENABLED=value)
+                task=module.render(self.task,IMAGE,env)
+                server=task['containerDefinitions'][0]
+                values={e['name']:e['value'] for e in server['environment']}
+                self.assertEqual(values['IPGO_ENGINE_ACCEPTANCE_TIMING_ENABLED'],value)
+                self.assertEqual(values['KEEP_SETTING'],'preserve-me')
+                self.assertEqual(server['secrets'],original['containerDefinitions'][0]['secrets'])
+        values={e['name']:e['value'] for e in self.rendered()['containerDefinitions'][0]['environment']}
+        self.assertEqual(values['IPGO_ENGINE_ACCEPTANCE_TIMING_ENABLED'],'false')
+        self.assertEqual(sum(e['name']=='IPGO_ENGINE_ACCEPTANCE_TIMING_ENABLED'
+                             for e in self.rendered()['containerDefinitions'][0]['environment']),1)
+
+    def test_acceptance_timing_strict_flag_and_secret_conflict(self):
+        for value in ('TRUE','1','', ' false'):
+            with self.subTest(value=value),self.assertRaises(module.InvalidDeployment):
+                module.settings(dict(self.env,ACCEPTANCE_TIMING_ENABLED=value))
+        self.task['containerDefinitions'][0]['secrets'].append(
+            {'name':'IPGO_ENGINE_ACCEPTANCE_TIMING_ENABLED','valueFrom':'synthetic-secret-ref'})
+        with self.assertRaises(module.InvalidDeployment): self.rendered()
+        workflow=(ROOT/'.github/workflows/deploy-dev.yml').read_text()
+        self.assertIn('acceptance_timing_enabled:',workflow)
+        self.assertIn('ACCEPTANCE_TIMING_ENABLED: ${{ inputs.acceptance_timing_enabled }}',workflow)
+
     def test_approved_activation_preserves_other_settings_and_source(self):
         before=copy.deepcopy(self.task)
         result=self.rendered()

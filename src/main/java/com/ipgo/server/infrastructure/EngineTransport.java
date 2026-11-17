@@ -2,6 +2,7 @@ package com.ipgo.server.infrastructure;
 
 import com.ipgo.server.service.EngineJobs;
 import com.ipgo.server.service.EngineResults;
+import com.ipgo.server.service.EngineTiming;
 import java.time.Duration;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -21,6 +22,8 @@ import software.amazon.awssdk.services.sqs.SqsClient;
 @ConditionalOnProperty(name = {"ipgo.engine.enabled", "ipgo.engine.transport-enabled"}, havingValue = "true")
 public class EngineTransport {
     private static final Logger log = LoggerFactory.getLogger(EngineTransport.class);
+    @Value("${ipgo.engine.acceptance-timing-enabled:false}")
+    private boolean acceptanceTimingEnabled;
     private final EngineJobs jobs;
     private final EngineResults results;
     private final String jobsUrl;
@@ -50,7 +53,15 @@ public class EngineTransport {
             for (var job : jobs.due()) {
                 if (!jobs.claim(job.id())) continue;
                 try {
-                    sqs.sendMessage(r -> r.queueUrl(jobsUrl).messageBody(jobs.envelope(job)));
+                    String envelope = jobs.envelope(job);
+                    long sendStart = System.nanoTime();
+                    boolean sent = false;
+                    try {
+                        sqs.sendMessage(r -> r.queueUrl(jobsUrl).messageBody(envelope));
+                        sent = true;
+                    } finally {
+                        EngineTiming.dispatch(acceptanceTimingEnabled, job, sendStart, sent);
+                    }
                     jobs.sent(job.id());
                 } catch (Exception failure) { log.warn("Engine dispatch deferred; error_type={}", failure.getClass().getSimpleName()); }
             }

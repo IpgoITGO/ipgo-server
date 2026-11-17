@@ -60,7 +60,11 @@ class ReviewCycleSuggestionIntegrationTests extends DatabaseIntegrationTest {
                 .andExpect(jsonPath("reviewCycleSuggestion.reviewCycleDays").value(18))
                 .andExpect(jsonPath("reviewCycleSuggestion.from").value("2025-11-01"))
                 .andExpect(jsonPath("reviewCycleSuggestion.to").value("2026-10-31"))
-                .andExpect(jsonPath("reviewCycleSuggestion.productCount").value(1));
+                .andExpect(jsonPath("reviewCycleSuggestion.productCount").value(1))
+                // #243 세 칸 추천값. 확인 전에는 기본값 칸과 같다.
+                .andExpect(jsonPath("suggestion.leadTimeDays").value(5))
+                .andExpect(jsonPath("suggestion.reviewCycleDays").value(18))
+                .andExpect(jsonPath("suggestion.orderUnitQty").value(1));
         mvc.perform(get("/api/products").with(jwt().jwt(j -> j.subject(""+owner))))
                 .andExpect(status().isOk()).andExpect(jsonPath("items[0].settings.reviewCycleDays").value(18))
                 .andExpect(jsonPath("items[0].overridden").isEmpty());
@@ -77,7 +81,11 @@ class ReviewCycleSuggestionIntegrationTests extends DatabaseIntegrationTest {
         s1(null,"ESTIMATED",false);
         mvc.perform(get("/api/replenishment-settings").with(jwt().jwt(j -> j.subject(""+owner))))
                 .andExpect(jsonPath("reviewCycleBasis").isEmpty())
-                .andExpect(jsonPath("reviewCycleSuggestion").isEmpty());
+                .andExpect(jsonPath("reviewCycleSuggestion").isEmpty())
+                // #243 입고 주기를 추정할 수 없으면 그 칸만 비운다.
+                .andExpect(jsonPath("suggestion.leadTimeDays").value(5))
+                .andExpect(jsonPath("suggestion.reviewCycleDays").isEmpty())
+                .andExpect(jsonPath("suggestion.orderUnitQty").value(1));
     }
     @Test void medianAcrossProductsIsRoundedLikeTheEngine() throws Exception {
         jdbc.update("INSERT INTO products(user_id,sku_barcode,sku_name) VALUES (?,'B','상품B')", owner);
@@ -143,6 +151,30 @@ class ReviewCycleSuggestionIntegrationTests extends DatabaseIntegrationTest {
         mvc.perform(get("/api/products/{id}/detail",product).with(jwt().jwt(j -> j.subject(""+owner))))
                 .andExpect(jsonPath("settings.reviewCycleDays").value(19))
                 .andExpect(jsonPath("settings.reviewCycleSource").value("PRODUCT"));
+    }
+    @Test void changedDefaultsStillComeWithAllThreeSuggestions() throws Exception {
+        // #243 기본값 세 칸을 모두 바꾼 뒤에도 추천값 세 칸을 준다. 수불부가 없으면 입고 주기만 비운다.
+        replenishment.saveDefaults(owner,new DefaultSettingsRequest(9,11,10L,false));
+        mvc.perform(get("/api/replenishment-settings").with(jwt().jwt(j -> j.subject(""+owner))))
+                .andExpect(status().isOk()).andExpect(jsonPath("confirmed").value(true))
+                .andExpect(jsonPath("leadTimeDays").value(9))
+                .andExpect(jsonPath("reviewCycleDays").value(11))
+                .andExpect(jsonPath("orderUnitQty").value(10))
+                .andExpect(jsonPath("reviewCycleSuggestion").isEmpty())
+                .andExpect(jsonPath("suggestion.leadTimeDays").value(5))
+                .andExpect(jsonPath("suggestion.reviewCycleDays").isEmpty())
+                .andExpect(jsonPath("suggestion.orderUnitQty").value(1));
+        done(warehouse,"2026-10",1,1,8,15);
+        mvc.perform(get("/api/replenishment-settings").with(jwt().jwt(j -> j.subject(""+owner))))
+                .andExpect(jsonPath("leadTimeDays").value(9))
+                .andExpect(jsonPath("orderUnitQty").value(10))
+                .andExpect(jsonPath("reviewCycleSuggestion.reviewCycleDays").value(7))
+                .andExpect(jsonPath("suggestion.leadTimeDays").value(5))
+                .andExpect(jsonPath("suggestion.reviewCycleDays").value(7))
+                .andExpect(jsonPath("suggestion.orderUnitQty").value(1));
+        // 추천값을 알려 주기만 하고 저장한 기본값은 그대로다.
+        assertThat(jdbc.queryForList("SELECT default_lead_time_days, default_review_cycle_days, default_order_unit_qty FROM warehouses WHERE id = ?",warehouse).getFirst())
+                .containsValues(9,11,10L);
     }
     @Test void simultaneousReportPersistenceAndUserConfirmationKeepConfirmedValue() throws Exception {
         var upload=pending(warehouse,"2026-10",1);

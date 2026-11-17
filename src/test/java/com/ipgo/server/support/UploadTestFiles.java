@@ -39,7 +39,7 @@ public final class UploadTestFiles {
                 """);
         parts.put("xl/worksheets/sheet1.xml", """
                 <worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
-                  <sheetData><row r="1"><c r="A1"><v>10</v></c></row></sheetData>
+                  <sheetData><row r="1"><c r="A1"><v>10</v></c><c r="F1" t="inlineStr"><is><t>입고일자</t></is></c></row></sheetData>
                 </worksheet>
                 """);
         return parts;

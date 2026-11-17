@@ -7,7 +7,7 @@ import java.util.Optional;
 
 // 입고 조건 세 칸. 창고 기본값과 상품별로 실제 적용되는 값에 함께 쓴다.
 public record ProductSettings(Integer leadTimeDays, Integer reviewCycleDays, Long orderUnitQty) {
-    // 확인 전 계산의 fallback. 화면의 정제 기반 제안은 ReviewCycleSuggestionService에서 조립한다.
+    // 확인 전 계산의 fallback이자 S1 suggestion의 리드타임 · 입고 단위(#243). 입고 주기 제안은 ReviewCycleSuggestionService에서 조립한다.
     static final ProductSettings SUGGESTED = new ProductSettings(5, null, 1L);
 
     public static ProductSettings defaults(Optional<Warehouse> warehouse) {

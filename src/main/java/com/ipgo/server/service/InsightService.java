@@ -32,11 +32,16 @@ public class InsightService {
     private final CalculationResultRepository results;
     private final ProductRepository products;
     private final JdbcTemplate jdbc;
+    private final ProductDetailService details;
+    private final tools.jackson.databind.json.JsonMapper mapper;
 
-    public InsightService(CalculationResultRepository results, ProductRepository products, JdbcTemplate jdbc) {
+    public InsightService(CalculationResultRepository results, ProductRepository products, JdbcTemplate jdbc,
+                          ProductDetailService details, tools.jackson.databind.json.JsonMapper mapper) {
         this.results = results;
         this.products = products;
         this.jdbc = jdbc;
+        this.details = details;
+        this.mapper = mapper;
     }
 
     // 정상 결과인데 아직 저장된 문장이 없으면 empty다. 화면은 "생성 중"을 보여주고 다시 조회한다.
@@ -51,7 +56,30 @@ public class InsightService {
                 SELECT mode, reason_code, rendered_text, created_at FROM ai_explanations WHERE result_id = ? AND status NOT IN ('PENDING', 'PROCESSING')
                 """, (rs, i) -> stored(resultId, rs.getString(1), rs.getString(2), rs.getString(3),
                         rs.getTimestamp(4)), resultId);
-        return stored.stream().findFirst();
+        return stored.stream().findFirst().map(view -> new Insight(view.resultId(), view.mode(), view.isFallback(),
+                view.text(), view.generatedAt(), view.failReason(), stale(userId, result)));
+    }
+
+    private boolean stale(long userId, CalculationResult result) {
+        var current = details.detail(userId, result.getProductId(), null, null);
+        if (current.result() == null || !result.getId().equals(current.result().resultId())) return true;
+        var raw = jdbc.queryForObject("SELECT input_snapshot FROM calculation_results WHERE id=?", String.class, result.getId());
+        try {
+            var snapshot = EngineJobs.readDatabaseJson(mapper, raw);
+            for (var setting : snapshot.path("settings")) {
+                if (setting.path("productId").asLong() != result.getProductId()) continue;
+                var now = current.settings();
+                return !sameNumber(setting.path("leadTimeDays"), now.leadTimeDays())
+                        || !sameNumber(setting.path("reviewCycleDays"), now.reviewCycleDays())
+                        || !sameNumber(setting.path("orderUnitQty"), now.orderUnitQty())
+                        || !sameNumber(setting.path("unitCost"), now.unitCost());
+            }
+        } catch (RuntimeException e) { /* Legacy snapshots without facts cannot establish a change. */ }
+        return false;
+    }
+    private static boolean sameNumber(tools.jackson.databind.JsonNode stored, Number current) {
+        return stored.isNumber() && current != null
+                && stored.decimalValue().compareTo(new java.math.BigDecimal(current.toString())) == 0;
     }
 
     // ipgo-ai 0002의 mode(LLM · TEMPLATE · NONE)를 명세 이름으로 바꾼다. 실패 사유가 있으면 LLM을 불렀다가 실패한 것이다.

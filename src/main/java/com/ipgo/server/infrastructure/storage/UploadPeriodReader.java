@@ -8,9 +8,11 @@ import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.time.DateTimeException;
 import java.time.LocalDate;
+import java.time.Period;
 import java.time.YearMonth;
 import java.time.ZoneId;
 import java.util.ArrayList;
+import java.util.BitSet;
 import java.util.List;
 import java.util.regex.Pattern;
 import java.util.zip.ZipFile;
@@ -22,6 +24,15 @@ import org.springframework.web.multipart.MultipartFile;
 
 /** Reads receipt dates from column F of the first worksheet, without loading the workbook into memory. */
 public final class UploadPeriodReader {
+    // 실제 수불부는 첫 워크시트 1행 F열 머리글이 입고일자다. 공백 차이만 허용한다(#249).
+    static final String RECEIPT_DATE_HEADER = "입고일자";
+    // 서비스가 다루는 수불부는 2000년 이후 자료다. 그보다 이른 값은 금액·수량 같은 숫자를 날짜 번호로 잘못 읽은 것이다.
+    static final LocalDate EARLIEST_RECEIPT_DATE = LocalDate.of(2000, 1, 1);
+    // 입고 예정일이 조금 앞서 적힐 수는 있어도 1년보다 먼 미래는 날짜로 보지 않는다. 예: 2,500,000 → 8744-10-06(#249).
+    static final Period LATEST_RECEIPT_DATE_AHEAD = Period.ofYears(1);
+    static final ZoneId BUSINESS_ZONE = ZoneId.of("Asia/Seoul");
+    static final String NOT_A_LEDGER = "수불부 형식이 아니에요. 입고일자(F열)가 있는 수불부를 올려 주세요.";
+    private static final Pattern BLANK = Pattern.compile("[\\s\\u00A0\\u3000]+");
     private static final Pattern CELL_REFERENCE = Pattern.compile("([A-Z]{1,3})[1-9]\\d*");
     private static final Pattern DATE = Pattern.compile(
             "^(\\d{4})[-./](\\d{1,2})[-./](\\d{1,2})(?:[ T](?:[01]\\d|2[0-3]):[0-5]\\d"
@@ -30,7 +41,7 @@ public final class UploadPeriodReader {
     private UploadPeriodReader() { }
 
     public static UploadPeriod resolve(MultipartFile file) {
-        return resolve(file, LocalDate.now(ZoneId.of("Asia/Seoul")));
+        return resolve(file, LocalDate.now(BUSINESS_ZONE));
     }
 
     static UploadPeriod resolve(MultipartFile file, LocalDate today) {
@@ -46,9 +57,12 @@ public final class UploadPeriodReader {
             try (var zip = new ZipFile(pending.toFile())) {
                 var workbook = workbook(zip);
                 String sheet = worksheet(zip, workbook.relationship());
-                LocalDate latest = latestDate(zip, sheet, sharedStrings(zip), workbook.date1904(),
-                        today.plusYears(1), file);
+                var shared = sharedStrings(zip);
+                var range = new DateRange(EARLIEST_RECEIPT_DATE, today.plus(LATEST_RECEIPT_DATE_AHEAD));
+                var scan = scan(zip, sheet, shared, workbook.date1904(), range);
+                if (!scan.ledger()) throw invalid(file, NOT_A_LEDGER);
                 if (named.isPresent()) return named.get();
+                LocalDate latest = scan.latest();
                 if (latest == null) throw invalid(file, "입고일자(F열)에 유효한 날짜가 없어요. 날짜를 확인해주세요.");
                 return new UploadPeriod(YearMonth.from(latest));
             }
@@ -63,6 +77,17 @@ public final class UploadPeriodReader {
     }
 
     private record Workbook(String relationship, boolean date1904) { }
+
+    /** Shared string dates by index, and the indexes whose text is the receipt-date header. */
+    private record SharedStrings(List<LocalDate> dates, BitSet headers) { }
+
+    private record DateRange(LocalDate earliest, LocalDate latest) {
+        LocalDate keep(LocalDate value) {
+            return value == null || value.isBefore(earliest) || value.isAfter(latest) ? null : value;
+        }
+    }
+
+    private record Scan(boolean ledger, LocalDate latest) { }
 
     private static Workbook workbook(ZipFile zip) throws IOException, XMLStreamException {
         String relationship = null;
@@ -108,10 +133,11 @@ public final class UploadPeriodReader {
         throw new XMLStreamException("Missing worksheet relationship");
     }
 
-    private static List<String> sharedStrings(ZipFile zip) throws IOException, XMLStreamException {
-        var dates = new ArrayList<String>();
+    private static SharedStrings sharedStrings(ZipFile zip) throws IOException, XMLStreamException {
+        var dates = new ArrayList<LocalDate>();
+        var headers = new BitSet();
         var entry = zip.getEntry("xl/sharedStrings.xml");
-        if (entry == null) return dates;
+        if (entry == null) return new SharedStrings(dates, headers);
         try (var input = zip.getInputStream(entry)) {
             var reader = reader(input);
             StringBuilder text = null;
@@ -130,21 +156,25 @@ public final class UploadPeriodReader {
                         if ("rPh".equals(reader.getLocalName())) phoneticDepth--;
                         if ("t".equals(reader.getLocalName())) inText = false;
                         if ("si".equals(reader.getLocalName())) {
-                            dates.add(text == null ? "" : text.toString());
+                            if (text != null && isHeader(text.toString())) headers.set(dates.size());
+                            dates.add(text == null ? null : date(text.toString()));
                             text = null;
                         }
                     }
                 }
             } finally { reader.close(); }
         }
-        return dates;
+        return new SharedStrings(dates, headers);
     }
 
-    private static LocalDate latestDate(ZipFile zip, String sheet, List<String> shared, boolean date1904,
-            LocalDate latestAllowed, MultipartFile file)
+    /**
+     * Streams the first worksheet. Row 1 must have the receipt-date header in column F; otherwise scanning stops
+     * at the end of the first row. Later rows give the latest column F date inside the plausible range.
+     */
+    private static Scan scan(ZipFile zip, String sheet, SharedStrings shared, boolean date1904, DateRange range)
             throws IOException, XMLStreamException {
         LocalDate latest = null;
-        boolean headerValid = false;
+        boolean ledger = false;
         try (var input = zip.getInputStream(zip.getEntry(sheet))) {
             var reader = reader(input);
             StringBuilder text = null;
@@ -152,7 +182,6 @@ public final class UploadPeriodReader {
             boolean value = false;
             int column = 0;
             int row = 0;
-            boolean headerCell = false;
             int phoneticDepth = 0;
             try {
                 while (reader.hasNext()) {
@@ -161,14 +190,14 @@ public final class UploadPeriodReader {
                         if ("rPh".equals(reader.getLocalName())) phoneticDepth++;
                         if ("row".equals(reader.getLocalName())) {
                             column = 0;
-                            String rowRef = reader.getAttributeValue(null, "r");
-                            row = rowRef == null ? row + 1 : Integer.parseInt(rowRef);
+                            row = rowIndex(reader.getAttributeValue(null, "r"), row);
+                            // Rows are stored in order, so a sheet whose first row is not row 1 has no header row.
+                            if (row != 1 && !ledger) return new Scan(false, null);
                         }
                         if ("c".equals(reader.getLocalName())) {
                             String ref = reader.getAttributeValue(null, "r");
                             column = ref == null ? column + 1 : columnIndex(ref);
                             text = column == 6 ? new StringBuilder() : null;
-                            headerCell = ref == null ? row == 1 : "F1".equals(ref);
                             type = reader.getAttributeValue(null, "t");
                         }
                         value = ("v".equals(reader.getLocalName()) || "t".equals(reader.getLocalName()))
@@ -179,24 +208,44 @@ public final class UploadPeriodReader {
                         if ("rPh".equals(reader.getLocalName())) phoneticDepth--;
                         if ("v".equals(reader.getLocalName()) || "t".equals(reader.getLocalName())) value = false;
                         if ("c".equals(reader.getLocalName()) && text != null) {
-                            if (headerCell) {
-                                String header = "s".equals(type) ? sharedText(text.toString(), shared) : text.toString();
-                                headerValid = "입고일자".equals(header.trim());
-                            } else {
-                                LocalDate candidate = cellDate(text.toString(), type, shared, date1904);
-                                if (candidate != null && !candidate.isBefore(LocalDate.of(2000, 1, 1))
-                                        && !candidate.isAfter(latestAllowed)
-                                        && (latest == null || candidate.isAfter(latest))) latest = candidate;
+                            if (row == 1) ledger = headerCell(text.toString(), type, shared);
+                            else {
+                                LocalDate candidate = range.keep(cellDate(text.toString(), type, shared, date1904));
+                                if (candidate != null && (latest == null || candidate.isAfter(latest))) latest = candidate;
                             }
                             text = null;
                         }
+                        if ("row".equals(reader.getLocalName()) && row == 1 && !ledger) return new Scan(false, null);
                     }
                 }
             } finally { reader.close(); }
         }
-        if (!headerValid) throw invalid(file,
-                "수불부 형식이 아니에요. 입고일자(F열)가 있는 수불부를 올려 주세요.");
-        return latest;
+        return new Scan(ledger, latest);
+    }
+
+    private static int rowIndex(String reference, int previous) throws XMLStreamException {
+        if (reference == null) return previous + 1;
+        try {
+            int row = Integer.parseInt(reference);
+            if (row < 1) throw new XMLStreamException("Invalid worksheet row reference");
+            return row;
+        } catch (NumberFormatException exception) {
+            throw new XMLStreamException("Invalid worksheet row reference");
+        }
+    }
+
+    private static boolean headerCell(String text, String type, SharedStrings shared) {
+        if ("s".equals(type)) {
+            try {
+                int index = Integer.parseInt(text.trim());
+                return index >= 0 && shared.headers().get(index);
+            } catch (NumberFormatException exception) { return false; }
+        }
+        return ("inlineStr".equals(type) || "str".equals(type)) && isHeader(text);
+    }
+
+    private static boolean isHeader(String text) {
+        return RECEIPT_DATE_HEADER.equals(BLANK.matcher(text).replaceAll(""));
     }
 
     private static int columnIndex(String reference) throws XMLStreamException {
@@ -207,10 +256,11 @@ public final class UploadPeriodReader {
         return column;
     }
 
-    private static LocalDate cellDate(String text, String type, List<String> shared, boolean date1904) {
+    private static LocalDate cellDate(String text, String type, SharedStrings shared, boolean date1904) {
         try {
             if ("s".equals(type)) {
-                return date(sharedText(text, shared));
+                int index = Integer.parseInt(text.trim());
+                return index >= 0 && index < shared.dates().size() ? shared.dates().get(index) : null;
             }
             if ("inlineStr".equals(type) || "str".equals(type) || "d".equals(type)) return date(text);
             if (type != null && !"n".equals(type)) return null;
@@ -224,13 +274,6 @@ public final class UploadPeriodReader {
             LocalDate value = base.plusDays(days);
             return value.getYear() <= 9999 ? value : null;
         } catch (NumberFormatException | DateTimeException exception) { return null; }
-    }
-
-    private static String sharedText(String text, List<String> shared) {
-        try {
-            int index = Integer.parseInt(text.trim());
-            return index >= 0 && index < shared.size() ? shared.get(index) : "";
-        } catch (NumberFormatException exception) { return ""; }
     }
 
     private static LocalDate date(String text) {

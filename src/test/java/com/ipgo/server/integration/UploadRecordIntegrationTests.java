@@ -229,8 +229,8 @@ class UploadRecordIntegrationTests extends DatabaseIntegrationTest {
         var parts = UploadTestFiles.parts();
         parts.put("xl/worksheets/sheet1.xml", """
                 <worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>
-                  <row r="1"><c r="F1" t="inlineStr"><is><t>입고일자</t></is></c></row>
-                  <row r="2"><c/><c/><c/><c/><c/><c t="inlineStr"><is><t>2026-11-20</t></is></c>
+                  <row><c/><c/><c/><c/><c/><c t="inlineStr"><is><t>입고일자</t></is></c></row>
+                  <row><c/><c/><c/><c/><c/><c t="inlineStr"><is><t>2026-11-20</t></is></c>
                     <c t="inlineStr"><is><t>2099-12-31</t></is></c></row>
                 </sheetData></worksheet>
                 """);
@@ -292,6 +292,29 @@ class UploadRecordIntegrationTests extends DatabaseIntegrationTest {
                 """);
         upload(newUser(), "재고.xlsx", UploadTestFiles.zip(parts, 0), false)
                 .andExpect(status().isAccepted()).andExpect(jsonPath("periodStart").value("2026-11-01"));
+    }
+
+    @Test
+    void householdBookWithoutMonthInNameIsRejectedBeforeStoringIt() throws Exception {
+        // 11/17 dev QA: F열 금액 2,500,000이 엑셀 날짜 번호로 읽혀 8744년 10월로 저장됐다(#249).
+        long userId = newUser();
+        var parts = UploadTestFiles.parts();
+        parts.put("xl/worksheets/sheet1.xml", """
+                <worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>
+                  <row r="1"><c r="A1" t="inlineStr"><is><t>날짜</t></is></c>
+                    <c r="F1" t="inlineStr"><is><t>금액</t></is></c></row>
+                  <row r="2"><c r="F2"><v>12000</v></c></row>
+                  <row r="3"><c r="F3"><v>2500000</v></c></row>
+                </sheetData></worksheet>
+                """);
+        upload(userId, "07_가계부_F열금액.xlsx", UploadTestFiles.zip(parts, 0), false)
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("code").value("UPLOAD_INVALID_FORMAT"))
+                .andExpect(jsonPath("details.fileName").value("07_가계부_F열금액.xlsx"))
+                .andExpect(jsonPath("details.reason")
+                        .value("수불부 형식이 아니에요. 입고일자(F열)가 있는 수불부를 올려 주세요."));
+        assertThat(uploadCount(userId)).isZero();
+        assertThat(root.resolve(Long.toString(userId))).doesNotExist();
     }
 
     @Test

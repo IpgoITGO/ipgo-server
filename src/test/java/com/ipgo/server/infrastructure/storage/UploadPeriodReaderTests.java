@@ -13,6 +13,10 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class UploadPeriodReaderTests {
+    private static final LocalDate TODAY = LocalDate.of(2026, 11, 17);
+    private static final String HEADER_ROW =
+            "<row r=\"1\"><c r=\"F1\" t=\"inlineStr\"><is><t>입고일자</t></is></c></row>";
+
     @Test
     void sharedRichTextDateExcludesPhoneticHints() throws Exception {
         var parts = sheet("<c r=\"F2\" t=\"s\"><v>0</v></c>");
@@ -71,14 +75,15 @@ class UploadPeriodReaderTests {
     }
 
     @Test
-    void rejectsExcelDatesOutsideBusinessRangeInBothDateSystems() throws Exception {
+    void lastExcelDayIsReadWithoutErrorButIgnoredAsImplausible() throws Exception {
         for (boolean date1904 : new boolean[]{false, true}) {
             LocalDate base = date1904 ? LocalDate.of(1904, 1, 1) : LocalDate.of(1899, 12, 30);
             long last = ChronoUnit.DAYS.between(base, LocalDate.of(9999, 12, 31));
-            var parts = sheet("<c r=\"F2\"><v>" + last + ".5</v></c>");
+            var parts = sheet("<c r=\"F2\"><v>" + last + ".5</v></c>"
+                    + "<c r=\"F3\" t=\"d\"><v>2026-11-20</v></c>");
             if (date1904) parts.put("xl/workbook.xml", parts.get("xl/workbook.xml")
                     .replace("<sheets>", "<workbookPr date1904=\"true\"/><sheets>"));
-            assertThatThrownBy(() -> resolve(parts)).isInstanceOf(UploadException.class);
+            assertThat(resolve(parts).label()).isEqualTo("2026-11");
         }
     }
 
@@ -152,7 +157,79 @@ class UploadPeriodReaderTests {
                 + "<c r=\"F3\" t=\"n\"><v>NaN</v></c>"
                 + "<c r=\"F4\" t=\"d\"><v>2026-02-30</v></c>");
         assertThatThrownBy(() -> resolve(parts)).isInstanceOf(UploadException.class)
-                .hasMessageContaining("입고일자(F열)");
+                .hasMessageContaining("입고일자(F열)에 유효한 날짜가 없어요");
+    }
+
+    @Test
+    void householdBookWithAmountsInColumnFIsNotALedger() {
+        // 11/17 dev QA: 2,500,000 was read as Excel day 2500000 = 8744-10-06.
+        var parts = rows("<row r=\"1\"><c r=\"A1\" t=\"inlineStr\"><is><t>날짜</t></is></c>"
+                + "<c r=\"F1\" t=\"inlineStr\"><is><t>금액</t></is></c></row>"
+                + "<row r=\"2\"><c r=\"F2\"><v>12000</v></c></row>"
+                + "<row r=\"3\"><c r=\"F3\"><v>2500000</v></c></row>");
+        assertNotALedger(parts);
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {
+            "<row r=\"1\"><c r=\"F1\" t=\"inlineStr\"><is><t>출고일자</t></is></c></row>",
+            "<row r=\"1\"><c r=\"E1\" t=\"inlineStr\"><is><t>입고일자</t></is></c></row>",
+            "<row r=\"1\"><c r=\"F1\"><v>20261120</v></c></row>",
+            "<row r=\"1\"><c r=\"F1\" t=\"d\"><v>2026-11-20</v></c></row>",
+            "<row r=\"2\"><c r=\"F2\" t=\"inlineStr\"><is><t>입고일자</t></is></c></row>",
+            ""})
+    void workbookWithoutReceiptDateHeaderInF1IsNotALedger(String headerRow) {
+        assertNotALedger(rows(headerRow + "<row r=\"3\"><c r=\"F3\" t=\"d\"><v>2026-11-20</v></c></row>"));
+    }
+
+    @Test
+    void headerAllowsSpacesAndSharedOrImplicitCells() throws Exception {
+        var spaced = rows("<row r=\"1\"><c r=\"F1\" t=\"inlineStr\"><is><t> 입고 일자 </t></is></c></row>"
+                + "<row r=\"2\"><c r=\"F2\" t=\"d\"><v>2026-11-20</v></c></row>");
+        assertThat(resolve(spaced).label()).isEqualTo("2026-11");
+
+        var shared = rows("<row><c/><c/><c/><c/><c/><c t=\"s\"><v>0</v></c></row>"
+                + "<row><c r=\"F2\" t=\"d\"><v>2026-10-31</v></c></row>");
+        shared.put("xl/sharedStrings.xml", """
+                <sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><si><t>입고\u00A0일자</t></si></sst>
+                """);
+        assertThat(resolve(shared).label()).isEqualTo("2026-10");
+    }
+
+    @Test
+    void ignoresDatesOutsideThePlausibleReceiptRange() throws Exception {
+        var parts = sheet("<c r=\"F2\"><v>2500000</v></c>"
+                + "<c r=\"F3\" t=\"d\"><v>1999-12-31</v></c>"
+                + "<c r=\"F4\" t=\"d\"><v>2027-11-18</v></c>"
+                + "<c r=\"F5\" t=\"d\"><v>2026-11-20</v></c>");
+        assertThat(resolve(parts, TODAY).label()).isEqualTo("2026-11");
+    }
+
+    @Test
+    void acceptsBothEndsOfThePlausibleReceiptRange() throws Exception {
+        assertThat(resolve(sheet("<c r=\"F2\" t=\"d\"><v>2027-11-17</v></c>"), TODAY).label()).isEqualTo("2027-11");
+        assertThat(resolve(sheet("<c r=\"F2\" t=\"d\"><v>2000-01-01</v></c>"), TODAY).label()).isEqualTo("2000-01");
+    }
+
+    @Test
+    void ledgerWithOnlyImplausibleDatesKeepsTheNoValidDateError() {
+        var parts = sheet("<c r=\"F2\"><v>2500000</v></c><c r=\"F3\" t=\"d\"><v>1999-12-31</v></c>"
+                + "<c r=\"F4\" t=\"d\"><v>2027-11-18</v></c>");
+        assertThatThrownBy(() -> resolve(parts, TODAY)).isInstanceOf(UploadException.class)
+                .hasMessageContaining("입고일자(F열)에 유효한 날짜가 없어요");
+    }
+
+    @Test
+    void fileNamePeriodCannotBypassHeaderValidation() throws Exception {
+        var parts = rows("<row r=\"1\"><c r=\"F1\" t=\"inlineStr\"><is><t>금액</t></is></c></row>");
+        assertThatThrownBy(() -> UploadPeriodReader.resolve(new MockMultipartFile("file", "2026-09 가계부.xlsx",
+                "application/octet-stream", UploadTestFiles.zip(parts, 0))))
+                .isInstanceOf(UploadException.class).hasMessageContaining(UploadPeriodReader.NOT_A_LEDGER);
+    }
+
+    private void assertNotALedger(Map<String, String> parts) {
+        assertThatThrownBy(() -> resolve(parts)).isInstanceOf(UploadException.class)
+                .hasMessageContaining(UploadPeriodReader.NOT_A_LEDGER);
     }
 
     @Test
@@ -172,59 +249,27 @@ class UploadPeriodReaderTests {
                 .isInstanceOf(UploadException.class).hasMessageContaining("여러 개");
     }
 
-    @Test
-    void acceptsSharedRichTextHeaderAndTrimsWhitespace() throws Exception {
-        var parts = sheet("<c r=\"F2\" t=\"d\"><v>2026-11-20</v></c>");
-        parts.put("xl/worksheets/sheet1.xml", parts.get("xl/worksheets/sheet1.xml")
-                .replace("t=\"inlineStr\"><is><t>입고일자</t></is>", "t=\"s\"><v>0</v>"));
-        parts.put("xl/sharedStrings.xml", "<sst><si><r><t> 입고</t></r><r><t>일자 </t></r></si></sst>");
-        assertThat(resolve(parts).label()).isEqualTo("2026-11");
-    }
-
-    @Test
-    void rejectsMissingHeaderAndHeaderInSecondRow() {
-        var parts = sheet("<c r=\"F2\" t=\"inlineStr\"><is><t>입고일자</t></is></c>");
-        parts.put("xl/worksheets/sheet1.xml", parts.get("xl/worksheets/sheet1.xml")
-                .replace("<row r=\"1\"><c r=\"F1\" t=\"inlineStr\"><is><t>입고일자</t></is></c></row>", ""));
-        assertThatThrownBy(() -> resolve(parts)).isInstanceOf(UploadException.class)
-                .hasMessageContaining("수불부 형식이 아니에요");
-    }
-
-    @Test
-    void enforcesInclusiveDateBoundsForTextAndNumericDates() throws Exception {
-        for (LocalDate day : new LocalDate[]{LocalDate.of(1999,12,31), LocalDate.of(2000,1,1),
-                LocalDate.of(2027,11,17), LocalDate.of(2027,11,18)}) {
-            for (boolean numeric : new boolean[]{false, true}) {
-                String value = numeric ? "<c r=\"F2\"><v>" + ChronoUnit.DAYS.between(
-                        LocalDate.of(1899,12,30), day) + "</v></c>"
-                        : "<c r=\"F2\" t=\"d\"><v>" + day + "</v></c>";
-                var parts = sheet(value);
-                if (day.isBefore(LocalDate.of(2000,1,1)) || day.isAfter(LocalDate.of(2027,11,17)))
-                    assertThatThrownBy(() -> resolve(parts)).isInstanceOf(UploadException.class);
-                else assertThat(resolve(parts).start()).isEqualTo(day.withDayOfMonth(1));
-            }
-        }
-    }
-
-    @Test
-    void ignoresAmountsAndFarFutureTextWhenValidDateExists() throws Exception {
-        var parts = sheet("<c r=\"F2\"><v>12000</v></c><c r=\"F3\"><v>2500000</v></c>"
-                + "<c r=\"F4\" t=\"d\"><v>8744-10-06</v></c>"
-                + "<c r=\"F5\" t=\"d\"><v>2026-11-20</v></c>");
-        assertThat(resolve(parts).label()).isEqualTo("2026-11");
-    }
-
     private com.ipgo.server.entity.UploadPeriod resolve(Map<String, String> parts) throws Exception {
         return UploadPeriodReader.resolve(new MockMultipartFile("file", "재고.xlsx",
-                "application/octet-stream", UploadTestFiles.zip(parts, 0)), LocalDate.of(2026, 11, 17));
+                "application/octet-stream", UploadTestFiles.zip(parts, 0)));
     }
 
+    private com.ipgo.server.entity.UploadPeriod resolve(Map<String, String> parts, LocalDate today) throws Exception {
+        return UploadPeriodReader.resolve(new MockMultipartFile("file", "재고.xlsx",
+                "application/octet-stream", UploadTestFiles.zip(parts, 0)), today);
+    }
+
+    /** A ledger sheet: row 1 has the 입고일자 header in F1 and row 2 holds the given cells. */
     private Map<String, String> sheet(String cells) {
+        return rows(HEADER_ROW + "<row r=\"2\">" + cells + "</row>");
+    }
+
+    private Map<String, String> rows(String rows) {
         var parts = UploadTestFiles.parts();
         parts.put("xl/worksheets/sheet1.xml", """
                 <worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
-                <sheetData><row r="1"><c r="F1" t="inlineStr"><is><t>입고일자</t></is></c></row><row r="2">%s</row></sheetData></worksheet>
-                """.formatted(cells));
+                <sheetData>%s</sheetData></worksheet>
+                """.formatted(rows));
         return parts;
     }
 }

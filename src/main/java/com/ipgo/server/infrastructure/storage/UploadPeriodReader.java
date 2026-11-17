@@ -46,7 +46,6 @@ public final class UploadPeriodReader {
 
     static UploadPeriod resolve(MultipartFile file, LocalDate today) {
         var named = UploadPeriod.findInFileName(file.getOriginalFilename());
-        if (named.isPresent()) return named.get();
         Path pending = null;
         try {
             pending = Files.createTempFile("ipgo-period-", ".xlsx");
@@ -62,6 +61,7 @@ public final class UploadPeriodReader {
                 var range = new DateRange(EARLIEST_RECEIPT_DATE, today.plus(LATEST_RECEIPT_DATE_AHEAD));
                 var scan = scan(zip, sheet, shared, workbook.date1904(), range);
                 if (!scan.ledger()) throw invalid(file, NOT_A_LEDGER);
+                if (named.isPresent()) return named.get();
                 LocalDate latest = scan.latest();
                 if (latest == null) throw invalid(file, "입고일자(F열)에 유효한 날짜가 없어요. 날짜를 확인해주세요.");
                 return new UploadPeriod(YearMonth.from(latest));

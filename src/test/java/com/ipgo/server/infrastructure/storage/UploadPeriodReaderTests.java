@@ -220,10 +220,11 @@ class UploadPeriodReaderTests {
     }
 
     @Test
-    void fileNamePeriodStillWinsWithoutReadingTheHeader() throws Exception {
+    void fileNamePeriodCannotBypassHeaderValidation() throws Exception {
         var parts = rows("<row r=\"1\"><c r=\"F1\" t=\"inlineStr\"><is><t>금액</t></is></c></row>");
-        assertThat(UploadPeriodReader.resolve(new MockMultipartFile("file", "2026-09 가계부.xlsx",
-                "application/octet-stream", UploadTestFiles.zip(parts, 0))).label()).isEqualTo("2026-09");
+        assertThatThrownBy(() -> UploadPeriodReader.resolve(new MockMultipartFile("file", "2026-09 가계부.xlsx",
+                "application/octet-stream", UploadTestFiles.zip(parts, 0))))
+                .isInstanceOf(UploadException.class).hasMessageContaining(UploadPeriodReader.NOT_A_LEDGER);
     }
 
     private void assertNotALedger(Map<String, String> parts) {

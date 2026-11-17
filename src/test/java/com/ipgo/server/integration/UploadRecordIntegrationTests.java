@@ -31,6 +31,8 @@ class UploadRecordIntegrationTests extends DatabaseIntegrationTest {
     @TempDir static Path root;
     @Autowired MockMvc mvc;
     @Autowired JdbcTemplate jdbc;
+    @org.springframework.test.context.bean.override.mockito.MockitoSpyBean
+    com.ipgo.server.service.UploadCleaningRequests cleaningRequests;
 
     @DynamicPropertySource
     static void uploadProperties(DynamicPropertyRegistry registry) {
@@ -332,6 +334,30 @@ class UploadRecordIntegrationTests extends DatabaseIntegrationTest {
                 .andExpect(jsonPath("details.reason").value("SAME_PERIOD"));
         upload(userId, "새 이름.xlsx", file, true).andExpect(status().isAccepted());
         assertThat(uploadCount(userId)).isEqualTo(2);
+    }
+
+    @Test
+    void ledgerIsRejectedBeforeStorageAndCleaningEvenWithPeriodInName() throws Exception {
+        for (String name : new String[]{"07_가계부_F열금액.xlsx", "2026-11.xlsx"}) {
+            long user = newUser();
+            var parts = UploadTestFiles.parts();
+            parts.put("xl/worksheets/sheet1.xml", """
+                    <worksheet><sheetData>
+                      <row r="1"><c r="F1" t="inlineStr"><is><t>금액</t></is></c></row>
+                      <row r="2"><c r="F2"><v>12000</v></c></row>
+                      <row r="3"><c r="F3"><v>2500000</v></c></row>
+                    </sheetData></worksheet>
+                    """);
+            org.mockito.Mockito.clearInvocations(cleaningRequests);
+            upload(user, name, UploadTestFiles.zip(parts, 0), false)
+                    .andExpect(status().isBadRequest())
+                    .andExpect(jsonPath("code").value("UPLOAD_INVALID_FORMAT"))
+                    .andExpect(jsonPath("details.reason").value(
+                            "수불부 형식이 아니에요. 입고일자(F열)가 있는 수불부를 올려 주세요."));
+            assertThat(uploadCount(user)).isZero();
+            assertThat(root.resolve(Long.toString(user))).doesNotExist();
+            org.mockito.Mockito.verifyNoInteractions(cleaningRequests);
+        }
     }
 
     private byte[] datedWorkbook() throws Exception {

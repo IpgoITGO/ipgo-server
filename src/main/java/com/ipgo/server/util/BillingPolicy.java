@@ -15,6 +15,8 @@ public final class BillingPolicy {
     public static List<Plan> plans() { return List.of(new Plan("trial",VERSION,0,"KRW","MONTH",300,100,true,14,CONSENT),
             new Plan("seller",VERSION,500,"KRW","MONTH",300,100,true,0,CONSENT),
             new Plan("business",VERSION,129000,"KRW","MONTH",2000,null,true,0,CONSENT)); }
+    // #244 가장 큰 요금제(상품 수가 가장 많은 요금제). QA 계정 권한에 쓴다.
+    public static Plan largest() { return plans().stream().max(java.util.Comparator.comparingInt(Plan::products)).orElseThrow(); }
     public static Plan plan(String id) { return plans().stream().filter(p->p.planId().equals(id)).findFirst().orElseThrow(BillingException::invalid); }
     public static Instant boundary(Instant anchor, int month) { return anchor.atZone(SEOUL).plusMonths(month).toInstant(); }
     public static Instant grace(Instant end) { return end.plus(Duration.ofDays(3)); }

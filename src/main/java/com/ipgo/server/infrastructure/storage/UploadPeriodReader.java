@@ -9,6 +9,7 @@ import java.nio.file.StandardCopyOption;
 import java.time.DateTimeException;
 import java.time.LocalDate;
 import java.time.YearMonth;
+import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.regex.Pattern;
@@ -29,8 +30,11 @@ public final class UploadPeriodReader {
     private UploadPeriodReader() { }
 
     public static UploadPeriod resolve(MultipartFile file) {
+        return resolve(file, LocalDate.now(ZoneId.of("Asia/Seoul")));
+    }
+
+    static UploadPeriod resolve(MultipartFile file, LocalDate today) {
         var named = UploadPeriod.findInFileName(file.getOriginalFilename());
-        if (named.isPresent()) return named.get();
         Path pending = null;
         try {
             pending = Files.createTempFile("ipgo-period-", ".xlsx");
@@ -42,7 +46,9 @@ public final class UploadPeriodReader {
             try (var zip = new ZipFile(pending.toFile())) {
                 var workbook = workbook(zip);
                 String sheet = worksheet(zip, workbook.relationship());
-                LocalDate latest = latestDate(zip, sheet, sharedDates(zip), workbook.date1904());
+                LocalDate latest = latestDate(zip, sheet, sharedStrings(zip), workbook.date1904(),
+                        today.plusYears(1), file);
+                if (named.isPresent()) return named.get();
                 if (latest == null) throw invalid(file, "입고일자(F열)에 유효한 날짜가 없어요. 날짜를 확인해주세요.");
                 return new UploadPeriod(YearMonth.from(latest));
             }
@@ -102,8 +108,8 @@ public final class UploadPeriodReader {
         throw new XMLStreamException("Missing worksheet relationship");
     }
 
-    private static List<LocalDate> sharedDates(ZipFile zip) throws IOException, XMLStreamException {
-        var dates = new ArrayList<LocalDate>();
+    private static List<String> sharedStrings(ZipFile zip) throws IOException, XMLStreamException {
+        var dates = new ArrayList<String>();
         var entry = zip.getEntry("xl/sharedStrings.xml");
         if (entry == null) return dates;
         try (var input = zip.getInputStream(entry)) {
@@ -124,7 +130,7 @@ public final class UploadPeriodReader {
                         if ("rPh".equals(reader.getLocalName())) phoneticDepth--;
                         if ("t".equals(reader.getLocalName())) inText = false;
                         if ("si".equals(reader.getLocalName())) {
-                            dates.add(text == null ? null : date(text.toString()));
+                            dates.add(text == null ? "" : text.toString());
                             text = null;
                         }
                     }
@@ -134,26 +140,35 @@ public final class UploadPeriodReader {
         return dates;
     }
 
-    private static LocalDate latestDate(ZipFile zip, String sheet, List<LocalDate> shared, boolean date1904)
+    private static LocalDate latestDate(ZipFile zip, String sheet, List<String> shared, boolean date1904,
+            LocalDate latestAllowed, MultipartFile file)
             throws IOException, XMLStreamException {
         LocalDate latest = null;
+        boolean headerValid = false;
         try (var input = zip.getInputStream(zip.getEntry(sheet))) {
             var reader = reader(input);
             StringBuilder text = null;
             String type = null;
             boolean value = false;
             int column = 0;
+            int row = 0;
+            boolean headerCell = false;
             int phoneticDepth = 0;
             try {
                 while (reader.hasNext()) {
                     int event = next(reader);
                     if (event == XMLStreamConstants.START_ELEMENT) {
                         if ("rPh".equals(reader.getLocalName())) phoneticDepth++;
-                        if ("row".equals(reader.getLocalName())) column = 0;
+                        if ("row".equals(reader.getLocalName())) {
+                            column = 0;
+                            String rowRef = reader.getAttributeValue(null, "r");
+                            row = rowRef == null ? row + 1 : Integer.parseInt(rowRef);
+                        }
                         if ("c".equals(reader.getLocalName())) {
                             String ref = reader.getAttributeValue(null, "r");
                             column = ref == null ? column + 1 : columnIndex(ref);
                             text = column == 6 ? new StringBuilder() : null;
+                            headerCell = ref == null ? row == 1 : "F1".equals(ref);
                             type = reader.getAttributeValue(null, "t");
                         }
                         value = ("v".equals(reader.getLocalName()) || "t".equals(reader.getLocalName()))
@@ -164,14 +179,23 @@ public final class UploadPeriodReader {
                         if ("rPh".equals(reader.getLocalName())) phoneticDepth--;
                         if ("v".equals(reader.getLocalName()) || "t".equals(reader.getLocalName())) value = false;
                         if ("c".equals(reader.getLocalName()) && text != null) {
-                            LocalDate candidate = cellDate(text.toString(), type, shared, date1904);
-                            if (candidate != null && (latest == null || candidate.isAfter(latest))) latest = candidate;
+                            if (headerCell) {
+                                String header = "s".equals(type) ? sharedText(text.toString(), shared) : text.toString();
+                                headerValid = "입고일자".equals(header.trim());
+                            } else {
+                                LocalDate candidate = cellDate(text.toString(), type, shared, date1904);
+                                if (candidate != null && !candidate.isBefore(LocalDate.of(2000, 1, 1))
+                                        && !candidate.isAfter(latestAllowed)
+                                        && (latest == null || candidate.isAfter(latest))) latest = candidate;
+                            }
                             text = null;
                         }
                     }
                 }
             } finally { reader.close(); }
         }
+        if (!headerValid) throw invalid(file,
+                "수불부 형식이 아니에요. 입고일자(F열)가 있는 수불부를 올려 주세요.");
         return latest;
     }
 
@@ -183,11 +207,10 @@ public final class UploadPeriodReader {
         return column;
     }
 
-    private static LocalDate cellDate(String text, String type, List<LocalDate> shared, boolean date1904) {
+    private static LocalDate cellDate(String text, String type, List<String> shared, boolean date1904) {
         try {
             if ("s".equals(type)) {
-                int index = Integer.parseInt(text.trim());
-                return index >= 0 && index < shared.size() ? shared.get(index) : null;
+                return date(sharedText(text, shared));
             }
             if ("inlineStr".equals(type) || "str".equals(type) || "d".equals(type)) return date(text);
             if (type != null && !"n".equals(type)) return null;
@@ -201,6 +224,13 @@ public final class UploadPeriodReader {
             LocalDate value = base.plusDays(days);
             return value.getYear() <= 9999 ? value : null;
         } catch (NumberFormatException | DateTimeException exception) { return null; }
+    }
+
+    private static String sharedText(String text, List<String> shared) {
+        try {
+            int index = Integer.parseInt(text.trim());
+            return index >= 0 && index < shared.size() ? shared.get(index) : "";
+        } catch (NumberFormatException exception) { return ""; }
     }
 
     private static LocalDate date(String text) {

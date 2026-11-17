@@ -71,14 +71,14 @@ class UploadPeriodReaderTests {
     }
 
     @Test
-    void acceptsTimeOnTheLastSupportedDayInBothDateSystems() throws Exception {
+    void rejectsExcelDatesOutsideBusinessRangeInBothDateSystems() throws Exception {
         for (boolean date1904 : new boolean[]{false, true}) {
             LocalDate base = date1904 ? LocalDate.of(1904, 1, 1) : LocalDate.of(1899, 12, 30);
             long last = ChronoUnit.DAYS.between(base, LocalDate.of(9999, 12, 31));
             var parts = sheet("<c r=\"F2\"><v>" + last + ".5</v></c>");
             if (date1904) parts.put("xl/workbook.xml", parts.get("xl/workbook.xml")
                     .replace("<sheets>", "<workbookPr date1904=\"true\"/><sheets>"));
-            assertThat(resolve(parts).label()).isEqualTo("9999-12");
+            assertThatThrownBy(() -> resolve(parts)).isInstanceOf(UploadException.class);
         }
     }
 
@@ -172,16 +172,58 @@ class UploadPeriodReaderTests {
                 .isInstanceOf(UploadException.class).hasMessageContaining("여러 개");
     }
 
+    @Test
+    void acceptsSharedRichTextHeaderAndTrimsWhitespace() throws Exception {
+        var parts = sheet("<c r=\"F2\" t=\"d\"><v>2026-11-20</v></c>");
+        parts.put("xl/worksheets/sheet1.xml", parts.get("xl/worksheets/sheet1.xml")
+                .replace("t=\"inlineStr\"><is><t>입고일자</t></is>", "t=\"s\"><v>0</v>"));
+        parts.put("xl/sharedStrings.xml", "<sst><si><r><t> 입고</t></r><r><t>일자 </t></r></si></sst>");
+        assertThat(resolve(parts).label()).isEqualTo("2026-11");
+    }
+
+    @Test
+    void rejectsMissingHeaderAndHeaderInSecondRow() {
+        var parts = sheet("<c r=\"F2\" t=\"inlineStr\"><is><t>입고일자</t></is></c>");
+        parts.put("xl/worksheets/sheet1.xml", parts.get("xl/worksheets/sheet1.xml")
+                .replace("<row r=\"1\"><c r=\"F1\" t=\"inlineStr\"><is><t>입고일자</t></is></c></row>", ""));
+        assertThatThrownBy(() -> resolve(parts)).isInstanceOf(UploadException.class)
+                .hasMessageContaining("수불부 형식이 아니에요");
+    }
+
+    @Test
+    void enforcesInclusiveDateBoundsForTextAndNumericDates() throws Exception {
+        for (LocalDate day : new LocalDate[]{LocalDate.of(1999,12,31), LocalDate.of(2000,1,1),
+                LocalDate.of(2027,11,17), LocalDate.of(2027,11,18)}) {
+            for (boolean numeric : new boolean[]{false, true}) {
+                String value = numeric ? "<c r=\"F2\"><v>" + ChronoUnit.DAYS.between(
+                        LocalDate.of(1899,12,30), day) + "</v></c>"
+                        : "<c r=\"F2\" t=\"d\"><v>" + day + "</v></c>";
+                var parts = sheet(value);
+                if (day.isBefore(LocalDate.of(2000,1,1)) || day.isAfter(LocalDate.of(2027,11,17)))
+                    assertThatThrownBy(() -> resolve(parts)).isInstanceOf(UploadException.class);
+                else assertThat(resolve(parts).start()).isEqualTo(day.withDayOfMonth(1));
+            }
+        }
+    }
+
+    @Test
+    void ignoresAmountsAndFarFutureTextWhenValidDateExists() throws Exception {
+        var parts = sheet("<c r=\"F2\"><v>12000</v></c><c r=\"F3\"><v>2500000</v></c>"
+                + "<c r=\"F4\" t=\"d\"><v>8744-10-06</v></c>"
+                + "<c r=\"F5\" t=\"d\"><v>2026-11-20</v></c>");
+        assertThat(resolve(parts).label()).isEqualTo("2026-11");
+    }
+
     private com.ipgo.server.entity.UploadPeriod resolve(Map<String, String> parts) throws Exception {
         return UploadPeriodReader.resolve(new MockMultipartFile("file", "재고.xlsx",
-                "application/octet-stream", UploadTestFiles.zip(parts, 0)));
+                "application/octet-stream", UploadTestFiles.zip(parts, 0)), LocalDate.of(2026, 11, 17));
     }
 
     private Map<String, String> sheet(String cells) {
         var parts = UploadTestFiles.parts();
         parts.put("xl/worksheets/sheet1.xml", """
                 <worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
-                <sheetData><row r="2">%s</row></sheetData></worksheet>
+                <sheetData><row r="1"><c r="F1" t="inlineStr"><is><t>입고일자</t></is></c></row><row r="2">%s</row></sheetData></worksheet>
                 """.formatted(cells));
         return parts;
     }

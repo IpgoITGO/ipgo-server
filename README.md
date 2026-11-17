@@ -499,7 +499,7 @@ if (!response.ok) throw new Error(result.message ?? '업로드에 실패했습�
 | 파일 칸 누락 | `400 INVALID_INPUT` |
 | 저장 실패 | `500 UPLOAD_STORAGE_ERROR`. 내부 경로와 파일 내용은 응답하지 않음 |
 | 인증 | 유효한 Bearer JWT 필요. 미인증·만료·폐기된 로그인은 401. CSRF 불필요 |
-| 자료 기간 | 파일명의 연·월 우선. 없으면 첫 워크시트 F열 `입고일자`의 가장 늦은 유효 날짜가 속한 달(#217). 날짜가 없거나 파일명에 연·월이 여러 개면 `400 UPLOAD_INVALID_FORMAT` (`fileName`·`reason` 포함). 같은 기간의 `409` 확인과 `overwrite=true` 유지 |
+| 자료 기간 | 먼저 첫 워크시트 F1 머리글이 `입고일자`인지 확인합니다(앞뒤 공백 제외). 없거나 다르면 파일명에 연·월이 있어도 `400 UPLOAD_INVALID_FORMAT`으로 저장 전에 거절합니다(#249). 형식 확인 후 파일명의 연·월 우선. 없으면 첫 워크시트 F열 `입고일자`의 가장 늦은 유효 날짜가 속한 달(#217). 기간 추정에는 2000-01-01부터 업로드 당일(한국 시간)의 1년 후까지의 날짜만 사용합니다(양 끝 포함, 숫자·문자 날짜 동일). 파일명에 기간이 없고 유효 날짜도 없거나 파일명에 연·월이 여러 개면 `400 UPLOAD_INVALID_FORMAT` (`fileName`·`reason` 포함). 같은 기간의 `409` 확인과 `overwrite=true` 유지 |
 | 같은 기간 | 이미 올린 기간이면 `409 UPLOAD_DUPLICATE`, `details.reason`은 `SAME_PERIOD`, `details.existing`에 기존 업로드(ID·이름·기간·업로드 일시). `overwrite=true`로 다시 보내면 새 revision으로 저장 |
 | 같은 파일 | 내용(SHA-256)이 **다른 기간의 최신 revision**과 완전히 같으면 `overwrite`와 상관없이 `409 UPLOAD_DUPLICATE`, `details.reason`은 `SAME_FILE`, `details.existing`은 그 최신 revision. 화면은 덮어쓰기 대신 "이미 올린 파일"로 안내합니다. 같은 기간이면 `SAME_PERIOD`로 처리하므로 같은 파일을 덮어써 다시 정제할 수 있습니다. 덮어써서 지금 쓰지 않는 옛 revision, 최신 revision이 `FAILED`인 기간, 다른 회원의 파일은 비교하지 않습니다. 예: 4월 파일을 1월로 잘못 올렸어도 1월을 맞는 파일로 덮어쓰면 4월로 다시 올릴 수 있습니다(#235) |
 

@@ -1,5 +1,9 @@
 # Ipgo Server
 
+AI-01 인사이트 조회는 현재 상품 결과와 저장된 입고 조건을 대조한 `stale` 값을 제공합니다.
+조건이 달라졌거나 과거 resultId를 조회해도 저장된 문장·수량은 보존하고 LLM을 다시 부르지 않습니다.
+설정 snapshot이 없는 구버전은 조건 변경 여부를 추정하지 않습니다. DB migration은 없습니다.
+
 모델 인사이트는 AI #122의 `method=LGBM19` / `riskStatus=NOT_COMPUTED` 계약을 수용합니다.
 위험은 모델에서 미산출이며 목표 재고·권장량·시나리오 값은 Server가 채웁니다. 기본 문장도
 A/B 산식·표본 부족 사유와 분리합니다. `IPGO_INSIGHT_MODEL_ENABLED` 기본 `false`이며

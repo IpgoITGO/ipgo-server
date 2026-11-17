@@ -181,6 +181,27 @@ class InsightIntegrationTests extends DatabaseIntegrationTest {
         insight(owner, Long.MAX_VALUE).andExpect(status().isNotFound());
     }
 
+    @Test
+    void storedExplanationReportsChangedSettingsAndAnOlderResultWithoutRewritingIt() throws Exception {
+        long user = newUser(), id = result(user, "OK", null);
+        long product = jdbc.queryForObject("SELECT product_id FROM calculation_results WHERE id=?", Long.class, id);
+        jdbc.update("UPDATE warehouses SET default_lead_time_days=5,default_review_cycle_days=14,default_order_unit_qty=1 WHERE user_id=?", user);
+        jdbc.update("UPDATE products SET unit_cost=100 WHERE id=?", product);
+        String snapshot = "{\"settings\":[{\"productId\":" + product + ",\"leadTimeDays\":5,\"reviewCycleDays\":14,\"orderUnitQty\":1,\"unitCost\":100}]}";
+        jdbc.update("UPDATE calculation_results SET input_snapshot=CAST(? AS JSONB) WHERE id=?", snapshot, id);
+        explanation(id, "LLM", null, "보존할 계산 문장입니다.");
+        insight(user, id).andExpect(jsonPath("stale").value(false));
+        jdbc.update("UPDATE warehouses SET default_review_cycle_days=21 WHERE user_id=?", user);
+        insight(user, id).andExpect(jsonPath("stale").value(true)).andExpect(jsonPath("text").value("보존할 계산 문장입니다."));
+        jdbc.update("UPDATE warehouses SET default_review_cycle_days=14 WHERE user_id=?", user);
+        insight(user, id).andExpect(jsonPath("stale").value(false));
+        long next = result(user, "OK", null);
+        jdbc.update("UPDATE calculation_results SET product_id=?,input_snapshot=CAST(? AS JSONB) WHERE id=?", product, snapshot, next);
+        explanation(next, "LLM", null, "새 계산 문장입니다.");
+        insight(user, id).andExpect(jsonPath("stale").value(true)).andExpect(jsonPath("text").value("보존할 계산 문장입니다."));
+        insight(user, next).andExpect(jsonPath("stale").value(false));
+    }
+
     // 회원마다 상품 1개를 새로 만들어 결과를 하나 넣는다.
     private long result(long userId, String status, String reason) {
         long warehouse = warehouses.lockDefault(userId).getId();

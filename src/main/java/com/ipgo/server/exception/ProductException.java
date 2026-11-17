@@ -27,6 +27,11 @@ public class ProductException extends RuntimeException {
         return new ProductException(HttpStatus.BAD_REQUEST, "INVALID_INPUT", "입력값의 형식과 길이를 확인해주세요.", field);
     }
 
+    public static ProductException unsupportedModelPeriod(String field) {
+        return new ProductException(HttpStatus.BAD_REQUEST, "MODEL_PERIOD_UNSUPPORTED",
+                "현재 예측 모델은 배송 5일·입고 주기 14일 조건에서만 계산해요. 기본 리드타임을 5일, 입고 주기를 14일로 확인해 주세요.", field);
+    }
+
     public static ProductException receiptReceived() {
         return new ProductException(HttpStatus.CONFLICT, "RECEIPT_RECEIVED", "입고 완료한 발주는 수정하거나 취소할 수 없어요. 입고 기록을 확인해 주세요.");
     }

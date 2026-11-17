@@ -16,6 +16,8 @@ import org.springframework.transaction.annotation.Transactional;
 // 입고 조건 기본값(S1 · S2)과 상품별 입고 조건(S3). 저장 뒤 계산 시작은 계산 엔진 연동 때 붙인다.
 @Service
 public class ReplenishmentService {
+    @org.springframework.beans.factory.annotation.Value("${ipgo.engine.default-method:B}")
+    private String defaultMethod = "B";
     private final WarehouseService warehouses;
     private final ProductRepository products;
     private final ReplenishmentSettingRepository settings;
@@ -53,6 +55,12 @@ public class ReplenishmentService {
 
     @Transactional
     public SettingsSaved saveDefaults(long userId, DefaultSettingsRequest request) {
+        if ("LGBM19".equals(defaultMethod)) {
+            if (!Integer.valueOf(5).equals(request.leadTimeDays()))
+                throw ProductException.unsupportedModelPeriod("leadTimeDays");
+            if (!Integer.valueOf(14).equals(request.reviewCycleDays()))
+                throw ProductException.unsupportedModelPeriod("reviewCycleDays");
+        }
         var warehouse = warehouses.lockDefault(userId);
         warehouse.confirmDefaults(request.leadTimeDays(), request.reviewCycleDays(), request.orderUnitQty());
         return new SettingsSaved(true, calculations.request(userId, warehouse.getId(), "SETTINGS", Boolean.TRUE.equals(request.recalculate())));

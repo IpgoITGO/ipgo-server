@@ -54,6 +54,8 @@ class BillingIntegrationTests extends DatabaseIntegrationTest {
     // #208 기본은 실제 값(환불 제한 꺼짐)이고, 환불 제한 테스트에서만 켠다.
     @org.springframework.test.context.bean.override.mockito.MockitoSpyBean com.ipgo.server.config.RefundPolicyProperties refundPolicy;
     @org.springframework.test.context.bean.override.mockito.MockitoSpyBean com.ipgo.server.repository.BillingLedger ledger;
+    // #244 기본은 실제 값(QA 목록 비어 있음)이고, QA 계정 테스트에서만 회원을 목록에 넣는다.
+    @org.springframework.test.context.bean.override.mockito.MockitoSpyBean com.ipgo.server.config.QaAccessProperties qa;
     @Autowired com.ipgo.server.service.AccountWithdrawalService withdrawals;
     @Autowired org.springframework.security.crypto.password.PasswordEncoder encoder;
     static final Instant START=Instant.parse("2026-01-31T01:00:00Z");
@@ -160,6 +162,66 @@ class BillingIntegrationTests extends DatabaseIntegrationTest {
         assertThat(after.planChosenAt()).isEqualTo(before.planChosenAt());
         assertThat(after.trialEnd()).isEqualTo(before.trialEnd());
         assertThat(after.status()).isEqualTo("TRIAL_EXPIRED");
+    }
+    // #244 QA 목록의 회원: 체험 만료 · 체험 재사용(TRIAL_ALREADY_USED) · 해지 상태여도 권한은 모두 허용하고 결제 · 구독 기록은 그대로다.
+    @Test void qaFullAccessUsersGetEveryEntitlementWithoutChangingBillingRecords() throws Exception {
+        // 탈퇴 뒤 재가입한 회원처럼 요금제를 고르기 전이고 체험 재사용으로 표시된 상태
+        long reused=newUser(); jdbc.update("update users set trial_reused=true,plan_chosen_at=null where id=?",reused);
+        long canceled=newUser();
+        for(long id:new long[]{user,reused,canceled}) doReturn(true).when(qa).fullAccess(id);
+        for(long id:new long[]{user,reused,canceled}) service.subscription(id);
+        jdbc.update("update billing_subscriptions set status='CANCELED' where user_id=?",canceled);
+        now=START.plus(Duration.ofDays(15));
+        var before=billingRecords(user,reused,canceled);
+        var full=new BillingViews.Entitlements(true,true,true,2000,null,"QA_FULL_ACCESS");
+        var expectedStatus=Map.of(user,"TRIAL_EXPIRED",reused,"TRIAL_EXPIRED",canceled,"CANCELED");
+        for(long id:new long[]{user,reused,canceled}) {
+            var view=service.subscription(id);
+            assertThat(view.status()).isEqualTo(expectedStatus.get(id));
+            assertThat(view.entitlements()).isEqualTo(full);
+            assertThatCode(()->service.assertWriteAllowed(id)).doesNotThrowAnyException();
+            assertThatCode(()->service.assertProductCapacity(id,2000)).doesNotThrowAnyException();
+            assertThatThrownBy(()->service.assertProductCapacity(id,2001))
+                    .isInstanceOfSatisfying(BillingException.class,e->assertThat(e.code()).isEqualTo("PRODUCT_LIMIT_EXCEEDED"));
+        }
+        mvc.perform(get("/api/billing/subscription").with(jwt().jwt(j->j.subject(""+reused))))
+                .andExpect(status().isOk()).andExpect(jsonPath("status").value("TRIAL_EXPIRED"))
+                .andExpect(jsonPath("entitlements.canUpload").value(true)).andExpect(jsonPath("entitlements.reason").value("QA_FULL_ACCESS"));
+        mvc.perform(post("/api/results/1/scenarios").with(jwt().jwt(j->j.subject(""+user)))
+                .contentType("application/json").content("{\"qty\":1}"))
+                .andExpect(r->assertThat(r.getResponse().getStatus()).isNotEqualTo(403));
+        assertThatThrownBy(()->service.startTrial(reused,UUID.randomUUID().toString()))
+                .isInstanceOfSatisfying(BillingException.class,e->assertThat(e.code()).isEqualTo("TRIAL_ALREADY_USED"));
+        assertThat(billingRecords(user,reused,canceled)).isEqualTo(before);
+        verifyNoInteractions(gateway);
+    }
+    // #244 목록에 없는 회원은 지금과 같다.
+    @Test void usersOutsideQaListKeepTheirPlanEntitlements() {
+        doReturn(true).when(qa).fullAccess(user);
+        now=START.plus(Duration.ofDays(15));
+        assertThat(service.subscription(other).entitlements()).isEqualTo(new BillingViews.Entitlements(false,false,false,300,100,"TRIAL_ENDED"));
+        assertThatThrownBy(()->service.assertWriteAllowed(other))
+                .isInstanceOfSatisfying(BillingException.class,e->assertThat(e.code()).isEqualTo("TRIAL_ENDED"));
+    }
+    // #244 목록이 비어 있으면(기본) 지금과 같다.
+    @Test void emptyQaListKeepsCurrentEntitlements() {
+        assertThat(qa.fullAccessUserIds()).isEmpty();
+        assertThat(service.subscription(user).entitlements()).isEqualTo(new BillingViews.Entitlements(true,true,true,300,100,null));
+        jdbc.update("update users set trial_reused=true where id=?",other);
+        assertThat(service.subscription(other).entitlements()).isEqualTo(new BillingViews.Entitlements(false,false,false,300,100,"TRIAL_ALREADY_USED"));
+        now=START.plus(Duration.ofDays(15));
+        assertThat(service.subscription(user).entitlements().reason()).isEqualTo("TRIAL_ENDED");
+        assertThatThrownBy(()->service.assertWriteAllowed(user)).isInstanceOf(BillingException.class);
+    }
+    private List<Map<String,Object>> billingRecords(long... users) {
+        var rows=new java.util.ArrayList<Map<String,Object>>();
+        for(long id:users) {
+            rows.addAll(jdbc.queryForList("select * from billing_subscriptions where user_id=?",id));
+            rows.addAll(jdbc.queryForList("select plan_chosen_at,trial_reused from users where id=?",id));
+            for(String table:new String[]{"billing_commands","billing_sessions","billing_invoices","billing_methods"})
+                rows.add(Map.of(table,jdbc.queryForObject("select count(*) from "+table+" where user_id=?",Long.class,id)));
+        }
+        return rows;
     }
     @Test void trialStartRequiresAuthenticationValidKeyAndEligibleActiveAccount() throws Exception {
         unselectedUser();

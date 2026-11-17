@@ -27,9 +27,10 @@ public class BillingService {
     private final Clock clock;
     private final com.ipgo.server.config.NormalPaymentProperties normal;
     private final com.ipgo.server.config.RefundPolicyProperties refundPolicy;
+    private final com.ipgo.server.config.QaAccessProperties qa;
     public BillingService(BillingLedger l,BillingProperties p,BillingSecrets s,BillingGateway g,Clock c,com.ipgo.server.config.NormalPaymentProperties n,
-            com.ipgo.server.config.RefundPolicyProperties r) {
-        ledger=l; properties=p; secrets=s; gateway=g; clock=c; normal=n; refundPolicy=r;
+            com.ipgo.server.config.RefundPolicyProperties r,com.ipgo.server.config.QaAccessProperties q) {
+        ledger=l; properties=p; secrets=s; gateway=g; clock=c; normal=n; refundPolicy=r; qa=q;
     }
     public void requireEnabled() {
         if(!properties.enabled()) throw new BillingException(503,"BILLING_DISABLED","결제 기능을 준비 중입니다.");
@@ -102,7 +103,13 @@ public class BillingService {
         Instant next=normal.enabled() || s.flag("cancel_at_period_end") || !hasMethod?null:s.time("next_charge_at");
         return new BillingViews.Subscription(s.text("plan_id"),status,"NOT_SELECTED".equals(status)?null:s.time("trial_end"),s.time("period_start"),end,next,
                 (normal.enabled() || s.flag("cancel_at_period_end")),grace,s.number("amount"),s.text("price_version"),
-                new BillingViews.Entitlements(allowed,allowed,allowed,plan.products(),plan.monthlyInsights(),reason),chosen);
+                entitlements(s.number("user_id"),allowed,plan,reason),chosen);
+    }
+    // #244 dev QA 계정은 구독 상태와 상관없이 권한만 모두 허용한다. 상태 · 기간 · 결제 기록은 실제 값 그대로 둔다.
+    private BillingViews.Entitlements entitlements(long user,boolean allowed,BillingViews.Plan plan,String reason) {
+        if(!qa.fullAccess(user)) return new BillingViews.Entitlements(allowed,allowed,allowed,plan.products(),plan.monthlyInsights(),reason);
+        var largest=BillingPolicy.largest();
+        return new BillingViews.Entitlements(true,true,true,largest.products(),largest.monthlyInsights(),"QA_FULL_ACCESS");
     }
     public void assertWriteAllowed(long user) {
         if(!properties.enabled()) return;

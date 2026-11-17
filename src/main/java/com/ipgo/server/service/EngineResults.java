@@ -4,6 +4,7 @@ import com.ipgo.server.dto.CleaningResult;
 import com.ipgo.server.repository.UploadFileRepository;
 import com.ipgo.server.repository.WarehouseRepository;
 import java.util.Set;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -13,6 +14,8 @@ import tools.jackson.databind.json.JsonMapper;
 /** The caller may ACK only after this transactional proxy returns successfully. */
 @Service
 public class EngineResults {
+    @Value("${ipgo.engine.acceptance-timing-enabled:false}")
+    private boolean acceptanceTimingEnabled;
     private final EngineJobs jobs;
     private final JdbcTemplate jdbc;
     private final WarehouseRepository warehouses;
@@ -33,14 +36,19 @@ public class EngineResults {
 
     @Transactional
     public void accept(String body) {
+        long receivedNanos = System.nanoTime();
         JsonNode message = EngineResultTransport.decode(body, mapper);
         require(message.isObject() && "1".equals(message.path("contractVersion").asText()));
         require(message.path("jobId").isString());
         EngineJobs.Job job = lock(message.get("jobId").asText());
+        var timing = EngineTiming.observeResult(acceptanceTimingEnabled, job, receivedNanos);
         require(job.type().equals(message.path("jobType").asText()));
         String status = message.path("status").asText();
         require(Set.of("SUCCEEDED", "FAILED").contains(status));
-        if (Set.of("DONE","FAILED").contains(job.status())) return;
+        if (Set.of("DONE","FAILED").contains(job.status())) {
+            timing.processing(EngineTiming.Processing.DUPLICATE);
+            return;
+        }
         boolean success = "SUCCEEDED".equals(status);
         if (success) require(message.hasNonNull("result") && !message.hasNonNull("error"));
         else require(message.hasNonNull("error") && !message.hasNonNull("result"));
@@ -73,6 +81,7 @@ public class EngineResults {
             if (success) writer.complete(job, message.get("result")); else writer.fail(job);
         }
         jobs.finished(job.id(), success);
+        timing.processing(success ? EngineTiming.Processing.SUCCEEDED : EngineTiming.Processing.FAILED);
     }
 
     @Transactional

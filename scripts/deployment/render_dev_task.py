@@ -32,6 +32,7 @@ def settings(env):
     require(mode in ("", "legacy", "onebox"), "Unsupported compute mode")
     maintenance = flag(env, "MAINTENANCE_APPROVED")
     engine = flag(env, "ENGINE_ENABLED")
+    timing = flag({"ACCEPTANCE_TIMING_ENABLED": "false", **env}, "ACCEPTANCE_TIMING_ENABLED")
     connected = flag(env, "ENGINE_CONNECTION_APPROVED")
     insight = flag(env, "INSIGHT_ENABLED")
     approved = flag(env, "INSIGHT_APPROVED")
@@ -86,7 +87,7 @@ def settings(env):
             require(uri.hostname not in ("localhost", "0.0.0.0", "127.0.0.1", "::1"), "Engine origin cannot be loopback")
         except (ValueError, InvalidDeployment):
             raise InvalidDeployment("Invalid engine origin configuration") from None
-    return {"continuous": continuous, "sha": sha, "mode": mode, "engine": engine, "insight": insight, "worker": worker, "single": single, "batch": batch, "base": base, "expires": expires, "starts": starts}
+    return {"acceptance_timing": timing, "continuous": continuous, "sha": sha, "mode": mode, "engine": engine, "insight": insight, "worker": worker, "single": single, "batch": batch, "base": base, "expires": expires, "starts": starts}
 
 
 def render(task, image, env):
@@ -110,7 +111,10 @@ def render(task, image, env):
     require(not any(e["name"] == "OPENAI_API_KEY" for e in previous)
             and not any(e.get("name") == "OPENAI_API_KEY" for e in server.get("secrets", [])),
             "OpenAI credentials belong only to the AI container")
+    require(not any(e.get("name") == "IPGO_ENGINE_ACCEPTANCE_TIMING_ENABLED" for e in server.get("secrets", [])),
+            "Acceptance timing flag must not conflict with a secret")
     managed = {"IPGO_API_DOCS_ENABLED": "true", "IPGO_ENGINE_ENABLED": str(config["engine"]).lower(),
+               "IPGO_ENGINE_ACCEPTANCE_TIMING_ENABLED": str(config["acceptance_timing"]).lower(),
                "IPGO_INSIGHT_ENABLED": str(config["insight"]).lower(),
                "IPGO_INSIGHT_SINGLE_RESULT_ENABLED": str(config["single"]).lower(),
                "IPGO_INSIGHT_BATCH_ENABLED": str(config["batch"]).lower(),

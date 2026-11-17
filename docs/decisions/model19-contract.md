@@ -34,3 +34,9 @@ K1 재고·출고 추이는 계산 입력과 같은 월별 최신 revision 중 D
 방식을 바꾸는 배포는 현재 workflow와 동일한 source SHA만 허용한다. 구버전 렌더러가 새 입력을 무시하는 일을 막는다.
 롤백은 Server를 `B`, 빈 버전으로 먼저 재배포하고 이전 AI 이미지로 복원한다.
 저장된 LGBM19 결과와 snapshot은 보존한다. 코드 병합·렌더 검사 성공과 실제 개발 배포·API 검증은 구분한다.
+
+## 일시적인 연결 수용 계측 (기본 OFF)
+
+`ipgo.engine.acceptance-timing-enabled` 기본값은 `false`다. 승인된 개발환경 시험에서만 일시 활성화하며 종료 후 기존 task로 복구한다. `server_calculation_timing` schemaVersion 1 JSON은 UUID jobId·양의 계산 runId만 상관값으로 사용한다. `dispatch` durationMs는 SQS send 호출 경과이고 성공·실패를 구분한다. `result_transaction` durationMs는 결과 수신 처리 진입부터 transaction completion까지의 시간으로 파싱·검증·잠금·DB 저장·commit 또는 rollback을 포함한다. 순수 DB 쿼리 시간이나 큐 대기 시간으로 해석하지 않는다. Spring afterCompletion에서만 committed/rolled_back/unknown을 기록하고 SUCCEEDED/FAILED/DUPLICATE 처리를 분리한다. 비활성·잘못된 jobId·CALCULATE 외 작업은 기록하지 않으며 payload, 사용자·상품 식별자, 큐 주소/receipt 및 예외 메시지를 기록하지 않는다. SQS 재전송 및 결과 중복은 각각의 기록이다. 시간 대조는 단일 프로세스 monotonic duration을 쓰고 다른 서버의 벽시계를 임의로 차감하지 않는다. 실제 측정·배포는 별도 승인 이후에만 진행한다.
+
+개발 배포 workflow의 `acceptance_timing_enabled` 입력은 기본 `false`이며 task의 `IPGO_ENGINE_ACCEPTANCE_TIMING_ENABLED`로 전달된다. 승인된 단기 시험만 `true`로 지정하고 시험 후 승인된 복구 실행은 다시 `false`로 지정한다. 다른 환경 변수·Secret 참조는 기존 renderer 정책대로 보존한다. 실제 workflow 실행은 별도 승인이다.

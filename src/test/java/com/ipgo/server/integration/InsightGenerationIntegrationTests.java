@@ -99,6 +99,17 @@ class InsightGenerationIntegrationTests extends DatabaseIntegrationTest {
     String state() { return jdbc.queryForObject("SELECT status FROM ai_explanations", String.class); }
     String reason() { return jdbc.queryForObject("SELECT reason_code FROM ai_explanations", String.class); }
 
+    @Test void defaultModelSwitchDoesNotEnqueueEvenWhenGeneralInsightIsEnabled() {
+        long id = save();
+        jdbc.update("DELETE FROM ai_explanations WHERE result_id=?", id);
+        facts.put("method", "LGBM19");
+        tx.executeWithoutResult(s -> generation.prepare(id, facts, "2026-09-01"));
+        generation.tick();
+        assertThat(state()).isEqualTo("DISABLED");
+        assertThat(reason()).isEqualTo("LLM_DISABLED");
+        assertThat(calls).hasValue(0);
+    }
+
     private void window(String start, String end) {
         org.springframework.test.util.ReflectionTestUtils.invokeMethod(generation, "configureWindow",
                 new com.ipgo.server.service.InsightCallWindow(start, end));

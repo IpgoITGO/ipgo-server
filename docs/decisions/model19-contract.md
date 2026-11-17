@@ -1,5 +1,18 @@
 # 고정19일 모델 저장 계약
 
+## 모델 설명 입력과 OFF 경계 (Server253 / AI122)
+
+계산의 위험은 null로 유지하며 인사이트 요청은 method=LGBM19,
+riskStatus=NOT_COMPUTED로 별도 식별한다. 목표 재고는 기존 resultFacts.targetStockQty에서
+가져오며 값 채우기는 Spring만 수행한다. 표시 이름은 예측 모델이고 A/B 산식·배수·표본 부족
+사유를 쓰지 않는 모델 기본 문장을 제공한다. 과거 재생은 저장된 모델 버전·목표 재고를
+원래 요청과 대조하고, metadata가 없으면 INPUT_UNAVAILABLE로 닫는다. DB migration은 없다.
+
+IPGO_INSIGHT_MODEL_ENABLED는 기본 false이며 일반 인사이트 enabled와 별도다.
+새 모델 작업과 과거 모델 재생을 모두 차단한다. AI의 IPGO_MODEL_INSIGHT_ENABLED도
+기본 false다. 연결 검증은 독립 시험에서만 ON으로 수행하고 개발 배포는 OFF를 유지한다.
+AI의 신규 입력 전송 전에 Server를 선반영하며, OFF/이전 이미지로 복구할 수 있다.
+
 대상: Server233 / IPGO-261. IPGO_ENGINE_DEFAULT_METHOD 기본은 B이며, LGBM19와 IPGO_ENGINE_MODEL_VERSION을 명시할 때만 새 요청을 만든다. 환경 설정 변경이나 AWS 배포는 별도 단계다.
 
 서버는 소유권이 확인된 활성 상품의 productCodes(서비스ID→바코드)와 고정 modelVersion을 계산 snapshot/outbox payload에 넣는다. 모델 버전도 input_hash에 포함되어 이전 버전의 실행을 재사용하지 않는다. policy_version은 BUFFER100_FLOOR0이며 기존 A/B 입력/결과는 보존한다.

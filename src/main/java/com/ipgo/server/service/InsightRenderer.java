@@ -34,6 +34,10 @@ public class InsightRenderer {
         var source = r.putObject("insightInput");
         source.put("recommended", "P100");
         for (String key : List.of("riskStatus", "methodFallback", "startStockEstimated")) source.set(key, r.get(key));
+        if ("LGBM19".equals(r.path("method").asText())) {
+            source.put("method", "LGBM19").put("riskStatus", "NOT_COMPUTED");
+            r.putNull("riskStatus");
+        }
         source.put("hasNoDateReceipts", number(r, "noDateReceiptQty").signum() > 0);
         source.putObject("directions");
         var scenarios = source.putArray("scenarios");
@@ -53,8 +57,18 @@ public class InsightRenderer {
         JsonNode source = r.path("insightInput");
         require(source.isObject() && "P100".equals(source.path("recommended").asText()));
         String risk = r.path("riskStatus").asText();
-        require(Set.of("OK", "LOW_GRADE", "INSUFFICIENT_SAMPLE").contains(risk));
-        require(risk.equals(source.path("riskStatus").asText()));
+        boolean model = "LGBM19".equals(r.path("method").asText());
+        if (model) {
+            require(!r.hasNonNull("riskStatus") && !r.path("modelFallback").asBoolean());
+            require("LGBM19".equals(source.path("method").asText())
+                    && "NOT_COMPUTED".equals(source.path("riskStatus").asText()));
+            require(!source.path("methodFallback").asBoolean());
+            risk = "NOT_COMPUTED";
+        } else {
+            require(!"LGBM19".equals(source.path("method").asText()));
+            require(Set.of("OK", "LOW_GRADE", "INSUFFICIENT_SAMPLE").contains(risk));
+            require(risk.equals(source.path("riskStatus").asText()));
+        }
         require(source.path("methodFallback").isBoolean() && source.path("startStockEstimated").isBoolean()
                 && source.path("hasNoDateReceipts").isBoolean());
         require(r.path("methodFallback").isBoolean() && r.path("startStockEstimated").isBoolean());
@@ -64,13 +78,14 @@ public class InsightRenderer {
         Map<String, String> v = new LinkedHashMap<>();
         String method = r.path("method").asText();
         require(Set.of("A", "B", "LGBM19").contains(method));
-        v.put("method", "계산식 " + method);
-        v.put("formula_desc", "LGBM19".equals(method) ? "고정 19일 분위수 예측에 과거 오차를 보정하는 방식" : "A".equals(method) ? "작년 같은 시기 판매량에 올해 최근 흐름을 반영하는 방식" : "최근 유효 관측일 평균 판매량을 쓰는 방식");
+        v.put("method", model ? "예측 모델" : "계산식 " + method);
+        if (model) put(v, "target_stock", demand(number(r, "targetStockQty")));
+        else v.put("formula_desc", "A".equals(method) ? "작년 같은 시기 판매량에 올해 최근 흐름을 반영하는 방식" : "최근 유효 관측일 평균 판매량을 쓰는 방식");
         put(v, "horizon_days", integer(number(r, "horizonDays")));
         put(v, "start_stock", stock(number(r, "startStockQty")));
         put(v, "planned_receipts", integer(number(r, "plannedReceiptsInHorizon")));
         put(v, "forecast_outbound", demand(number(r, "forecastOutboundQty")));
-        put(v, "multiplier", percent(number(r, "multiplier")));
+        if (!model) put(v, "multiplier", percent(number(r, "multiplier")));
         if (r.path("methodFallback").asBoolean()) {
             String reason = r.path("methodReason").asText().strip().replaceAll("\\.+$", "");
             require(!reason.isBlank() && reason.length() <= 255 && !reason.contains("{") && !reason.contains("}"));
@@ -138,6 +153,7 @@ public class InsightRenderer {
         for (JsonNode key : source.path("placeholders")) require(key.isString() && v.containsKey(key.asText()) && names.add(key.asText()));
         var input = mapper.createObjectNode().put("skuLabel", "이 상품");
         for (String key : INPUT_FIELDS) input.set(key, source.get(key));
+        if (model) input.put("method", "LGBM19");
         input.set("directions", mapper.valueToTree(directions));
         return new Prepared(input, Map.copyOf(v), fallback(r, v, described, risk));
     }
@@ -163,6 +179,17 @@ public class InsightRenderer {
 
     private String fallback(JsonNode r, Map<String, String> v, List<String> types, String risk) {
         List<String> lines = new ArrayList<>();
+        if ("NOT_COMPUTED".equals(risk)) {
+            lines.add("{{method}}의 목표 재고 {{target_stock}}개와 현재 재고 {{start_stock}}개, 도착 예정 물량 {{planned_receipts}}개를 반영한 권장 입고량은 {{qty_p100}}개이며, 다음 입고 때 {{ending_p100}}개가 남습니다.");
+            for (String type : List.of("P80", "P120")) {
+                if (!types.contains(type)) continue;
+                lines.add("{{label_X}}인 {{qty_X}}개로 {{action_X}} 다음 입고 때 남는 재고는 {{ending_X}}개로 {{dir_ending_X_end}}.".replace("_X", "_" + type.toLowerCase(Locale.ROOT)));
+            }
+            lines.add("이 예측 방식에서는 품절 위험을 산출하지 않았습니다.");
+            if (r.path("noDateReceiptQty").asLong() > 0) lines.add("도착 예정일 없는 발주 {{no_date_receipts}}개는 계산에 넣지 않았습니다.");
+            if (r.path("startStockEstimated").asBoolean()) lines.add("현재 재고 {{start_stock}}개는 기준일 {{as_of_date}} 이후 출고를 예측한 추정값입니다.");
+            return String.join("\n", lines.stream().map(line -> KEY.matcher(line).find() ? render(line, v) : line).toList());
+        }
         lines.add("{{method}}({{formula_desc}})로 커버 기간 {{horizon_days}}일 동안 {{forecast_outbound}}개가 팔릴 것으로 예측하고 여유 배수 {{multiplier}}를 적용한 뒤, 현재 재고 {{start_stock}}개와 도착 예정 물량 {{planned_receipts}}개를 뺀 권장 입고량은 {{qty_p100}}개입니다.");
         if (r.path("methodFallback").asBoolean()) lines.add("이 산식을 쓴 이유: {{method_reason}}.");
         if (r.path("noDateReceiptQty").asLong() > 0) lines.add("도착 예정일이 없는 기존 발주 물량 {{no_date_receipts}}개는 계산에 넣지 않았습니다.");

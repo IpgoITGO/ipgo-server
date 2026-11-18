@@ -15,16 +15,17 @@ class NeedJudgmentTests {
         return result;
     }
     @Test void unknownShortageOrLeadTimeIsNotAConfirmedNoNeed() {
-        assertThat(NeedJudgment.needStatus(result("OK", null), TODAY, TODAY, 5)).isEqualTo("NOT_CALCULABLE");
-        assertThat(NeedJudgment.needStatus(result("OK", TODAY.plusDays(7)), TODAY, TODAY, null)).isEqualTo("NOT_CALCULABLE");
+        assertThat(NeedJudgment.needStatus(result("OK", null), TODAY, 5)).isEqualTo("NOT_CALCULABLE");
+        assertThat(NeedJudgment.needStatus(result("OK", TODAY.plusDays(7)), TODAY, null)).isEqualTo("NOT_CALCULABLE");
     }
     @Test void leadTimeBoundaryIsInclusiveAndLaterShortageCanWait() {
         var result = result("OK", TODAY.plusDays(7));
-        assertThat(NeedJudgment.needStatus(result, TODAY, TODAY, 7)).isEqualTo("NEED_NOW");
-        assertThat(NeedJudgment.needStatus(result, TODAY, TODAY, 5)).isEqualTo("NOT_NEEDED");
+        assertThat(NeedJudgment.needStatus(result, TODAY, 7)).isEqualTo("NEED_NOW");
+        assertThat(NeedJudgment.needStatus(result, TODAY, 5)).isEqualTo("NOT_NEEDED");
     }
-    @Test void explicitZeroRecommendationAndStaleDataKeepTheirMeaning() {
-        assertThat(NeedJudgment.needStatus(result("NOT_NEEDED", null), TODAY, TODAY, 5)).isEqualTo("NOT_NEEDED");
-        assertThat(NeedJudgment.needStatus(result("OK", null), TODAY.minusDays(8), TODAY, 5)).isEqualTo("REUPLOAD_REQUIRED");
+    @Test void explicitZeroRecommendationAndStoredReuploadKeepTheirMeaning() {
+        assertThat(NeedJudgment.needStatus(result("NOT_NEEDED", null), TODAY, 5)).isEqualTo("NOT_NEEDED");
+        // #261 엔진이 준 재업로드 필요 결과는 그대로 둔다.
+        assertThat(NeedJudgment.needStatus(result("REUPLOAD_REQUIRED", null), TODAY, 5)).isEqualTo("REUPLOAD_REQUIRED");
     }
 }

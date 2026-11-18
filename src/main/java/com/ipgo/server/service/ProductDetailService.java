@@ -102,7 +102,7 @@ public class ProductDetailService {
         CalculationResult calculated = result.get();
         LocalDate asOfDate = run.get().getAsOfDate();
         LocalDate today = LocalDate.now(clock.withZone(DashboardService.SEOUL));
-        String needStatus = NeedJudgment.needStatus(calculated, asOfDate, today, productSettings.leadTimeDays());
+        String needStatus = NeedJudgment.needStatus(calculated, today, productSettings.leadTimeDays());
         JsonNode facts = resultFacts(calculated);
         return new ProductDetail(summary, needStatus, asOfDate, calculated.getExpectedShortageOn(), productSettings,
                 result(calculated, needStatus, facts), accuracy(calculated, firstInboundOn, facts), trend, demandShift);

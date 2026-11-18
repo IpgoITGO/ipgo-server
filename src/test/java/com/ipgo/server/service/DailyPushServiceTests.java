@@ -211,6 +211,17 @@ class DailyPushServiceTests {
         service.tick();
         assertThat(sentBody()).contains("유통기한 지남 1건").doesNotContain("입고 필요","임박","도착 지연");
     }
+    // #261 대시보드는 7일이 지나도 지난 결과의 입고 필요 목록을 주지만, 알림은 8일째부터 입고 필요를 0으로 본다.
+    @Test void replenishmentCountStopsAfterSevenDaysEvenWhenDashboardStillListsItems() {
+        when(needs.daysSinceAsOf()).thenReturn(7L);
+        assertThat(service.summary(1).needed()).isEqualTo(1);
+        when(needs.daysSinceAsOf()).thenReturn(8L);
+        lots(1, 0);
+        overdue(1);
+        assertThat(service.summary(1).needed()).isZero();
+        service.tick();
+        assertThat(sentBody()).contains("유통기한 지남 1건","도착 지연 1건").doesNotContain("입고 필요");
+    }
     // #207 미해결 항목은 다음 날에도 다시 요약한다(처음 생겼을 때만 보내지 않는다).
     @Test void unresolvedItemsAreSummarizedAgainTheNextDay() {
         when(needs.items()).thenReturn(List.of());

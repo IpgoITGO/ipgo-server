@@ -18,6 +18,8 @@ import java.util.UUID;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.http.MediaType;
@@ -329,19 +331,39 @@ class DashboardIntegrationTests extends DatabaseIntegrationTest {
                 .isEqualTo(LocalDate.of(2027, 2, 28));
     }
 
-    @Test
-    void asksForReuploadWhenAsOfDateIsTooOld() throws Exception {
+    // #261 기준일이 7일 넘게 지나도 지난 결과를 그대로 판정해 보내고, 경고는 daysSinceAsOf로 화면이 띄운다.
+    @ParameterizedTest
+    @ValueSource(ints = {7, 8})
+    void keepsStoredResultsWhenAsOfDateIsOld(int days) throws Exception {
         long userId = newUser();
-        long product = product(userId, "8800000000001", "케어트릿 120g");
-        long run = run(warehouseOf(userId), TODAY.minusDays(8), "DONE");
-        result(run, product, "OK", TODAY.plusDays(1), 10L, "1000", "0.1000", null);
+        long soon = product(userId, "8800000000001", "케어트릿 120g");
+        long later = product(userId, "8800000000002", "케어 샴푸");
+        long noData = product(userId, "8800000000003", "시즌 간식 세트");
+        long reupload = product(userId, "8800000000004", "덴탈껌 S");
+        long run = run(warehouseOf(userId), TODAY.minusDays(days), "DONE");
+        result(run, soon, "OK", TODAY.plusDays(1), 10L, "1000", "0.1000", null);
+        result(run, later, "OK", TODAY.plusDays(30), 0L, "0", "0.0100", null);
+        result(run, noData, "NOT_CALCULABLE", null, null, null, null, "판매한 날(유효 관측일)이 7일보다 적어요");
+        result(run, reupload, "REUPLOAD_REQUIRED", null, null, null, null, "수불부 기간이 끊겨 있어요");
 
         get(userId, NEEDS)
-                .andExpect(jsonPath("daysSinceAsOf").value(8))
-                .andExpect(jsonPath("summary.needCount").value(0))
-                .andExpect(jsonPath("notCalculable[0].productId").value(product))
-                .andExpect(jsonPath("notCalculable[0].reason").isString());
-        get(userId, detail(product)).andExpect(jsonPath("needStatus").value("REUPLOAD_REQUIRED"));
+                .andExpect(jsonPath("daysSinceAsOf").value(days))
+                .andExpect(jsonPath("resultStatus").value("UP_TO_DATE"))
+                .andExpect(jsonPath("summary.needCount").value(1))
+                .andExpect(jsonPath("summary.notNeededCount").value(1))
+                .andExpect(jsonPath("summary.notCalculableCount").value(2))
+                .andExpect(jsonPath("items[0].productId").value(soon))
+                .andExpect(jsonPath("items[0].recommendedQty").value(10))
+                .andExpect(jsonPath("notNeededItems[0].productId").value(later))
+                .andExpect(jsonPath("notCalculable[?(@.productId == %d)].reason".formatted(noData))
+                        .value("판매한 날(유효 관측일)이 7일보다 적어요"))
+                // 엔진이 준 재업로드 필요 결과는 저장된 사유 그대로 둔다.
+                .andExpect(jsonPath("notCalculable[?(@.productId == %d)].reason".formatted(reupload))
+                        .value("수불부 기간이 끊겨 있어요"));
+        get(userId, detail(soon)).andExpect(jsonPath("needStatus").value("NEED_NOW"));
+        get(userId, detail(later)).andExpect(jsonPath("needStatus").value("NOT_NEEDED"));
+        get(userId, detail(noData)).andExpect(jsonPath("needStatus").value("NOT_CALCULABLE"));
+        get(userId, detail(reupload)).andExpect(jsonPath("needStatus").value("REUPLOAD_REQUIRED"));
     }
 
     @Test

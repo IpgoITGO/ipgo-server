@@ -119,7 +119,8 @@ public class DailyPushService {
     }
 
     // 대시보드와 동일 판정. 새 발주/취소/설정이 아직 계산에 반영되기 전에는 입고 필요 개수를 보수적으로 0으로 본다.
-    // (유통기한 · 도착 지연은 계산과 상관없이 센다.)
+    // 대시보드는 기준일이 7일 넘게 지나도 지난 결과를 보여 주지만(#261), 오래된 자료로 "지금 넣으세요" 알림을 보내지 않도록
+    // 여기서는 기준일이 7일을 넘으면 입고 필요 개수를 0으로 본다. (유통기한 · 도착 지연은 계산과 상관없이 센다.)
     int eligibleCount(long userId) {
         var needs = dashboard.needs(userId, "shortage");
         if (needs.runId() == null || !"UP_TO_DATE".equals(needs.resultStatus())

@@ -10,7 +10,8 @@ import java.time.temporal.ChronoUnit;
 final class NeedJudgment {
     static final String NEED_NOW = "NEED_NOW";
     static final String UNKNOWN_NEED_REASON = "입고 판정에 필요한 소진 예상일 또는 리드타임을 아직 확인하지 못했어요";
-    // 기준일이 이보다 오래되면 계산 결과를 믿지 않고 재업로드를 안내한다 (기획서 N = 7일).
+    // 경고 기준 (기획서 N = 7일). 기준일이 이보다 오래되면 화면은 지난 결과와 함께 "새 수불부가 필요해요"를 띄운다(#261).
+    // D1 · K1 판정은 바꾸지 않고, 하루 한 번 알림(DailyPushService)의 입고 필요 개수와 직접 수량 시뮬레이션만 이 기준으로 막는다.
     static final int MAX_DAYS_SINCE_AS_OF = 7;
 
     private NeedJudgment() { }
@@ -19,13 +20,13 @@ final class NeedJudgment {
         return ChronoUnit.DAYS.between(asOfDate, today);
     }
 
-    static String needStatus(CalculationResult result, LocalDate asOfDate, LocalDate today, Integer leadTimeDays) {
+    // 기준일이 7일 넘게 지나도 저장된 결과로 판정한다(#261). 오래됐는지는 daysSinceAsOf로 화면이 알린다.
+    static String needStatus(CalculationResult result, LocalDate today, Integer leadTimeDays) {
         String status = result.getStatus();
         if (CalculationResult.NOT_CALCULABLE.equals(status) || CalculationResult.EXCLUDED.equals(status)
                 || CalculationResult.REUPLOAD_REQUIRED.equals(status)) {
             return status;
         }
-        if (daysSince(asOfDate, today) > MAX_DAYS_SINCE_AS_OF) return CalculationResult.REUPLOAD_REQUIRED;
         // 예상 소진일이 오늘 + 리드타임 안이면 지금 넣어야 한다.
         LocalDate shortage = result.getExpectedShortageOn();
         if (CalculationResult.OK.equals(status) && (shortage == null || leadTimeDays == null))

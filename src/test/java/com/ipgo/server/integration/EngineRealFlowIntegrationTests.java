@@ -32,8 +32,13 @@ import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.transaction.support.TransactionTemplate;
 import tools.jackson.databind.json.JsonMapper;
 import static org.assertj.core.api.Assertions.*;
+import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.jwt;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 @SpringBootTest
+@org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc
 @org.springframework.context.annotation.Import(com.ipgo.server.support.ProductActivityTestSchema.class)
 class EngineRealFlowIntegrationTests {
     @TempDir static Path root;
@@ -49,6 +54,7 @@ class EngineRealFlowIntegrationTests {
     @Autowired UploadFileRepository uploads;
     @Autowired TransactionTemplate tx;
     @Autowired JsonMapper mapper;
+    @Autowired org.springframework.test.web.servlet.MockMvc mvc;
     @Autowired com.ipgo.server.service.ProductDetailService details;
     @Autowired com.ipgo.server.service.ScenarioService scenarioService;
     static final LocalDate DAY = LocalDate.of(2026, 9, 1);
@@ -439,6 +445,52 @@ class EngineRealFlowIntegrationTests {
         // 엔진이 아직 이유를 보내지 않으면(ai#94 전) reason · details 없이 지금처럼 동작한다.
         assertThat(legacy.reason()).isNull();
         assertThat(legacy.details()).isNull();
+    }
+
+    private String calculationFailure(String job, Map<String, Object> error) {
+        return mapper.writeValueAsString(Map.of("contractVersion", "1", "jobId", job,
+                "jobType", "CALCULATE", "status", "FAILED", "error", error));
+    }
+
+    @Test void calculationInputFailureShowsEngineReasonInC2() throws Exception {
+        var f = exclusionRun();
+        results.accept(calculationFailure(f.jobId(), Map.of("code", "INVALID_INPUT",
+                "message", "상품별 계산 기간은 최대 366일을 지원해요")));
+        assertThat(jdbc.queryForObject("SELECT error_message FROM calculation_runs WHERE id=?", String.class, f.runId()))
+                .isEqualTo("상품별 계산 기간은 최대 366일을 지원해요");
+        // C2 응답 형식은 그대로이고 errorMessage에 엔진 문장이 그대로 나온다(#258).
+        mvc.perform(get("/api/calculation-runs/" + f.runId())
+                        .with(jwt().jwt(claims -> claims.subject(Long.toString(f.owner())))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("status").value("FAILED"))
+                .andExpect(jsonPath("errorMessage").value("상품별 계산 기간은 최대 366일을 지원해요"));
+        assertThat(jobs.find(f.jobId()).status()).isEqualTo("FAILED");
+    }
+
+    @Test void calculationOutageUnknownCodeAndOddValuesKeepTheFixedMessage() throws Exception {
+        var cases = new java.util.LinkedHashMap<Map<String, Object>, String>();
+        cases.put(Map.of("code", "ENGINE_ERROR", "message", "psycopg.OperationalError: connection to 10.0.0.5 failed"),
+                com.ipgo.server.service.EngineResultWriter.FAILED_MESSAGE);
+        cases.put(Map.of("code", "ENGINE_UNAVAILABLE"), com.ipgo.server.service.EngineResultWriter.FAILED_MESSAGE);
+        cases.put(Map.of("code", "NOT_IMPLEMENTED", "message", "아직 구현되지 않은 계산 기능이에요."),
+                com.ipgo.server.service.EngineResultWriter.FAILED_MESSAGE);
+        cases.put(Map.of("code", "SOMETHING_NEW", "message", "알 수 없는 오류"),
+                com.ipgo.server.service.EngineResultWriter.FAILED_MESSAGE);
+        cases.put(Map.of("code", "INVALID_INPUT", "message", " \n\t "),
+                com.ipgo.server.service.EngineResultWriter.FAILED_MESSAGE);
+        cases.put(Map.of("code", "INVALID_INPUT"), com.ipgo.server.service.EngineResultWriter.FAILED_MESSAGE);
+        cases.put(Map.of("code", "INVALID_INPUT", "message", "기준일과 오늘 사이 간격은\n최대 730일을 지원해요"),
+                "기준일과 오늘 사이 간격은 최대 730일을 지원해요");
+        cases.put(Map.of("code", "RESULT_TOO_LARGE", "message", "결과가 너무 커서 처리할 수 없어요."),
+                "결과가 너무 커서 처리할 수 없어요.");
+        cases.put(Map.of("code", "INVALID_INPUT", "message", "가".repeat(400)), "가".repeat(300));
+        for (var c : cases.entrySet()) {
+            var f = exclusionRun();
+            results.accept(calculationFailure(f.jobId(), c.getKey()));
+            var failed = calculationStatus.status(f.owner(), f.runId());
+            assertThat(failed.status()).as(c.getKey().toString()).isEqualTo("FAILED");
+            assertThat(failed.errorMessage()).as(c.getKey().toString()).isEqualTo(c.getValue());
+        }
     }
 
     @Test void failureAndExpiryAreTerminal() throws Exception {

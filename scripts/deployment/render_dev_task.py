@@ -37,6 +37,9 @@ def settings(env):
     insight = flag(env, "INSIGHT_ENABLED")
     approved = flag(env, "INSIGHT_APPROVED")
     worker = flag(env, "INSIGHT_WORKER_ENABLED")
+    model_insight = flag({"MODEL_INSIGHT_ENABLED": "false", **env}, "MODEL_INSIGHT_ENABLED")
+    require(not model_insight or (insight and engine and approved),
+            "Model explanations require insight, engine and cost approval")
     # Older callers omit the new controls; absence must keep the exception disabled.
     single = flag({"SINGLE_RESULT_INSIGHT_ENABLED": "false", **env}, "SINGLE_RESULT_INSIGHT_ENABLED")
     single_approved = flag({"SINGLE_RESULT_INSIGHT_APPROVED": "false", **env}, "SINGLE_RESULT_INSIGHT_APPROVED")
@@ -87,7 +90,7 @@ def settings(env):
             require(uri.hostname not in ("localhost", "0.0.0.0", "127.0.0.1", "::1"), "Engine origin cannot be loopback")
         except (ValueError, InvalidDeployment):
             raise InvalidDeployment("Invalid engine origin configuration") from None
-    return {"acceptance_timing": timing, "continuous": continuous, "sha": sha, "mode": mode, "engine": engine, "insight": insight, "worker": worker, "single": single, "batch": batch, "base": base, "expires": expires, "starts": starts}
+    return {"model_insight": model_insight, "acceptance_timing": timing, "continuous": continuous, "sha": sha, "mode": mode, "engine": engine, "insight": insight, "worker": worker, "single": single, "batch": batch, "base": base, "expires": expires, "starts": starts}
 
 
 def render(task, image, env):
@@ -116,6 +119,7 @@ def render(task, image, env):
     managed = {"IPGO_API_DOCS_ENABLED": "true", "IPGO_ENGINE_ENABLED": str(config["engine"]).lower(),
                "IPGO_ENGINE_ACCEPTANCE_TIMING_ENABLED": str(config["acceptance_timing"]).lower(),
                "IPGO_INSIGHT_ENABLED": str(config["insight"]).lower(),
+               "IPGO_INSIGHT_MODEL_ENABLED": str(config["model_insight"]).lower(),
                "IPGO_INSIGHT_SINGLE_RESULT_ENABLED": str(config["single"]).lower(),
                "IPGO_INSIGHT_BATCH_ENABLED": str(config["batch"]).lower(),
                "IPGO_INSIGHT_WORKER_ENABLED": str(config["worker"]).lower()}

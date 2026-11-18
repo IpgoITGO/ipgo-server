@@ -78,7 +78,7 @@ public class EngineResults {
                 }
             }
         } else {
-            if (success) writer.complete(job, message.get("result")); else writer.fail(job);
+            if (success) writer.complete(job, message.get("result")); else writer.fail(job, calculationFailure(message.path("error")));
         }
         jobs.finished(job.id(), success);
         timing.processing(success ? EngineTiming.Processing.SUCCEEDED : EngineTiming.Processing.FAILED);
@@ -105,6 +105,14 @@ public class EngineResults {
     private static void require(boolean valid) { if (!valid) throw new IllegalArgumentException("Invalid engine envelope"); }
 
     static final int MAX_REASON_LENGTH = 300;
+
+    // 계산도 셀러가 고칠 수 있는 입력 문제면 엔진 문장을 C2에 보여 준다(#258).
+    // 엔진 장애 · 미구현 · 알 수 없는 코드 · 빈 문장은 지금처럼 고정 문구를 쓴다.
+    static String calculationFailure(JsonNode error) {
+        String reason = Set.of("INVALID_INPUT","RESULT_TOO_LARGE").contains(error.path("code").asText())
+                ? sellerReason(error.path("message")) : null;
+        return reason != null ? reason : EngineResultWriter.FAILED_MESSAGE;
+    }
 
     // 화면에 그대로 보여 줄 문장이라 줄바꿈 · 제어 문자를 공백으로 바꾸고 길이를 제한한다. 비어 있으면 null.
     static String sellerReason(JsonNode node) {

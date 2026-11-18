@@ -8,6 +8,9 @@ AI-01 인사이트 조회는 현재 상품 결과와 저장된 입고 조건을 
 위험은 모델에서 미산출이며 목표 재고·권장량·시나리오 값은 Server가 채웁니다. 기본 문장도
 A/B 산식·표본 부족 사유와 분리합니다. `IPGO_INSIGHT_MODEL_ENABLED` 기본 `false`이며
 새 모델 설명과 과거 모델 설명 재생 모두 OFF를 유지합니다. 활성화는 AI 쪽 스위치와 함께 검증해야 합니다.
+개발 배포의 `model_insight_enabled` 입력은 기본 `false`이며 ON에는 엔진·인사이트·비용 승인이
+필요합니다. 앱 SHA를 고정해도 렌더러는 검토된 workflow revision을 사용합니다. 문제 시 두 서비스의
+동일 입력을 `false`로 재배포하며 계산 방식·모델·기존 결과는 유지합니다.
 
 고정19일 모델의 요청·저장·버전/멱등 계약과 기본 OFF 수용 계측 및 로컬 통합 검사는 [LGBM19 연결 계약](docs/decisions/model19-contract.md)을 따릅니다. 기본 계산은 B이며, 승인된 개발 배포에서 계산 방식과 정확한 모델 버전을 명시해 전환할 수 있습니다.
 
@@ -638,6 +641,8 @@ storage/uploads/<인증된 사용자 ID>/<보관 UUID>/
 
 ### 입고 조건 (S1~S3)
 
+LGBM19 선택 시 S1 응답은 `calculationSupport: {method: "LGBM19", leadTimeDays: 5, reviewCycleDays: 14}`를 제공합니다. A/B는 `calculationSupport: null`입니다. 대시보드 계산 불가 항목의 `currentSettings`는 현재 적용 중인 상품별 조건과 기본값을 합친 값이며 과거 계산 시점 조건이 아닙니다. 입고 주기가 아직 확정되지 않았다면 null입니다. 이 응답을 사용하는 Client 안내는 AI #142에 연결되며, 실제 적용은 Server를 먼저 배포한 뒤 Client를 배포합니다. 개발·운영 배포는 별도 승인과 검증이 필요합니다.
+
 LGBM19 선택 시 S2 기본값 저장은 배송 5일·입고 주기 14일만 지원합니다. 다른 기간은 저장/계산 작업 생성 전에 `400 MODEL_PERIOD_UNSUPPORTED`와 `details.field`로 거절합니다. 입고 단위는 기존 양의 정수를 유지하며, 과거 결과·상품별 예외는 바꾸지 않습니다. 기존 A/B 설정 저장 계약은 유지합니다.
 
 미확정 입고 주기 제안(#92 · #166)은 **최근 12개월의 날짜별 입고 기록**(`product_daily_stocks`)으로 서버가 계산합니다.
@@ -653,11 +658,20 @@ GET은 설정 저장·계산을 시작하지 않습니다. S2로 확정한 조�
 
 리드타임·입고 주기·입고 단위를 창고 기본값(`warehouses.default_*`)과 상품별 값(`replenishment_settings`)으로 저장합니다(BE-06). 상품별 값이 비어 있으면 기본값을 씁니다. 모든 값은 1 이상 정수이며, 0 이하·소수·누락은 `400 INVALID_INPUT`과 `details.field`로 응답합니다. 정수 칸에 소수를 보내면 잘라내지 않고 거절합니다.
 
+**리드타임 + 입고 주기는 366일 이하**여야 합니다(#257). AI 계산 엔진(`ipgo-ai` `app/execution.py`)은 이 합계가 366일을 넘는 상품이 하나라도 있으면 계산 전체를 실패시키므로, 서버가 저장 때 먼저 막습니다. 넘으면 저장하지 않고 `400 INVALID_INPUT`, `details.field: "reviewCycleDays"`, 메시지 "리드타임과 입고 주기를 합쳐 366일 이하로 넣어 주세요."로 응답합니다. 합계는 **실제로 적용되는 값**으로 봅니다.
+
+| 저장 | 확인하는 값 | 예 |
+|---|---|---|
+| S2 기본값 | 보낸 기본값의 합계, 그리고 상품별 값이 있는 내 상품 전체(사용을 끈 상품 포함)에 새 기본값을 채운 합계 | 상품별 입고 주기 300일인 상품이 있으면 기본 리드타임 67일은 거절. 메시지 앞에 `'상품명' 상품의 상품별 입고 조건과 합치면 366일을 넘어요.`(여럿이면 `'상품명' 외 N개 상품의`)를 붙입니다 |
+| S3 상품별 값 | 비운 칸을 기본값(확인 전이면 제안값 리드타임 5일)으로 채운 합계 | 기본 리드타임 5일이면 상품별 입고 주기 361일까지 저장 |
+
+확인 전이라 입고 주기가 정해지지 않았으면 그 칸은 가장 작은 값인 1일로 봅니다(예: 상품별 리드타임 366일은 거절). 이미 저장된 값은 바꾸지 않으며, 그런 상품이 있으면 S2가 그 상품 이름을 알려 주고 거절합니다.
+
 | API | 동작 |
 |---|---|
 | `GET /api/replenishment-settings` (S1) | 기본값 조회. 셀러가 저장하기 전에는 `confirmed: false`와 제안값(리드타임 5일, 입고 단위 1개, `reviewCycleSource: "ESTIMATED"`)을 돌려줍니다. 입고 주기를 추정했으면 `reviewCycleBasis: { from, to, productCount }`(본 기간과 센 상품 수)를 같이 줍니다(#166). 저장 뒤에는 `confirmed: true`, `"DEFAULT"`, `reviewCycleBasis: null`. 저장 여부와 관계없이 지금 수불부로 추정한 입고 주기를 `reviewCycleSuggestion: { reviewCycleDays, from, to, productCount }`로 같이 줘서, 기본값을 바꾼 뒤에도 화면에서 추천값으로 되돌릴 수 있습니다(#214). 알려 주기만 하고 저장하지 않으며, 추정할 수 없으면 null. 세 칸을 한 번에 되돌릴 수 있게 저장 여부와 관계없이 `suggestion: { leadTimeDays, reviewCycleDays, orderUnitQty }`도 줍니다(#243). 리드타임 · 입고 단위는 저장 전 제안값(5일, 1개)과 같고, 입고 주기는 `reviewCycleSuggestion.reviewCycleDays`와 같으며 추정할 수 없으면 그 칸만 null |
-| `PUT /api/replenishment-settings` (S2) | `{leadTimeDays, reviewCycleDays, orderUnitQty, recalculate}`. 세 칸 모두 필수. 응답의 `runId`는 선행 조건을 충족한 계산 번호이며, 조건 미충족·엔진 비활성 때는 null |
-| `PUT /api/products/{productId}/replenishment-settings` (S3) | `{leadTimeDays, reviewCycleDays, orderUnitQty, unitCost}`. 입고 조건 세 칸은 보낸 값으로 모두 바꾸며, 비우면 기본값을 따릅니다. `unitCost`(0 이상)는 보낸 경우에만 바꿉니다. 다른 회원 상품 `403`, 없는 상품 `404` |
+| `PUT /api/replenishment-settings` (S2) | `{leadTimeDays, reviewCycleDays, orderUnitQty, recalculate}`. 세 칸 모두 필수. 리드타임 + 입고 주기가 366일을 넘거나 상품별 값과 합쳐 넘는 상품이 생기면 거절합니다. 응답의 `runId`는 선행 조건을 충족한 계산 번호이며, 조건 미충족·엔진 비활성 때는 null |
+| `PUT /api/products/{productId}/replenishment-settings` (S3) | `{leadTimeDays, reviewCycleDays, orderUnitQty, unitCost}`. 입고 조건 세 칸은 보낸 값으로 모두 바꾸며, 비우면 기본값을 따릅니다. `unitCost`(0 이상)는 보낸 경우에만 바꿉니다. 리드타임 + 입고 주기가 366일을 넘으면 원가도 저장하지 않습니다. 다른 회원 상품 `403`, 없는 상품 `404` |
 
 S2·S3 모두 Bearer JWT가 필요하며 CSRF는 요구하지 않습니다. 기본 조건을 확인하기 전 제안값의
 `reviewCycleDays`는 null이며, 추측한 주기로 계산하지 않습니다. 엔진이 활성화되고 입력이 준비되면
@@ -735,6 +749,7 @@ R2·R3은 Bearer JWT가 필요하고, 다른 회원의 상품·발주는 `403`, 
 `GET /api/calculation-runs/{runId}`는 저장 응답의 `runId`로 계산이 끝났는지 알려줍니다(BE-16). 업로드 정제·조건 저장·발주 변경이 계산을 요청하고 이 API는 상태를 읽습니다.
 
 - `status`: `QUEUED` · `RUNNING` · `DONE` · `FAILED`. `FAILED`면 `errorMessage`에 실패 사유가 옵니다.
+- 엔진이 셀러가 고칠 수 있는 입력 문제(`INVALID_INPUT` · `RESULT_TOO_LARGE`)로 계산을 실패하면 엔진 문장을 한 줄(최대 300자)로 정리해 `errorMessage`에 그대로 줍니다(#258). 예: "상품별 계산 기간은 최대 366일을 지원해요". 엔진 장애 · 미구현 · 알 수 없는 코드이거나 문장이 비어 있으면 지금처럼 "계산을 완료하지 못했습니다. 입력과 서버 상태를 확인하고 다시 시도해 주세요."이고, 엔진 장애 문구는 저장하지 않습니다.
 - `DONE`이면 `summary`에 완료 팝업용 개수(지금 넣어야 할 상품 · 입고 불필요 · 계산 불가 · 검산 제외)가 옵니다. D1과 같은 기준으로 오늘 날짜에 다시 판정하고, 사용을 끈 상품은 뺍니다.
 - 명세의 `policy`(기본 산식 · 배수)는 계산 행에 저장할 위치가 #27에서 정해질 때까지 `null`입니다.
 - 다른 회원의 계산은 `403`, 없는 계산은 `404`입니다.

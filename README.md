@@ -653,11 +653,20 @@ GET은 설정 저장·계산을 시작하지 않습니다. S2로 확정한 조�
 
 리드타임·입고 주기·입고 단위를 창고 기본값(`warehouses.default_*`)과 상품별 값(`replenishment_settings`)으로 저장합니다(BE-06). 상품별 값이 비어 있으면 기본값을 씁니다. 모든 값은 1 이상 정수이며, 0 이하·소수·누락은 `400 INVALID_INPUT`과 `details.field`로 응답합니다. 정수 칸에 소수를 보내면 잘라내지 않고 거절합니다.
 
+**리드타임 + 입고 주기는 366일 이하**여야 합니다(#257). AI 계산 엔진(`ipgo-ai` `app/execution.py`)은 이 합계가 366일을 넘는 상품이 하나라도 있으면 계산 전체를 실패시키므로, 서버가 저장 때 먼저 막습니다. 넘으면 저장하지 않고 `400 INVALID_INPUT`, `details.field: "reviewCycleDays"`, 메시지 "리드타임과 입고 주기를 합쳐 366일 이하로 넣어 주세요."로 응답합니다. 합계는 **실제로 적용되는 값**으로 봅니다.
+
+| 저장 | 확인하는 값 | 예 |
+|---|---|---|
+| S2 기본값 | 보낸 기본값의 합계, 그리고 상품별 값이 있는 내 상품 전체(사용을 끈 상품 포함)에 새 기본값을 채운 합계 | 상품별 입고 주기 300일인 상품이 있으면 기본 리드타임 67일은 거절. 메시지 앞에 `'상품명' 상품의 상품별 입고 조건과 합치면 366일을 넘어요.`(여럿이면 `'상품명' 외 N개 상품의`)를 붙입니다 |
+| S3 상품별 값 | 비운 칸을 기본값(확인 전이면 제안값 리드타임 5일)으로 채운 합계 | 기본 리드타임 5일이면 상품별 입고 주기 361일까지 저장 |
+
+확인 전이라 입고 주기가 정해지지 않았으면 그 칸은 가장 작은 값인 1일로 봅니다(예: 상품별 리드타임 366일은 거절). 이미 저장된 값은 바꾸지 않으며, 그런 상품이 있으면 S2가 그 상품 이름을 알려 주고 거절합니다.
+
 | API | 동작 |
 |---|---|
 | `GET /api/replenishment-settings` (S1) | 기본값 조회. 셀러가 저장하기 전에는 `confirmed: false`와 제안값(리드타임 5일, 입고 단위 1개, `reviewCycleSource: "ESTIMATED"`)을 돌려줍니다. 입고 주기를 추정했으면 `reviewCycleBasis: { from, to, productCount }`(본 기간과 센 상품 수)를 같이 줍니다(#166). 저장 뒤에는 `confirmed: true`, `"DEFAULT"`, `reviewCycleBasis: null`. 저장 여부와 관계없이 지금 수불부로 추정한 입고 주기를 `reviewCycleSuggestion: { reviewCycleDays, from, to, productCount }`로 같이 줘서, 기본값을 바꾼 뒤에도 화면에서 추천값으로 되돌릴 수 있습니다(#214). 알려 주기만 하고 저장하지 않으며, 추정할 수 없으면 null. 세 칸을 한 번에 되돌릴 수 있게 저장 여부와 관계없이 `suggestion: { leadTimeDays, reviewCycleDays, orderUnitQty }`도 줍니다(#243). 리드타임 · 입고 단위는 저장 전 제안값(5일, 1개)과 같고, 입고 주기는 `reviewCycleSuggestion.reviewCycleDays`와 같으며 추정할 수 없으면 그 칸만 null |
-| `PUT /api/replenishment-settings` (S2) | `{leadTimeDays, reviewCycleDays, orderUnitQty, recalculate}`. 세 칸 모두 필수. 응답의 `runId`는 선행 조건을 충족한 계산 번호이며, 조건 미충족·엔진 비활성 때는 null |
-| `PUT /api/products/{productId}/replenishment-settings` (S3) | `{leadTimeDays, reviewCycleDays, orderUnitQty, unitCost}`. 입고 조건 세 칸은 보낸 값으로 모두 바꾸며, 비우면 기본값을 따릅니다. `unitCost`(0 이상)는 보낸 경우에만 바꿉니다. 다른 회원 상품 `403`, 없는 상품 `404` |
+| `PUT /api/replenishment-settings` (S2) | `{leadTimeDays, reviewCycleDays, orderUnitQty, recalculate}`. 세 칸 모두 필수. 리드타임 + 입고 주기가 366일을 넘거나 상품별 값과 합쳐 넘는 상품이 생기면 거절합니다. 응답의 `runId`는 선행 조건을 충족한 계산 번호이며, 조건 미충족·엔진 비활성 때는 null |
+| `PUT /api/products/{productId}/replenishment-settings` (S3) | `{leadTimeDays, reviewCycleDays, orderUnitQty, unitCost}`. 입고 조건 세 칸은 보낸 값으로 모두 바꾸며, 비우면 기본값을 따릅니다. `unitCost`(0 이상)는 보낸 경우에만 바꿉니다. 리드타임 + 입고 주기가 366일을 넘으면 원가도 저장하지 않습니다. 다른 회원 상품 `403`, 없는 상품 `404` |
 
 S2·S3 모두 Bearer JWT가 필요하며 CSRF는 요구하지 않습니다. 기본 조건을 확인하기 전 제안값의
 `reviewCycleDays`는 null이며, 추측한 주기로 계산하지 않습니다. 엔진이 활성화되고 입력이 준비되면

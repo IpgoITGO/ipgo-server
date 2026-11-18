@@ -18,10 +18,11 @@ public record ProductDetail(Product product, String needStatus, LocalDate asOfDa
     }
 
     // requiredQtyBeforeRounding은 계산 run의 resultFacts에 저장된 원본 필요량에서 읽는다.
+    // targetStockQty는 새 모델(LGBM19) 결과의 목표 재고(resultFacts, #267). 기존 방식 · 값이 없는 예전 계산은 null.
     public record Result(Long resultId, String status, String reason, String method, String methodReason,
             BigDecimal multiplier, Integer horizonDays, Long forecastOutboundQty, Long startStockQty,
             boolean startStockEstimated, Long plannedReceiptsInHorizon, Long preArrivalUnmetQty,
-            Long requiredQtyBeforeRounding, Long recommendedQty, Long recommendedAmount) {
+            Long requiredQtyBeforeRounding, Long targetStockQty, Long recommendedQty, Long recommendedAmount) {
     }
 
     // history는 같은 계산의 TUNE 재생 이력이다. 구버전 결과는 빈 목록, evaluation=null.

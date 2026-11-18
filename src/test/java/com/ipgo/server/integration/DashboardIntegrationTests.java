@@ -411,6 +411,42 @@ class DashboardIntegrationTests extends DatabaseIntegrationTest {
     }
 
     @Test
+    void detailShowsTargetStockOnlyForStoredModelResults() throws Exception {
+        // 새 모델(LGBM19) 결과: EngineResultWriter가 resultFacts에 저장한 목표 재고를 수요처럼 올림해 준다(#267).
+        long modelUser = newUser();
+        long modelProduct = product(modelUser, "8800000000001", "케어트릿 120g");
+        long modelRun = run(warehouseOf(modelUser), TODAY.minusDays(2), "DONE");
+        result(modelRun, modelProduct, "NOT_NEEDED", null, 0L, "0", null, null);
+        method(modelRun, "LGBM19");
+        facts(modelRun, "{\"" + modelProduct + "\":{\"modelVersion\":\"m19\",\"targetStockQty\":20.3,\"modelFallback\":false}}");
+        get(modelUser, detail(modelProduct))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("result.method").value("LGBM19"))
+                .andExpect(jsonPath("result.targetStockQty").value(21));
+
+        // 기존 방식 결과는 resultFacts에 값이 있어도 null이다.
+        long formulaUser = newUser();
+        long formulaProduct = product(formulaUser, "8800000000002", "케어트릿 240g");
+        long formulaRun = run(warehouseOf(formulaUser), TODAY.minusDays(2), "DONE");
+        result(formulaRun, formulaProduct, "OK", TODAY.plusDays(20), 10L, "1000", "0.1000", null);
+        method(formulaRun, "B");
+        facts(formulaRun, "{\"" + formulaProduct + "\":{\"targetStockQty\":30}}");
+        get(formulaUser, detail(formulaProduct))
+                .andExpect(jsonPath("result.method").value("B"))
+                .andExpect(jsonPath("result.targetStockQty").value(org.hamcrest.Matchers.nullValue()));
+
+        // 목표 재고를 저장하기 전의 예전 계산은 새 모델 결과여도 null이다.
+        long oldUser = newUser();
+        long oldProduct = product(oldUser, "8800000000003", "케어트릿 360g");
+        long oldRun = run(warehouseOf(oldUser), TODAY.minusDays(2), "DONE");
+        result(oldRun, oldProduct, "OK", TODAY.plusDays(20), 10L, "1000", null, null);
+        method(oldRun, "LGBM19");
+        get(oldUser, detail(oldProduct))
+                .andExpect(jsonPath("result.method").value("LGBM19"))
+                .andExpect(jsonPath("result.targetStockQty").value(org.hamcrest.Matchers.nullValue()));
+    }
+
+    @Test
     void detailChecksOwnerAndPeriod() throws Exception {
         long owner = newUser();
         long other = newUser();
@@ -465,6 +501,16 @@ class DashboardIntegrationTests extends DatabaseIntegrationTest {
                     outbound_qty, adjustment_qty, closing_qty, is_valid_observation)
                 VALUES (?, ?, ?, 0, 0, CAST(? AS NUMERIC(18, 3)), 0, CAST(? AS NUMERIC(18, 3)), ?)
                 """, productId, uploadId, date, outbound, closing, valid);
+    }
+
+    private void method(long runId, String method) {
+        jdbc.update("UPDATE calculation_results SET method = ? WHERE run_id = ?", method, runId);
+    }
+
+    // 상품 ID만 넣는 고정 JSON이라 literal로 넣는다.
+    private void facts(long runId, String resultFacts) {
+        jdbc.update("UPDATE calculation_runs SET selection_snapshot = JSON '{\"resultFacts\":" + resultFacts + "}' WHERE id = ?",
+                runId);
     }
 
     private ResultActions get(long userId, String path) throws Exception {

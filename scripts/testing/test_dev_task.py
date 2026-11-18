@@ -20,6 +20,29 @@ IMAGE = f'{ACCOUNT}.dkr.ecr.ap-northeast-2.amazonaws.com/ipgo-dev/server:{SHA}-a
 
 
 class DevDeploymentTests(unittest.TestCase):
+    def test_model_explanation_on_and_off_preserve_other_contracts(self):
+        self.task['containerDefinitions'][0]['environment'].append(
+            {'name': 'IPGO_INSIGHT_MODEL_ENABLED', 'value': 'true'})
+        for value in ('false', 'true', 'false'):
+            env = dict(self.env, MODEL_INSIGHT_ENABLED=value)
+            rendered = module.render(self.task, IMAGE, env)['containerDefinitions'][0]
+            values = {e['name']: e['value'] for e in rendered['environment']}
+            self.assertEqual(values['IPGO_INSIGHT_MODEL_ENABLED'], value)
+            self.assertEqual(rendered.get('secrets'), self.task['containerDefinitions'][0].get('secrets'))
+        self.assertFalse(module.settings(self.env)['model_insight'])
+        for change in [dict(INSIGHT_ENABLED='false', INSIGHT_WORKER_ENABLED='false'),
+                       dict(ENGINE_ENABLED='false'), dict(INSIGHT_APPROVED='false'),
+                       dict(MODEL_INSIGHT_ENABLED='TRUE')]:
+            with self.subTest(change=change), self.assertRaises(module.InvalidDeployment):
+                module.settings(dict(self.env, MODEL_INSIGHT_ENABLED='true') | change)
+
+    def test_model_switch_uses_workflow_renderer_with_pinned_app(self):
+        text = (ROOT / '.github/workflows/deploy-dev.yml').read_text()
+        self.assertIn('MODEL_INSIGHT_ENABLED: ${{ inputs.model_insight_enabled }}', text)
+        self.assertIn('git show "$GITHUB_SHA:scripts/deployment/render_dev_task.py"', text)
+        self.assertNotIn('python3 scripts/deployment/render_dev_task.py', text)
+        self.assertIn('python3 "$RUNNER_TEMP/render_dev_task.py" render', text)
+
     def test_model_method_is_preserved_unless_explicitly_selected(self):
         self.task['containerDefinitions'][0]['environment'].extend([
             {'name':'IPGO_ENGINE_DEFAULT_METHOD','value':'LGBM19'},
@@ -303,12 +326,12 @@ class DevDeploymentTests(unittest.TestCase):
 
     def test_workflow_calls_gate_before_credentials_or_image_upload(self):
         workflow=(ROOT/'.github/workflows/deploy-dev.yml').read_text()
-        gate=workflow.index('run: python3 scripts/deployment/render_dev_task.py validate')
+        gate=workflow.index('run: python3 "$RUNNER_TEMP/render_dev_task.py" validate')
         self.assertLess(gate,workflow.index('uses: aws-actions/configure-aws-credentials'))
         self.assertLess(gate,workflow.index('push: true'))
         for name in ['EXPECTED_SHA','INSIGHT_ENABLED','INSIGHT_APPROVED','INSIGHT_WORKER_ENABLED','ENGINE_BASE_URL']:
             self.assertIn(name+': ${{ ',workflow)
-        self.assertIn('python3 scripts/deployment/render_dev_task.py render',workflow)
+        self.assertIn('python3 "$RUNNER_TEMP/render_dev_task.py" render',workflow)
         # Environment-level vars are resolved inside runner steps, after the dev environment is declared.
         self.assertEqual(workflow.count('          ENGINE_BASE_URL: ${{ vars.AWS_AI_ENGINE_BASE_URL }}'),2)
         self.assertIn('task-definition: ${{ steps.render.outputs.task-definition }}',workflow)

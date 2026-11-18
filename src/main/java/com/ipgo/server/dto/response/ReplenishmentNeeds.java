@@ -25,7 +25,8 @@ public record ReplenishmentNeeds(LocalDate asOfDate, LocalDate today, Long daysS
             LocalDate expectedShortageOn, Integer leadTimeDays, DemandShift demandShift) {
     }
 
-    public record NotCalculable(Long productId, String skuName, String reason, DemandShift demandShift) {
+    public record NotCalculable(Long productId, String skuName, String reason, DemandShift demandShift,
+            ProductSettings currentSettings) {
     }
 
     // date는 수불부 검산이 어긋난 날이다. 계산에 쓴 업로드의 검증 리포트에 없으면 null이다.

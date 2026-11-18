@@ -13,7 +13,7 @@ import java.util.Optional;
 // 입고 주기는 reviewCycleSuggestion과 같은 값이다. 입고 주기를 추정할 수 없으면 그 칸만 null.
 public record DefaultSettings(boolean confirmed, Integer leadTimeDays, Integer reviewCycleDays,
         String reviewCycleSource, Long orderUnitQty, ReviewCycleBasis reviewCycleBasis,
-        ReviewCycleSuggestion reviewCycleSuggestion, ProductSettings suggestion) {
+        ReviewCycleSuggestion reviewCycleSuggestion, ProductSettings suggestion, CalculationSupport calculationSupport) {
 
     public record ReviewCycleBasis(LocalDate from, LocalDate to, int productCount) {
     }
@@ -21,13 +21,16 @@ public record DefaultSettings(boolean confirmed, Integer leadTimeDays, Integer r
     public record ReviewCycleSuggestion(int reviewCycleDays, LocalDate from, LocalDate to, int productCount) {
     }
 
+    public record CalculationSupport(String method, int leadTimeDays, int reviewCycleDays) {
+    }
+
     public static DefaultSettings from(Optional<Warehouse> warehouse, ProductSettings values, ReviewCycleBasis basis,
-            ReviewCycleSuggestion reviewCycle) {
+            ReviewCycleSuggestion reviewCycle, String defaultMethod) {
         boolean confirmed = warehouse.map(Warehouse::hasConfirmedDefaults).orElse(false);
         var suggestion = new ProductSettings(ProductSettings.SUGGESTED.leadTimeDays(),
                 reviewCycle == null ? null : reviewCycle.reviewCycleDays(), ProductSettings.SUGGESTED.orderUnitQty());
         return new DefaultSettings(confirmed, values.leadTimeDays(), values.reviewCycleDays(),
                 confirmed ? "DEFAULT" : "ESTIMATED", values.orderUnitQty(), confirmed ? null : basis, reviewCycle,
-                suggestion);
+                suggestion, "LGBM19".equals(defaultMethod) ? new CalculationSupport("LGBM19", 5, 14) : null);
     }
 }

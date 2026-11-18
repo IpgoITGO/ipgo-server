@@ -1,6 +1,8 @@
 package com.ipgo.server.service;
 
 import com.ipgo.server.dto.request.DefaultSettingsRequest;
+import com.ipgo.server.dto.response.ProductSettings;
+import java.util.Optional;
 import com.ipgo.server.entity.Warehouse;
 import com.ipgo.server.exception.ProductException;
 import com.ipgo.server.repository.ProductRepository;
@@ -16,8 +18,62 @@ class ModelPeriodSettingsTests {
     final ProductRepository products = mock(ProductRepository.class);
     final ReplenishmentSettingRepository settings = mock(ReplenishmentSettingRepository.class);
     final EngineCalculationService calculations = mock(EngineCalculationService.class);
+    final ReviewCycleSuggestionService suggestions = mock(ReviewCycleSuggestionService.class);
     final ReplenishmentService service = new ReplenishmentService(warehouses, products, settings,
-            calculations, mock(ReviewCycleSuggestionService.class));
+            calculations, suggestions);
+
+    @Test
+    void supportIsReportedForModelWithoutCreatingWarehouseOrChangingSuggestedValues() {
+        ReflectionTestUtils.setField(service, "defaultMethod", "LGBM19");
+        when(warehouses.findDefault(43)).thenReturn(Optional.empty());
+        when(suggestions.defaults(Optional.empty())).thenReturn(new ProductSettings(5, null, 1L));
+        var response = service.defaults(43);
+        assertThat(response.confirmed()).isFalse();
+        assertThat(response.leadTimeDays()).isEqualTo(5);
+        assertThat(response.reviewCycleDays()).isNull();
+        assertThat(response.calculationSupport().method()).isEqualTo("LGBM19");
+        assertThat(response.calculationSupport().leadTimeDays()).isEqualTo(5);
+        assertThat(response.calculationSupport().reviewCycleDays()).isEqualTo(14);
+        verify(warehouses, never()).lockDefault(anyLong());
+        verifyNoInteractions(calculations);
+    }
+
+    @Test
+    void supportIsReportedBeforeWarehouseSettingsAreConfirmed() {
+        ReflectionTestUtils.setField(service, "defaultMethod", "LGBM19");
+        var warehouse = mock(Warehouse.class);
+        when(warehouses.findDefault(43)).thenReturn(Optional.of(warehouse));
+        when(warehouse.hasConfirmedDefaults()).thenReturn(false);
+        when(suggestions.estimate(warehouse)).thenReturn(
+                new ReviewCycleSuggestionService.Estimate(21, null, null, 3));
+        var response = service.defaults(43);
+        assertThat(response.confirmed()).isFalse();
+        assertThat(response.reviewCycleDays()).isEqualTo(21);
+        assertThat(response.calculationSupport().reviewCycleDays()).isEqualTo(14);
+        verifyNoInteractions(calculations);
+    }
+
+    @Test
+    void supportIsIndependentOfConfirmedWarehouseAndOrdinaryMethodsHaveNoRestriction() {
+        var warehouse = mock(Warehouse.class);
+        when(warehouses.findDefault(43)).thenReturn(Optional.of(warehouse));
+        when(warehouse.hasConfirmedDefaults()).thenReturn(true);
+        when(suggestions.estimate(warehouse)).thenReturn(new ReviewCycleSuggestionService.Estimate(null, null, null, 0));
+        when(suggestions.defaults(Optional.of(warehouse))).thenReturn(new ProductSettings(5, 14, 3L));
+        ReflectionTestUtils.setField(service, "defaultMethod", "LGBM19");
+        var model = service.defaults(43);
+        assertThat(model.confirmed()).isTrue();
+        assertThat(model.orderUnitQty()).isEqualTo(3L);
+        assertThat(model.calculationSupport().reviewCycleDays()).isEqualTo(14);
+        for (String method : new String[] {"A", "B"}) {
+            ReflectionTestUtils.setField(service, "defaultMethod", method);
+            var ordinary = service.defaults(43);
+            assertThat(ordinary.confirmed()).isTrue();
+            assertThat(ordinary.calculationSupport()).isNull();
+            assertThat(ordinary.orderUnitQty()).isEqualTo(3L);
+        }
+        verifyNoInteractions(calculations);
+    }
 
     @Test
     void rejectsUnsupportedLeadBeforeChangingAnyState() {

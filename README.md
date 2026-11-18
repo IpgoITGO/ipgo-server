@@ -641,6 +641,8 @@ storage/uploads/<인증된 사용자 ID>/<보관 UUID>/
 
 ### 입고 조건 (S1~S3)
 
+LGBM19 선택 시 S1 응답은 `calculationSupport: {method: "LGBM19", leadTimeDays: 5, reviewCycleDays: 14}`를 제공합니다. A/B는 `calculationSupport: null`입니다. 대시보드 계산 불가 항목의 `currentSettings`는 현재 적용 중인 상품별 조건과 기본값을 합친 값이며 과거 계산 시점 조건이 아닙니다. 입고 주기가 아직 확정되지 않았다면 null입니다. 이 응답을 사용하는 Client 안내는 AI #142에 연결되며, 실제 적용은 Server를 먼저 배포한 뒤 Client를 배포합니다. 개발·운영 배포는 별도 승인과 검증이 필요합니다.
+
 LGBM19 선택 시 S2 기본값 저장은 배송 5일·입고 주기 14일만 지원합니다. 다른 기간은 저장/계산 작업 생성 전에 `400 MODEL_PERIOD_UNSUPPORTED`와 `details.field`로 거절합니다. 입고 단위는 기존 양의 정수를 유지하며, 과거 결과·상품별 예외는 바꾸지 않습니다. 기존 A/B 설정 저장 계약은 유지합니다.
 
 미확정 입고 주기 제안(#92 · #166)은 **최근 12개월의 날짜별 입고 기록**(`product_daily_stocks`)으로 서버가 계산합니다.

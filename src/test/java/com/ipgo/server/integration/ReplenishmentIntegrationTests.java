@@ -23,12 +23,14 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.jwt;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
+import static org.hamcrest.Matchers.startsWith;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 @AutoConfigureMockMvc
 class ReplenishmentIntegrationTests extends DatabaseIntegrationTest {
     private static final String DEFAULTS = "/api/replenishment-settings";
+    private static final String HORIZON_GUIDE = "리드타임과 입고 주기를 합쳐 366일 이하로 넣어 주세요.";
 
     @Autowired MockMvc mvc;
     @Autowired JdbcTemplate jdbc;
@@ -154,6 +156,104 @@ class ReplenishmentIntegrationTests extends DatabaseIntegrationTest {
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM replenishment_settings", Integer.class)).isZero();
     }
 
+    // #257 AI는 리드타임 + 입고 주기가 366일을 넘는 상품이 하나라도 있으면 계산 전체를 실패시킨다.
+    @Test
+    void rejectsDefaultsWhoseHorizonExceedsEngineLimit() throws Exception {
+        long userId = newUser();
+        putJson(userId, DEFAULTS, "{\"leadTimeDays\": 2, \"reviewCycleDays\": 365, \"orderUnitQty\": 1}")
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("code").value("INVALID_INPUT"))
+                .andExpect(jsonPath("message").value(HORIZON_GUIDE))
+                .andExpect(jsonPath("details.field").value("reviewCycleDays"));
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM warehouses WHERE user_id = ?", Integer.class, userId))
+                .isZero();
+
+        putJson(userId, DEFAULTS, "{\"leadTimeDays\": 1, \"reviewCycleDays\": 365, \"orderUnitQty\": 1}")
+                .andExpect(status().isOk());
+        assertThat(defaultsOf(userId)).containsExactly(1, 365);
+    }
+
+    @Test
+    void rejectsProductSettingsWhoseAppliedHorizonExceedsEngineLimit() throws Exception {
+        long userId = newUser();
+        long productId = registerProduct(userId);
+        putJson(userId, DEFAULTS, "{\"leadTimeDays\": 5, \"reviewCycleDays\": 29, \"orderUnitQty\": 1}")
+                .andExpect(status().isOk());
+
+        putJson(userId, settingsOf(productId), "{\"leadTimeDays\": 300, \"reviewCycleDays\": 67}")
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("code").value("INVALID_INPUT"))
+                .andExpect(jsonPath("message").value(HORIZON_GUIDE))
+                .andExpect(jsonPath("details.field").value("reviewCycleDays"));
+        assertThat(overrideCount(productId)).isZero();
+        putJson(userId, settingsOf(productId), "{\"leadTimeDays\": 300, \"reviewCycleDays\": 66}")
+                .andExpect(status().isOk());
+
+        // 비운 칸은 기본값(리드타임 5일 · 입고 주기 29일)을 따르므로 그 값과 합쳐서 본다.
+        putJson(userId, settingsOf(productId), "{\"reviewCycleDays\": 362, \"unitCost\": 900}")
+                .andExpect(status().isBadRequest()).andExpect(jsonPath("details.field").value("reviewCycleDays"));
+        putJson(userId, settingsOf(productId), "{\"leadTimeDays\": 338}")
+                .andExpect(status().isBadRequest()).andExpect(jsonPath("details.field").value("reviewCycleDays"));
+        assertThat(jdbc.queryForObject("SELECT lead_time_days FROM replenishment_settings WHERE product_id = ?",
+                Integer.class, productId)).isEqualTo(300);
+        assertThat(jdbc.queryForObject("SELECT unit_cost FROM products WHERE id = ?", Long.class, productId)).isNull();
+
+        putJson(userId, settingsOf(productId), "{\"reviewCycleDays\": 361}").andExpect(status().isOk());
+        putJson(userId, settingsOf(productId), "{\"leadTimeDays\": 337}").andExpect(status().isOk());
+    }
+
+    @Test
+    void checksProductSettingsAgainstSuggestedValuesBeforeDefaultsAreSaved() throws Exception {
+        long userId = newUser();
+        long productId = registerProduct(userId);
+        // 확인 전 리드타임 제안값은 5일이다.
+        putJson(userId, settingsOf(productId), "{\"reviewCycleDays\": 362}")
+                .andExpect(status().isBadRequest()).andExpect(jsonPath("details.field").value("reviewCycleDays"));
+        // 입고 주기는 아직 정해지지 않아 가장 작은 1일로 본다. 366일 리드타임은 어떤 입고 주기와도 넘는다.
+        putJson(userId, settingsOf(productId), "{\"leadTimeDays\": 366}")
+                .andExpect(status().isBadRequest()).andExpect(jsonPath("details.field").value("reviewCycleDays"));
+        assertThat(overrideCount(productId)).isZero();
+
+        putJson(userId, settingsOf(productId), "{\"reviewCycleDays\": 361}").andExpect(status().isOk());
+        putJson(userId, settingsOf(productId), "{\"leadTimeDays\": 365}").andExpect(status().isOk());
+        // 저장해 둔 리드타임 365일과 합치면 넘는 기본 입고 주기는 막는다.
+        putJson(userId, DEFAULTS, "{\"leadTimeDays\": 5, \"reviewCycleDays\": 2, \"orderUnitQty\": 1}")
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("message").value(startsWith("'케어트릿 120g' 상품의")));
+        putJson(userId, DEFAULTS, "{\"leadTimeDays\": 5, \"reviewCycleDays\": 1, \"orderUnitQty\": 1}")
+                .andExpect(status().isOk());
+    }
+
+    @Test
+    void rejectsDefaultsThatPushProductOverridesOverEngineLimit() throws Exception {
+        long userId = newUser();
+        long first = registerProduct(userId, "8800272420016", "케어트릿 120g");
+        long second = registerProduct(userId, "8800272420023", "케어트릿 240g");
+        long fixed = registerProduct(userId, "8800272420030", "케어트릿 360g");
+        putJson(userId, DEFAULTS, "{\"leadTimeDays\": 5, \"reviewCycleDays\": 29, \"orderUnitQty\": 1}")
+                .andExpect(status().isOk());
+        putJson(userId, settingsOf(first), "{\"reviewCycleDays\": 300}").andExpect(status().isOk());
+        putJson(userId, settingsOf(second), "{\"leadTimeDays\": 300}").andExpect(status().isOk());
+        // 두 칸을 모두 정한 상품은 기본값이 바뀌어도 영향이 없다.
+        putJson(userId, settingsOf(fixed), "{\"leadTimeDays\": 183, \"reviewCycleDays\": 183}").andExpect(status().isOk());
+
+        // 첫 상품: 기본 리드타임 67 + 상품별 입고 주기 300 = 367
+        putJson(userId, DEFAULTS, "{\"leadTimeDays\": 67, \"reviewCycleDays\": 29, \"orderUnitQty\": 1}")
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("code").value("INVALID_INPUT"))
+                .andExpect(jsonPath("message").value("'케어트릿 120g' 상품의 상품별 입고 조건과 합치면 366일을 넘어요. " + HORIZON_GUIDE))
+                .andExpect(jsonPath("details.field").value("reviewCycleDays"));
+        putJson(userId, DEFAULTS, "{\"leadTimeDays\": 67, \"reviewCycleDays\": 67, \"orderUnitQty\": 1}")
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("message").value(startsWith("'케어트릿 120g' 외 1개 상품의")));
+        assertThat(defaultsOf(userId)).containsExactly(5, 29);
+
+        // 두 상품 모두 합계 366일이면 저장한다.
+        putJson(userId, DEFAULTS, "{\"leadTimeDays\": 66, \"reviewCycleDays\": 66, \"orderUnitQty\": 1}")
+                .andExpect(status().isOk());
+        assertThat(defaultsOf(userId)).containsExactly(66, 66);
+    }
+
     private ResultActions putJson(long userId, String path, String body) throws Exception {
         return mvc.perform(put(path).with(jwt().jwt(claims -> claims.subject(Long.toString(userId))))
                 .contentType(MediaType.APPLICATION_JSON).content(body));
@@ -164,9 +264,22 @@ class ReplenishmentIntegrationTests extends DatabaseIntegrationTest {
     }
 
     private long registerProduct(long userId) {
+        return registerProduct(userId, "8800272420016", "케어트릿 120g");
+    }
+
+    private long registerProduct(long userId, String barcode, String name) {
         registration.register(userId, warehouses.lockDefault(userId).getId(), List.of(
-                new CleanedStockUnit("8800272420016", "케어트릿 120g", "MIX-1", LocalDate.of(2026, 9, 1))));
-        return products.findByUserIdAndSkuBarcodeIn(userId, List.of("8800272420016")).getFirst().getId();
+                new CleanedStockUnit(barcode, name, "MIX-1", LocalDate.of(2026, 9, 1))));
+        return products.findByUserIdAndSkuBarcodeIn(userId, List.of(barcode)).getFirst().getId();
+    }
+
+    private List<Integer> defaultsOf(long userId) {
+        return jdbc.queryForObject("SELECT default_lead_time_days, default_review_cycle_days FROM warehouses WHERE user_id = ?",
+                (row, index) -> List.of(row.getInt(1), row.getInt(2)), userId);
+    }
+
+    private int overrideCount(long productId) {
+        return jdbc.queryForObject("SELECT COUNT(*) FROM replenishment_settings WHERE product_id = ?", Integer.class, productId);
     }
 
     private long newUser() {

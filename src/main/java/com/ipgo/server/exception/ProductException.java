@@ -27,6 +27,13 @@ public class ProductException extends RuntimeException {
         return new ProductException(HttpStatus.BAD_REQUEST, "INVALID_INPUT", "입력값의 형식과 길이를 확인해주세요.", field);
     }
 
+    // 리드타임 + 입고 주기가 계산 엔진이 받는 기간을 넘을 때(#257). 원인 상품을 알면 문장 앞에 붙인다.
+    public static ProductException calculationHorizonTooLong(int maxDays, String cause) {
+        String guide = "리드타임과 입고 주기를 합쳐 " + maxDays + "일 이하로 넣어 주세요.";
+        return new ProductException(HttpStatus.BAD_REQUEST, "INVALID_INPUT",
+                cause == null ? guide : cause + " " + guide, "reviewCycleDays");
+    }
+
     public static ProductException unsupportedModelPeriod(String field) {
         return new ProductException(HttpStatus.BAD_REQUEST, "MODEL_PERIOD_UNSUPPORTED",
                 "현재 예측 모델은 배송 5일·입고 주기 14일 조건에서만 계산해요. 기본 리드타임을 5일, 입고 주기를 14일로 확인해 주세요.", field);

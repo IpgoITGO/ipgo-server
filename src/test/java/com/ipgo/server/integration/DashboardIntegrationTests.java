@@ -87,6 +87,32 @@ class DashboardIntegrationTests extends DatabaseIntegrationTest {
     }
 
     @Test
+    void notCalculableShowsEffectiveCurrentSettingsWithoutChangingNormalResults() throws Exception {
+        long userId = newUser();
+        long warehouse = warehouseOf(userId);
+        long normal = product(userId, "8800000000901", "정상 상품");
+        long unsupported = product(userId, "8800000000902", "조건이 다른 상품");
+        jdbc.update("UPDATE warehouses SET default_lead_time_days=5, default_review_cycle_days=14, "
+                + "default_order_unit_qty=3 WHERE id=?", warehouse);
+        jdbc.update("INSERT INTO replenishment_settings (product_id, lead_time_days, updated_at) VALUES (?, 6, ?)",
+                unsupported, Timestamp.from(Instant.now()));
+        long latest = run(warehouse, TODAY, "DONE");
+        result(latest, normal, "OK", TODAY.plusDays(1), 10L, "1000", null, null);
+        String reason = "이 모델은 배송 5일·발주 주기 14일·배수 1 조건에서만 계산해요";
+        result(latest, unsupported, "NOT_CALCULABLE", null, null, null, null, reason);
+        get(userId, NEEDS)
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("summary.needCount").value(1))
+                .andExpect(jsonPath("summary.notCalculableCount").value(1))
+                .andExpect(jsonPath("items[0].productId").value(normal))
+                .andExpect(jsonPath("notCalculable[0].productId").value(unsupported))
+                .andExpect(jsonPath("notCalculable[0].reason").value(reason))
+                .andExpect(jsonPath("notCalculable[0].currentSettings.leadTimeDays").value(6))
+                .andExpect(jsonPath("notCalculable[0].currentSettings.reviewCycleDays").value(14))
+                .andExpect(jsonPath("notCalculable[0].currentSettings.orderUnitQty").value(3));
+    }
+
+    @Test
     void classifiesLatestDoneRunByTodayAndLeadTime() throws Exception {
         long userId = newUser();
         long warehouse = warehouseOf(userId);

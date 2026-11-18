@@ -105,7 +105,8 @@ public class DashboardService {
             Product product = byId.get(result.getProductId());
             // 셀러가 사용을 끈 상품은 계산 뒤에 껐더라도 바로 목록에서 뺀다.
             if (!product.isActive() || overwritten.contains(product.getId())) continue;
-            Integer leadTime = defaults.applying(overrides.get(product.getId())).leadTimeDays();
+            ProductSettings currentSettings = defaults.applying(overrides.get(product.getId()));
+            Integer leadTime = currentSettings.leadTimeDays();
             switch (NeedJudgment.needStatus(result, run.getAsOfDate(), today, leadTime)) {
                 case NeedJudgment.NEED_NOW -> items.add(new ReplenishmentNeeds.Item(product.getId(), result.getId(),
                         product.getSkuBarcode(), product.getSkuName(), result.getRecommendedQty(),
@@ -119,7 +120,7 @@ public class DashboardService {
                                 result.getReason() != null ? result.getReason()
                                         : NeedJudgment.daysSince(run.getAsOfDate(), today) > NeedJudgment.MAX_DAYS_SINCE_AS_OF
                                                 ? REUPLOAD_REASON : NeedJudgment.UNKNOWN_NEED_REASON,
-                                shifts.get(product.getId())));
+                                shifts.get(product.getId()), currentSettings));
                 default -> notNeeded.add(new ReplenishmentNeeds.NotNeededItem(product.getId(), result.getId(),
                         product.getSkuBarcode(), product.getSkuName(), result.getExpectedShortageOn(), leadTime,
                         shifts.get(product.getId())));

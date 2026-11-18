@@ -174,7 +174,7 @@ public class ProductDetailService {
                 // 계산일이 기준일보다 늦으면 시작 재고는 예상 출고로 이어서 추정한 값이다.
                 result.getStartDate().isAfter(result.getOriginDate()),
                 result.getPlannedReceiptQty(), DisplayQuantities.demand(result.getPreArrivalUnmetQty()), beforeRounding(facts),
-                result.getRecommendedQty(), DisplayQuantities.won(result.getRecommendedAmount()));
+                targetStock(result, facts), result.getRecommendedQty(), DisplayQuantities.won(result.getRecommendedAmount()));
     }
 
     private JsonNode resultFacts(CalculationResult result) {
@@ -184,6 +184,13 @@ public class ProductDetailService {
 
     private Long beforeRounding(JsonNode facts) {
         var value = facts.path("requiredQtyBeforeRounding");
+        return value.isNumber() ? DisplayQuantities.demand(value.decimalValue()) : null;
+    }
+
+    // 새 모델(LGBM19) 결과만 EngineResultWriter가 저장한 목표 재고를 준다. 인사이트와 같이 수요 기준 올림.
+    private Long targetStock(CalculationResult result, JsonNode facts) {
+        if (!"LGBM19".equals(result.getMethod())) return null;
+        var value = facts.path("targetStockQty");
         return value.isNumber() ? DisplayQuantities.demand(value.decimalValue()) : null;
     }
 

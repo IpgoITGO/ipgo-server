@@ -785,6 +785,7 @@ R2·R3은 Bearer JWT가 필요하고, 다른 회원의 상품·발주는 `403`, 
 - 기준일이 7일 넘게 지나면 하루 한 번 알림의 입고 필요 개수는 0으로 보고([발송 설정·판정·복구](#발송-설정판정복구)), 직접 수량 시뮬레이션은 `409 SCENARIO_STALE`입니다. 오래된 자료로 "지금 넣으세요"를 알리지 않기 위해서입니다.
 - 가장 최근 계산이 실패했으면 이전 성공 결과를 보여주면서 `resultStatus: STALE`과 `lastFailedRunAt`을 함께 돌려줍니다.
 - 화면용 정수(미확정): 재고는 내림, 수요(예상 출고 · 미충족 수요 · 예측 범위)는 올림, 금액은 원 단위 반올림입니다. 팀 결정이 나면 `DisplayQuantities`만 바꿉니다.
+- K1 `result.targetStockQty`(#267): 새 모델(LGBM19) 결과의 목표 재고입니다. 계산 결과 저장 때 `selection_snapshot.resultFacts`에 둔 AI 값을 수요처럼 올림해 줍니다(예: 20.3 → 21). 기존 방식(A·B) 결과나 이 값을 저장하기 전의 예전 계산은 `null`입니다.
 - D1 `excluded[].date`는 그 계산에 쓴 업로드(`run_source_files`)의 검증 리포트에서 찾은 검산 불일치 날짜입니다. 리포트에 없으면 `null`입니다.
 - 아직 비어 있는 값: K1 `accuracy.history`(백테스트 연동 이후), `result.requiredQtyBeforeRounding`(ERD 저장 칸 없음).
 

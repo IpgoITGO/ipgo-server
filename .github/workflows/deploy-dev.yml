@@ -37,6 +37,11 @@ on:
         required: false
         default: false
         type: boolean
+      model_insight_enabled:
+        description: "Enable paid LGBM19 explanations together with the AI model switch"
+        required: false
+        default: false
+        type: boolean
       batch_insight_enabled:
         description: "Allow explicit fixed master batch 1921-1925 sharing the original 812-816 lifetime five calls; no background generation"
         required: false
@@ -163,6 +168,7 @@ jobs:
       INSIGHT_STARTS_AT: ${{ inputs.insight_starts_at }}
       INSIGHT_EXPIRES_AT: ${{ inputs.insight_expires_at }}
       INSIGHT_ENABLED: ${{ inputs.insight_enabled }}
+      MODEL_INSIGHT_ENABLED: ${{ inputs.model_insight_enabled }}
       BATCH_INSIGHT_ENABLED: ${{ inputs.batch_insight_enabled }}
       BATCH_INSIGHT_APPROVED: ${{ inputs.batch_insight_approved }}
       SINGLE_RESULT_INSIGHT_ENABLED: ${{ inputs.single_result_insight_enabled }}
@@ -188,10 +194,15 @@ jobs:
             test "$EXPECTED_SHA" = "$GITHUB_SHA" || { echo "Method changes require the current workflow source SHA"; exit 1; }
           fi
 
+      - name: Load deployment controls from the reviewed workflow revision
+        shell: bash
+        run: |
+          git cat-file -e "$GITHUB_SHA^{commit}"
+          git show "$GITHUB_SHA:scripts/deployment/render_dev_task.py" > "$RUNNER_TEMP/render_dev_task.py"
       - name: Validate approved deployment before external writes
         env:
           ENGINE_BASE_URL: ${{ vars.AWS_AI_ENGINE_BASE_URL }}
-        run: python3 scripts/deployment/render_dev_task.py validate
+        run: python3 "$RUNNER_TEMP/render_dev_task.py" validate
       - name: Verify approved source CI before AWS access
         timeout-minutes: 2
         env:
@@ -276,7 +287,7 @@ jobs:
           ENGINE_BASE_URL: ${{ vars.AWS_AI_ENGINE_BASE_URL }}
           SERVER_IMAGE: ${{ steps.verified_image.outputs.image }}
         run: |
-          python3 scripts/deployment/render_dev_task.py render \
+          python3 "$RUNNER_TEMP/render_dev_task.py" render \
             --source "$RUNNER_TEMP/task-definition.json" \
             --output "$RUNNER_TEMP/server-task-definition.json" \
             --image "$SERVER_IMAGE"

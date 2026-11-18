@@ -107,19 +107,18 @@ public class DashboardService {
             if (!product.isActive() || overwritten.contains(product.getId())) continue;
             ProductSettings currentSettings = defaults.applying(overrides.get(product.getId()));
             Integer leadTime = currentSettings.leadTimeDays();
-            switch (NeedJudgment.needStatus(result, run.getAsOfDate(), today, leadTime)) {
+            switch (NeedJudgment.needStatus(result, today, leadTime)) {
                 case NeedJudgment.NEED_NOW -> items.add(new ReplenishmentNeeds.Item(product.getId(), result.getId(),
                         product.getSkuBarcode(), product.getSkuName(), result.getRecommendedQty(),
                         DisplayQuantities.won(result.getRecommendedAmount()), result.getExpectedShortageOn(),
                         leadTime, result.getPreArrivalRisk(), shifts.get(product.getId())));
                 case CalculationResult.EXCLUDED -> excluded.add(new ReplenishmentNeeds.Excluded(product.getId(),
                         product.getSkuName(), mismatchDates.get(product.getId()), result.getReason()));
-                // 기준일이 오래돼 재업로드가 필요한 상품도 계산할 수 없는 목록에 사유와 함께 보여준다.
+                // 엔진이 재업로드가 필요하다고 준 상품도 계산할 수 없는 목록에 저장된 사유와 함께 보여준다.
+                // 저장된 계산 불가 · 재업로드 결과는 사유가 늘 있어서, 사유가 없으면 소진일이나 리드타임을 모르는 경우다.
                 case CalculationResult.NOT_CALCULABLE, CalculationResult.REUPLOAD_REQUIRED ->
                         notCalculable.add(new ReplenishmentNeeds.NotCalculable(product.getId(), product.getSkuName(),
-                                result.getReason() != null ? result.getReason()
-                                        : NeedJudgment.daysSince(run.getAsOfDate(), today) > NeedJudgment.MAX_DAYS_SINCE_AS_OF
-                                                ? REUPLOAD_REASON : NeedJudgment.UNKNOWN_NEED_REASON,
+                                result.getReason() != null ? result.getReason() : NeedJudgment.UNKNOWN_NEED_REASON,
                                 shifts.get(product.getId()), currentSettings));
                 default -> notNeeded.add(new ReplenishmentNeeds.NotNeededItem(product.getId(), result.getId(),
                         product.getSkuBarcode(), product.getSkuName(), result.getExpectedShortageOn(), leadTime,
@@ -149,8 +148,6 @@ public class DashboardService {
         }
         return dates;
     }
-
-    static final String REUPLOAD_REASON = "기준일이 7일 넘게 지났어요. 최신 수불부를 다시 올려 주세요";
 
     // shortage: 소진일 빠른 순 · risk: 품절 위험 높은 순 · amount: 금액 큰 순. 값이 없으면 뒤로 보낸다.
     private static Comparator<ReplenishmentNeeds.Item> order(String sort) {

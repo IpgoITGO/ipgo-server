@@ -114,7 +114,7 @@ public class CalculationRunService {
             // 셀러가 사용을 끈 상품과 덮어쓴 파일에만 있던 상품(#188)은 D1처럼 개수에서 뺀다.
             if (!byId.get(result.getProductId()).isActive() || overwritten.contains(result.getProductId())) continue;
             Integer leadTime = defaults.applying(overrides.get(result.getProductId())).leadTimeDays();
-            switch (NeedJudgment.needStatus(result, run.getAsOfDate(), today, leadTime)) {
+            switch (NeedJudgment.needStatus(result, today, leadTime)) {
                 case NeedJudgment.NEED_NOW -> need++;
                 case CalculationResult.EXCLUDED -> excluded++;
                 case CalculationResult.NOT_CALCULABLE, CalculationResult.REUPLOAD_REQUIRED -> notCalculable++;

@@ -275,6 +275,8 @@ IPGO_TEST_DB_USERNAME=ipgo IPGO_TEST_DB_PASSWORD=<임시 비밀번호> ./gradlew
 
 `IPGO_SIGNUP_ENABLED=false`이면 형식이 올바른 이메일 중복 확인, 가입용 인증 메일 발송·코드 확인, 가입 요청에 `403 SIGNUP_DISABLED`를 반환합니다. 계정·인증 상태를 만들거나 가입 메일을 보내지 않습니다. 기존 로그인·세션·계정 복구 및 결제 설정에는 영향을 주지 않습니다. 다시 허용하려면 `true`로 복원합니다.
 
+개발 배포에서는 GitHub `dev` 환경 변수 `AWS_DEV_SIGNUP_ENABLED`에 승인된 `false` 또는 `true`를 지정합니다. 변수를 비워 두거나 제거하면 현재 ECS 설정을 유지하므로, 가입 재개는 `true`를 지정해 배포해야 합니다.
+
 가입 요청 예시입니다. `verificationToken`에는 A7에서 받은 실제 토큰을 전달합니다.
 
 ```json

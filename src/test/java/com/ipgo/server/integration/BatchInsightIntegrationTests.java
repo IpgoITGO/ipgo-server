@@ -24,6 +24,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.test.annotation.DirtiesContext;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.transaction.support.TransactionTemplate;
@@ -41,6 +42,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @SpringBootTest(properties={"ipgo.insight.batch-enabled=true","ipgo.insight.single-result-enabled=false",
         "ipgo.insight.enabled=false","ipgo.insight.worker-enabled=false"})
 @AutoConfigureMockMvc
+@DirtiesContext(classMode = DirtiesContext.ClassMode.AFTER_CLASS)
 class BatchInsightIntegrationTests extends DatabaseIntegrationTest {
     static final String BATCH="master-current-20261105", BASE="/api/insight-batches/"+BATCH;
     @Autowired JdbcTemplate jdbc;
@@ -66,6 +68,9 @@ class BatchInsightIntegrationTests extends DatabaseIntegrationTest {
     java.util.Map<Long,com.ipgo.server.dto.response.ProductDetail> oldViews;
 
     @BeforeEach void setup() throws Exception {
+        // Tests drive recovery explicitly. The real timer can consume an artificially aged
+        // reservation before the legacy-only assertion, even when legacy recovery is correct.
+        batch.close();
         UploadTestDatabase.clear(jdbc);
         calls=new AtomicInteger(); delay=0; httpStatus=200;
         reply=mapper.writeValueAsString(Map.of("validation","PASSED","draft","{{qty_p100}}개 입고 시 {{ending_p100}}개가 남습니다.",

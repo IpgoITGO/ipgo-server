@@ -2,9 +2,13 @@ package com.ipgo.server.integration;
 
 import com.ipgo.server.DatabaseIntegrationTest;
 import com.ipgo.server.dto.CleanedStockUnit;
+import com.ipgo.server.exception.ProductException;
 import com.ipgo.server.repository.ProductRepository;
+import com.ipgo.server.service.EngineCalculationService;
 import com.ipgo.server.service.ProductRegistrationService;
 import com.ipgo.server.service.WarehouseService;
+
+import jakarta.persistence.EntityManager;
 
 import java.time.LocalDate;
 import java.util.List;
@@ -16,10 +20,17 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.http.MediaType;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.ResultActions;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.Mockito.clearInvocations;
+import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.doReturn;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
+import static org.mockito.Mockito.verifyNoMoreInteractions;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.jwt;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
@@ -37,6 +48,8 @@ class ReplenishmentIntegrationTests extends DatabaseIntegrationTest {
     @Autowired ProductRegistrationService registration;
     @Autowired WarehouseService warehouses;
     @Autowired ProductRepository products;
+    @Autowired EntityManager entities;
+    @MockitoSpyBean EngineCalculationService calculations;
 
     @AfterEach
     void cleanUp() {
@@ -252,6 +265,149 @@ class ReplenishmentIntegrationTests extends DatabaseIntegrationTest {
         putJson(userId, DEFAULTS, "{\"leadTimeDays\": 66, \"reviewCycleDays\": 66, \"orderUnitQty\": 1}")
                 .andExpect(status().isOk());
         assertThat(defaultsOf(userId)).containsExactly(66, 66);
+    }
+
+    @Test
+    void savesCombinedSettingsAgainstFinalDefaultsAndRequestsOneCalculation() throws Exception {
+        long userId = newUser();
+        long productId = registerProduct(userId);
+        long warehouseId = warehouses.findDefault(userId).orElseThrow().getId();
+        putJson(userId, DEFAULTS, """
+                {"leadTimeDays":5,"reviewCycleDays":200,"orderUnitQty":1}
+                """).andExpect(status().isOk());
+        putJson(userId, settingsOf(productId), """
+                {"leadTimeDays":200,"unitCost":900}
+                """).andExpect(status().isBadRequest()).andExpect(jsonPath("message").value(HORIZON_GUIDE));
+        clearInvocations(calculations);
+        doReturn(17L).when(calculations).request(userId, warehouseId, "SETTINGS", true);
+
+        putJson(userId, DEFAULTS, """
+                {"leadTimeDays":5,"reviewCycleDays":14,"orderUnitQty":1,"recalculate":true,
+                 "productOverrides":[{"productId":%d,"leadTimeDays":200,"unitCost":900}]}
+                """.formatted(productId)).andExpect(status().isOk()).andExpect(jsonPath("runId").value(17));
+
+        assertThat(defaultsOf(userId)).containsExactly(5, 14);
+        mvc.perform(get("/api/products").with(jwt().jwt(claims -> claims.subject(Long.toString(userId)))))
+                .andExpect(jsonPath("items[0].settings.leadTimeDays").value(200))
+                .andExpect(jsonPath("items[0].settings.reviewCycleDays").value(14))
+                .andExpect(jsonPath("items[0].unitCost").value(900));
+        verify(calculations).request(userId, warehouseId, "SETTINGS", true);
+        verifyNoMoreInteractions(calculations);
+    }
+
+    @Test
+    void rejectsCombinedSettingsWhenAnUnchangedProductExceedsHorizon() throws Exception {
+        long userId = newUser();
+        long changed = registerProduct(userId);
+        long unchanged = registerProduct(userId, "8800272420023", "Unchanged SKU");
+        putJson(userId, DEFAULTS, """
+                {"leadTimeDays":5,"reviewCycleDays":14,"orderUnitQty":1}
+                """).andExpect(status().isOk());
+        putJson(userId, settingsOf(unchanged), """
+                {"leadTimeDays":300}
+                """).andExpect(status().isOk());
+        jdbc.update("UPDATE products SET is_active = FALSE WHERE id = ?", unchanged);
+        clearInvocations(calculations);
+
+        putJson(userId, DEFAULTS, """
+                {"leadTimeDays":5,"reviewCycleDays":67,"orderUnitQty":1,"recalculate":true,
+                 "productOverrides":[{"productId":%d,"leadTimeDays":20,"unitCost":900}]}
+                """.formatted(changed)).andExpect(status().isBadRequest())
+                .andExpect(jsonPath("message").value(startsWith("'Unchanged SKU' 상품의")));
+        assertThat(defaultsOf(userId)).containsExactly(5, 14);
+        assertThat(overrideCount(changed)).isZero();
+        assertThat(products.findById(changed).orElseThrow().getUnitCost()).isNull();
+        verifyNoInteractions(calculations);
+    }
+
+    @Test
+    void rejectsInvalidOrUnauthorizedOverridesWithoutSavingAnyRows() throws Exception {
+        long userId = newUser();
+        long productId = registerProduct(userId);
+        long otherProductId = registerProduct(newUser());
+        putJson(userId, DEFAULTS, """
+                {"leadTimeDays":5,"reviewCycleDays":14,"orderUnitQty":1}
+                """).andExpect(status().isOk());
+        clearInvocations(calculations);
+        String request = """
+                {"leadTimeDays":5,"reviewCycleDays":200,"orderUnitQty":1,"recalculate":true,
+                 "productOverrides":[{"productId":%d,"unitCost":900},%s]}
+                """;
+        putJson(userId, DEFAULTS, request.formatted(productId, "{\"productId\":" + otherProductId + "}"))
+                .andExpect(status().isForbidden()).andExpect(jsonPath("code").value("FORBIDDEN"));
+        putJson(userId, DEFAULTS, request.formatted(productId, "{\"productId\":" + Long.MAX_VALUE + "}"))
+                .andExpect(status().isNotFound()).andExpect(jsonPath("code").value("NOT_FOUND"));
+        putJson(userId, DEFAULTS, request.formatted(productId, "{\"productId\":" + productId + "}"))
+                .andExpect(status().isBadRequest()).andExpect(jsonPath("details.field").value("productOverrides"));
+        putJson(userId, DEFAULTS, request.formatted(productId, "{\"productId\":" + productId + ",\"unitCost\":-1}"))
+                .andExpect(status().isBadRequest()).andExpect(jsonPath("details.field").value("productOverrides[1].unitCost"));
+        putJson(userId, DEFAULTS, request.formatted(productId, "null"))
+                .andExpect(status().isBadRequest()).andExpect(jsonPath("code").value("INVALID_INPUT"));
+        putJson(userId, DEFAULTS, """
+                {"leadTimeDays":5,"reviewCycleDays":200,"orderUnitQty":1,"recalculate":true,
+                 "productOverrides":[{"productId":%d,"leadTimeDays":200,"unitCost":900}]}
+                """.formatted(productId)).andExpect(status().isBadRequest())
+                .andExpect(jsonPath("details.field").value("reviewCycleDays"));
+
+        assertThat(defaultsOf(userId)).containsExactly(5, 14);
+        assertThat(overrideCount(productId)).isZero();
+        assertThat(overrideCount(otherProductId)).isZero();
+        assertThat(products.findById(productId).orElseThrow().getUnitCost()).isNull();
+        verifyNoInteractions(calculations);
+    }
+
+    @Test
+    void combinedSettingsCanResetAStoredOverrideToInheritTheNewDefault() throws Exception {
+        long userId = newUser();
+        long productId = registerProduct(userId);
+        putJson(userId, DEFAULTS, """
+                {"leadTimeDays":5,"reviewCycleDays":14,"orderUnitQty":1}
+                """).andExpect(status().isOk());
+        putJson(userId, settingsOf(productId), """
+                {"leadTimeDays":300,"unitCost":900}
+                """).andExpect(status().isOk());
+        putJson(userId, DEFAULTS, """
+                {"leadTimeDays":5,"reviewCycleDays":200,"orderUnitQty":1,
+                 "productOverrides":[{"productId":%d}]}
+                """.formatted(productId)).andExpect(status().isOk());
+
+        mvc.perform(get("/api/products").with(jwt().jwt(claims -> claims.subject(Long.toString(userId)))))
+                .andExpect(jsonPath("items[0].settings.leadTimeDays").value(5))
+                .andExpect(jsonPath("items[0].settings.reviewCycleDays").value(200))
+                .andExpect(jsonPath("items[0].overridden.length()").value(0))
+                .andExpect(jsonPath("items[0].unitCost").value(900));
+    }
+
+    @Test
+    void rollsBackCombinedSettingsIfCalculationRequestFails() throws Exception {
+        long userId = newUser();
+        long productId = registerProduct(userId);
+        long warehouseId = warehouses.findDefault(userId).orElseThrow().getId();
+        putJson(userId, DEFAULTS, """
+                {"leadTimeDays":5,"reviewCycleDays":200,"orderUnitQty":1}
+                """).andExpect(status().isOk());
+        putJson(userId, settingsOf(productId), """
+                {"leadTimeDays":20,"unitCost":800}
+                """).andExpect(status().isOk());
+        doAnswer(call -> {
+            entities.flush();
+            assertThat(defaultsOf(userId)).containsExactly(5, 14);
+            assertThat(jdbc.queryForObject("SELECT lead_time_days FROM replenishment_settings WHERE product_id = ?",
+                    Integer.class, productId)).isEqualTo(200);
+            assertThat(jdbc.queryForObject("SELECT unit_cost FROM products WHERE id = ?",
+                    Long.class, productId)).isEqualTo(900L);
+            throw ProductException.engineUnavailable();
+        }).when(calculations).request(userId, warehouseId, "SETTINGS", true);
+
+        putJson(userId, DEFAULTS, """
+                {"leadTimeDays":5,"reviewCycleDays":14,"orderUnitQty":1,"recalculate":true,
+                 "productOverrides":[{"productId":%d,"leadTimeDays":200,"unitCost":900}]}
+                """.formatted(productId)).andExpect(status().isServiceUnavailable())
+                .andExpect(jsonPath("code").value("ENGINE_UNAVAILABLE"));
+        assertThat(defaultsOf(userId)).containsExactly(5, 200);
+        assertThat(jdbc.queryForObject("SELECT lead_time_days FROM replenishment_settings WHERE product_id = ?",
+                Integer.class, productId)).isEqualTo(20);
+        assertThat(products.findById(productId).orElseThrow().getUnitCost()).isEqualByComparingTo("800");
     }
 
     private ResultActions putJson(long userId, String path, String body) throws Exception {

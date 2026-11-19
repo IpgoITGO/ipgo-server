@@ -12,6 +12,8 @@ import com.ipgo.server.repository.ProductRepository;
 import com.ipgo.server.repository.ReplenishmentSettingRepository;
 
 import java.util.Comparator;
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.util.Optional;
 import java.util.function.Function;
 import java.util.stream.Collectors;
@@ -73,7 +75,34 @@ public class ReplenishmentService {
         var next = new ProductSettings(request.leadTimeDays(), request.reviewCycleDays(), request.orderUnitQty());
         if (exceedsHorizon(next)) throw ProductException.calculationHorizonTooLong(MAX_CALCULATION_HORIZON_DAYS, null);
         var warehouse = warehouses.lockDefault(userId);
-        rejectProductsOverHorizon(userId, next);
+        var owned = products.findByUserId(userId).stream().collect(Collectors.toMap(Product::getId, Function.identity()));
+        var changes = new LinkedHashMap<Long, DefaultSettingsRequest.ProductOverride>();
+        if (request.productOverrides() != null) {
+            for (var override : request.productOverrides()) {
+                long productId = override.productId();
+                if (!owned.containsKey(productId)) {
+                    if (products.existsById(productId)) throw ProductException.forbidden();
+                    throw ProductException.notFound();
+                }
+                if (changes.putIfAbsent(productId, override) != null)
+                    throw ProductException.invalidField("productOverrides");
+            }
+        }
+        if (!owned.isEmpty()) {
+            var finalOverrides = settings.findByProductIdIn(owned.keySet()).stream()
+                    .collect(Collectors.toMap(ReplenishmentSetting::getProductId, Function.identity()));
+            // Replace submitted rows in memory first. Validate the resulting state before writing any of it.
+            for (var change : changes.values()) {
+                var candidate = new ReplenishmentSetting(change.productId());
+                candidate.replace(change.leadTimeDays(), change.reviewCycleDays(), change.orderUnitQty());
+                finalOverrides.put(change.productId(), candidate);
+            }
+            rejectProductsOverHorizon(owned, finalOverrides, next);
+            for (var change : changes.values()) {
+                settings.save(finalOverrides.get(change.productId()));
+                owned.get(change.productId()).update(null, change.unitCost(), null);
+            }
+        }
         warehouse.confirmDefaults(request.leadTimeDays(), request.reviewCycleDays(), request.orderUnitQty());
         return new SettingsSaved(true, calculations.request(userId, warehouse.getId(), "SETTINGS", Boolean.TRUE.equals(request.recalculate())));
     }
@@ -98,12 +127,10 @@ public class ReplenishmentService {
     }
 
     // 기본값을 바꾸면 상품별 값과 합친 실제 적용 값도 바뀐다. 사용을 끈 상품도 다시 켜질 수 있어 함께 본다.
-    private void rejectProductsOverHorizon(long userId, ProductSettings nextDefaults) {
-        var owned = products.findByUserId(userId).stream().collect(Collectors.toMap(Product::getId, Function.identity()));
-        if (owned.isEmpty()) return;
-        var over = settings.findByProductIdIn(owned.keySet()).stream()
-                .filter(override -> exceedsHorizon(nextDefaults.applying(override)))
-                .map(override -> owned.get(override.getProductId()))
+    private void rejectProductsOverHorizon(Map<Long, Product> owned,
+            Map<Long, ReplenishmentSetting> finalOverrides, ProductSettings nextDefaults) {
+        var over = owned.values().stream()
+                .filter(product -> exceedsHorizon(nextDefaults.applying(finalOverrides.get(product.getId()))))
                 .sorted(Comparator.comparing(Product::getId)).toList();
         if (over.isEmpty()) return;
         String names = "'" + over.getFirst().getSkuName() + "'" + (over.size() > 1 ? " 외 " + (over.size() - 1) + "개" : "");

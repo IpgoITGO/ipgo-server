@@ -19,6 +19,10 @@ public class AccountException extends RuntimeException {
     public String code() { return code; }
     public String field() { return field; }
 
+    public static AccountException signupDisabled() {
+        return new AccountException(HttpStatus.FORBIDDEN, "SIGNUP_DISABLED", "현재 신규 가입을 받지 않아요.", null);
+    }
+
     public static AccountException wrongPassword() {
         return wrongPassword("password");
     }

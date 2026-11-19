@@ -73,6 +73,7 @@ ipgo:
     jwt-secret: ${IPGO_JWT_SECRET:}
     cookie-secure: ${IPGO_AUTH_COOKIE_SECURE:true}
   signup:
+    enabled: ${IPGO_SIGNUP_ENABLED:true}
     # #206 가입 동의 · 사업자등록번호. false(전환 기간)는 보낸 값만 검사하고, 프론트 동의 화면 배포 뒤 true로 바꾼다.
     strict: ${IPGO_SIGNUP_STRICT:false}
     agreement-version: 2026-11-v1

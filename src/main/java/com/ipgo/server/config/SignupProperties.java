@@ -9,5 +9,5 @@ import org.springframework.boot.context.properties.bind.DefaultValue;
 //   프론트가 동의 화면을 배포한 뒤 true로 바꾸면 동의와 사업자등록번호(검증 숫자 포함)가 필수가 된다.
 @ConfigurationProperties("ipgo.signup")
 public record SignupProperties(@DefaultValue("2026-11-v1") String agreementVersion,
-        @DefaultValue("false") boolean strict) {
+        @DefaultValue("false") boolean strict, @DefaultValue("true") boolean enabled) {
 }

@@ -191,6 +191,7 @@ PostgreSQL을 준비한 뒤 실행 환경에 아래 변수를 설정합니다. �
 | `IPGO_UPLOAD_DIR` | 원본·보관 정보 저장 폴더. 기본값은 실행 디렉터리의 `./storage/uploads` |
 | `IPGO_PAYMENT_REFUND_RESTRICTED` | 결제 완료 후 회원 직접 환불 제한(#208). 기본 `false`. 프론트 결제 화면 환불 제한 고지·환불 버튼 제거 배포와 같이 `true` |
 | `IPGO_SIGNUP_STRICT` | 가입 동의·사업자등록번호 필수 여부(#206). 기본 `false`(전환 기간, 보낸 값만 검사). 프론트 동의 화면 배포 뒤 `true` |
+| `IPGO_SIGNUP_ENABLED` | 공개 가입 허용 여부. 기본 `true`. 테스트 계정만 쓰는 개발 데모에서는 `false`로 설정하며, 로그인과 비밀번호 찾기는 유지 |
 | `IPGO_QA_FULL_ACCESS_USER_IDS` | **dev 전용, 운영에는 넣지 않기**(#244). 쉼표로 구분한 회원 ID(예: `101,102`). 이 회원은 구독 상태와 상관없이 업로드·계산 권한을 모두 받음. 기본은 비어 있음(지금과 같음). 숫자가 아닌 값은 서버 시작에서 막음. 아래 "dev QA 계정 요금제 제한 풀기" 참고 |
 | `IPGO_PUSH_PUBLIC_KEY` | Web Push VAPID 공개키(base64url, #190). 비어 있으면 알림 등록 API가 `503 PUSH_UNAVAILABLE`. 비밀키는 아래 별도 발송 secret으로 주입 |
 
@@ -271,6 +272,8 @@ IPGO_TEST_DB_USERNAME=ipgo IPGO_TEST_DB_PASSWORD=<임시 비밀번호> ./gradlew
 | GET | `/api/auth/me` | 200과 `userId`, `email`, `managerName`, `companyName`. 회원 ID를 요청으로 지정하지 않음 |
 | POST | `/api/auth/logout` | 리프레시 쿠키·CSRF 헤더로 현재 로그인 폐기·쿠키 삭제. 204. 이미 로그아웃한 경우도 204 |
 | GET | `/actuator/health` | 상세 정보 없는 상태 확인 |
+
+`IPGO_SIGNUP_ENABLED=false`이면 형식이 올바른 이메일 중복 확인, 가입용 인증 메일 발송·코드 확인, 가입 요청에 `403 SIGNUP_DISABLED`를 반환합니다. 계정·인증 상태를 만들거나 가입 메일을 보내지 않습니다. 기존 로그인·세션·계정 복구 및 결제 설정에는 영향을 주지 않습니다. 다시 허용하려면 `true`로 복원합니다.
 
 가입 요청 예시입니다. `verificationToken`에는 A7에서 받은 실제 토큰을 전달합니다.
 

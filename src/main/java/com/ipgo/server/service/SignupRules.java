@@ -26,8 +26,13 @@ public class SignupRules {
         this.clock = clock;
     }
 
+    void requireEnabled() {
+        if (!properties.enabled()) throw AccountException.signupDisabled();
+    }
+
     // 가입 전에 검사하고, 저장할 사업자등록번호(숫자 10자리 또는 null)를 돌려준다.
     public String check(SignupRequest request) {
+        requireEnabled();
         var agreements = request.agreements();
         if (agreements != null || properties.strict()) {
             if (agreements == null || !Boolean.TRUE.equals(agreements.terms()) || !Boolean.TRUE.equals(agreements.privacy())) {

@@ -29,25 +29,29 @@ public class EmailVerificationService {
     private final UserAccountRepository users;
     private final PasswordEncoder encoder;
     private final VerificationMailer mailer;
+    private final SignupRules signupRules;
     private final Clock clock;
     private final SecureRandom random = new SecureRandom();
 
     public EmailVerificationService(EmailVerificationRepository verifications, UserAccountRepository users,
-            PasswordEncoder encoder, VerificationMailer mailer, Clock clock) {
+            PasswordEncoder encoder, VerificationMailer mailer, Clock clock, SignupRules signupRules) {
         this.verifications = verifications;
         this.users = users;
         this.encoder = encoder;
         this.mailer = mailer;
         this.clock = clock;
+        this.signupRules = signupRules;
     }
 
     @Transactional(readOnly = true)
     public boolean available(String email) {
+        signupRules.requireEnabled();
         return !users.existsByEmail(EmailNormalizer.normalize(email));
     }
 
     @Transactional
     public void requestCode(String rawEmail) {
+        signupRules.requireEnabled();
         String email = EmailNormalizer.normalize(rawEmail);
         if (users.existsByEmail(email)) throw duplicate();
         verifications.ensureExists(email);
@@ -71,6 +75,7 @@ public class EmailVerificationService {
     // 실패 횟수·만료 상태는 오류를 응답하더라도 commit해야 한다.
     @Transactional(noRollbackFor = EmailVerificationException.class)
     public String confirm(String rawEmail, String code) {
+        signupRules.requireEnabled();
         String email = EmailNormalizer.normalize(rawEmail);
         EmailVerification state = verifications.findForUpdate(email).orElseThrow(EmailVerificationService::invalidCode);
         if (state.getCodeHash() == null || state.getFailedAttempts() >= 5) throw invalidCode();

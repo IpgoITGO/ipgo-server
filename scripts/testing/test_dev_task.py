@@ -1,5 +1,6 @@
 from datetime import datetime, timedelta, timezone
 import copy
+from typing import Any, cast
 import importlib.util
 import json
 import os
@@ -209,6 +210,27 @@ class DevDeploymentTests(unittest.TestCase):
         workflow=(ROOT/'.github/workflows/deploy-dev.yml').read_text()
         self.assertIn('acceptance_timing_enabled:',workflow)
         self.assertIn('ACCEPTANCE_TIMING_ENABLED: ${{ inputs.acceptance_timing_enabled }}',workflow)
+
+    def test_signup_flag_explicit_change_preserves_other_settings(self):
+        previous=cast(dict[str, Any], self.task['containerDefinitions'][0])
+        previous['environment'].append({'name':'IPGO_SIGNUP_ENABLED','value':'true'})
+        for requested, expected in (('', 'true'), ('false', 'false'), ('true', 'true')):
+            with self.subTest(requested=requested):
+                server=module.render(self.task,IMAGE,dict(self.env,DEMO_SIGNUP_ENABLED=requested))['containerDefinitions'][0]
+                self.assertEqual([e['value'] for e in server['environment'] if e['name']=='IPGO_SIGNUP_ENABLED'],[expected])
+                self.assertIn({'name':'KEEP_SETTING','value':'preserve-me'},server['environment'])
+                self.assertEqual(server['secrets'],previous['secrets'])
+        self.assertIn('DEMO_SIGNUP_ENABLED: ${{ vars.AWS_DEV_SIGNUP_ENABLED }}',
+                      (ROOT/'.github/workflows/deploy-dev.yml').read_text())
+
+    def test_signup_flag_rejects_invalid_value_or_secret_conflict(self):
+        with self.assertRaises(module.InvalidDeployment):
+            module.settings(dict(self.env,DEMO_SIGNUP_ENABLED='False'))
+        server=cast(dict[str, Any], self.task['containerDefinitions'][0])
+        server['secrets'].append(
+            {'name':'IPGO_SIGNUP_ENABLED','valueFrom':'synthetic-secret-ref'})
+        with self.assertRaises(module.InvalidDeployment):
+            module.render(self.task,IMAGE,dict(self.env,DEMO_SIGNUP_ENABLED='false'))
 
     def test_approved_activation_preserves_other_settings_and_source(self):
         before=copy.deepcopy(self.task)

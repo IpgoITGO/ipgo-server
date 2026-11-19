@@ -25,6 +25,8 @@ def flag(env, name):
 
 
 def settings(env):
+    require(env.get("DEMO_SIGNUP_ENABLED", "") in ("", "true", "false"),
+            "DEMO_SIGNUP_ENABLED must be empty, true or false")
     sha = env.get("EXPECTED_SHA", "")
     require(re.fullmatch(r"[0-9a-f]{40}", sha) is not None, "A full approved EXPECTED_SHA is required")
     require(sha == env.get("DEPLOYMENT_SOURCE_SHA", env.get("GITHUB_SHA")), "Workflow SHA differs from the approved SHA")
@@ -127,6 +129,10 @@ def render(task, image, env):
     managed["IPGO_INSIGHT_MONTHLY_BUDGET_ENABLED"] = str(env.get("UNLIMITED_INSIGHT_APPROVED", "false") != "true").lower()
     managed["IPGO_INSIGHT_DEMO_STARTS_AT"] = config["starts"] if config["insight"] else ""
     managed["IPGO_INSIGHT_DEMO_EXPIRES_AT"] = config["expires"] if config["insight"] else ""
+    if signup_enabled := env.get("DEMO_SIGNUP_ENABLED"):
+        require(not any(e.get("name") == "IPGO_SIGNUP_ENABLED" for e in server.get("secrets", [])),
+                "Signup flag must not conflict with a secret")
+        managed["IPGO_SIGNUP_ENABLED"] = signup_enabled
     if config["base"]:
         managed["IPGO_ENGINE_BASE_URL"] = config["base"]
     if env.get("ENGINE_DEFAULT_METHOD", "preserve") != "preserve":
